@@ -97,6 +97,22 @@ struct Acid {
   float t, dmg;
 };
 
+// A Viking air-to-ground missile: leaves a wing, runs ahead, then dives on its target
+// along a quadratic curve (p0 → p1 → the target), homing while the target lives
+struct VMissile {
+  glm::vec3 p0, p1, p{0}, dir{1, 0, 0};
+  glm::vec2 tgt;
+  EnemyP e;
+  float t = 0;                    // 0..1 along the flight
+  std::vector<glm::vec4> trail;   // its light streak: recent nozzle positions, w = game time
+};
+
+// A nuke's mushroom cloud: smoke sprites on a stem under a rolling cap, the fire glowing through
+struct Mushroom {
+  glm::vec3 p;
+  float t = 0;   // seconds since the blast (game time)
+};
+
 struct FloatText {
   glm::vec3 p;
   std::string txt;
@@ -123,7 +139,7 @@ struct UnitFig {
   int frame = 0;
 };
 
-// A transient scene object (beams, rings, bombs, lasers, the falling warhead)
+// A transient scene object (beams, rings, lasers, the falling warhead)
 struct Prop {
   Mesh* mesh = nullptr;
   Material mat;
@@ -211,6 +227,10 @@ class Game {
   void startFlare();
   void updateFlare(float dt);
   void endFlare();
+  // nuke fireball light: lights the field (and lifts a night) for NUKE_LIGHT_DUR s of game time
+  float nukeLightT_ = -1;   // seconds since the blast, -1 = none
+  glm::vec3 nukeLightPos_{0};
+  float nukeLightK() const;  // strength 0..1
   // camera rig
   float zoom_ = 0, zoomT_ = 0, camYaw_ = 0, camYawT_ = 0;
   glm::mat4 view_{1}, proj_{1};
@@ -232,6 +252,7 @@ class Game {
   void updateDayNight(float dt);
   void toggleDayNight();
   std::string dayNightLabel() const;
+  std::string dayNightNext() const;   // countdown to the next phase, e.g. "DUSK IN 0:42"
 
   // scheduler (game time): one-shots and per-frame tickers
   struct Timer { float t; std::function<void()> fn; };
@@ -307,11 +328,23 @@ class Game {
   Pool* poolFor(const std::string& key, const Baked& parts, const glm::mat4& local);
   Pool* framePool(const std::string& skin, const char* anim, int k);
   Pool* modelPool(const std::string& skin);
-  Material bulletMat_, acidMat_, crateMat_, bombMat_, missileBodyMat_, missileGlowMat_;
-  Mesh *bulletMesh_ = nullptr, *acidMesh_ = nullptr, *crateMesh_ = nullptr, *bombMesh_ = nullptr, *beamMesh_ = nullptr,
-       *ringMesh_ = nullptr, *laserMesh_ = nullptr, *trailMesh_ = nullptr, *expMesh_ = nullptr, *fireballMesh_ = nullptr, *snipeMesh_ = nullptr,
+  Material bulletMat_, acidMat_, crateMat_, missileBodyMat_, missileGlowMat_;
+  Mesh *bulletMesh_ = nullptr, *acidMesh_ = nullptr, *crateMesh_ = nullptr, *beamMesh_ = nullptr,
+       *ringMesh_ = nullptr, *laserMesh_ = nullptr, *trailMesh_ = nullptr, *fireballMesh_ = nullptr, *snipeMesh_ = nullptr,
        *dotRingMesh_ = nullptr, *decalMesh_ = nullptr, *unitBoxMesh_ = nullptr;
   const Texture* nukeTargetTex_ = nullptr;
+  // night visuals: tracer halos and their light on the ground, Sensor Tower blips lying on the ground
+  const Texture *glowTex_ = nullptr, *blipTex_ = nullptr;
+  Mesh *glowQuadMesh_ = nullptr, *blipMesh_ = nullptr, *vmMesh_ = nullptr;   // vmMesh_: a Viking missile, unit length on +z
+  Material vmBodyMat_;
+  ParticleSystem mushSmoke_, mushFire_;   // the mushroom clouds' sprites, rebuilt every frame (not simulated)
+  Material tracerGlowMat_, tracerPoolMat_, blipMat_, sensorRingMat_;
+  Mesh* sensorRingMesh_[4] = {};   // per Sensor Tower level: the range ring with its 12 triangles
+  Mesh* glowRingMesh_ = nullptr;   // a soft band along a unit circle (xz plane)
+  void buildNightFx();
+  bool sensed(const Enemy& e) const;   // a Zerg out in the dark within the Sensor Tower's range
+  std::vector<Mushroom> mushrooms_;
+  void updateMushrooms(float dt);
   ParticleSystem glow_, smoke_;
   void emit(ParticleSystem& s, float x, float y, float z, float vx, float vy, float vz, float life, float s0, float s1,
             float a0, uint32_t c0, uint32_t c1, float grav, float drag, int fade) {
@@ -324,7 +357,7 @@ class Game {
   bool gpuFxOn_ = true;
   bool gpuFx() const { return gpuFxOn_ && gpuFx_.ok(); }
   void setGpuFx(bool on);
-  void explosionFx(const glm::vec3& p, uint32_t col, float scale);   // bombs, airstrikes (scale 1) and the nuke (larger)
+  void explosionFx(const glm::vec3& p, uint32_t col, float scale, bool nuke = false);   // Viking missiles (scale 1); the nuke: sparks and embers only
   void deathFx(const Enemy& e);
   void acidFx(const glm::vec3& p);
   void muzzleFlash(float x, float y, float z, float dx, float dz, uint32_t col, bool big);
@@ -381,12 +414,18 @@ class Game {
   void strikeAt(float tx, float tz, uint32_t col, float r);
   void randPos(float& x, float& z);
   void doAirstrike();
-  void dropBomb(float x, float z);
+  void fireVikingMissile(glm::vec2 tgt, EnemyP e);
+  void updateVikingMissiles(float dt);
   void launchViking(std::vector<std::pair<glm::vec2, EnemyP>> targets, glm::vec2 cratePos);
   void removeViking();
   void updateViking(float dt);
+  glm::mat4 vikingMatrix() const;   // its model's placement (flying along +x, banked a little)
   bool vikingActive_ = false;
   glm::vec3 vikingPos_{0};
+  std::vector<VMissile> vMissiles_;
+  Material vmFlameGlowMat_, vmFlameCoreMat_;   // their exhaust flames and light streaks
+  Mesh* streakMesh_ = nullptr;                 // a streak segment: unit cylinder (r 1, height 1 on y)
+  float vMissileSide_ = 1;   // wings take turns
   void doNuke(bool force = false);
   void ghostSnipeTick(float dt);
 

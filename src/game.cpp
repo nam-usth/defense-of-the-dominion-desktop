@@ -48,6 +48,15 @@ static const float NUKE_RADIUS = 16, WARN_DUR = 2.0f;
 // and lands at WARN_DUR; its trail fades over NUKE_TRAIL_FADE s after the blast
 static const float NUKE_SKY_Y = 30, NUKE_FALL_AT = 0.4f, NUKE_TRAIL_FADE = 0.5f;
 static const float NUKE_SLANT = 0.55f;   // the dive path's lean: horizontal per vertical (29° off vertical)
+// The fireball's light: flashes up, holds NUKE_LIGHT_HOLD s, then cools (gone after NUKE_LIGHT_DUR s);
+// at full strength it lifts a night to NUKE_LIGHT_F (fog far ≈ 40: past the spawn ring)
+static const float NUKE_LIGHT_DUR = 6, NUKE_LIGHT_HOLD = 0.5f, NUKE_LIGHT_F = 0.35f;
+static const float MUSH_DUR = 7;   // the mushroom cloud rises, spreads, cools and thins out over this many seconds
+// Viking missiles: VM_FLIGHT s from the wing to the target, running VM_RUN ahead before the dive
+static const float VM_FLIGHT = 0.6f, VM_RUN = 4;
+// its length (a tenth of the punisher grenade model it first borrowed, scaled 1.7) and the centre → nozzle distance
+static const float VM_LEN = 0.13f, VM_TAIL = 0.5f * VM_LEN;
+static const float VM_STREAK = 0.25f;   // its light streak covers the last this-many seconds of the path
 
 static float angDiff(float a, float b) { return std::atan2(std::sin(a - b), std::cos(a - b)); }
 static glm::vec3 lerp3(const glm::vec3& a, const glm::vec3& b, float t) { return a + (b - a) * t; }
@@ -197,18 +206,17 @@ void Game::buildScene() {
   // Effects
   bulletMesh_ = Mesh::create(geo::box(.07f, .07f, .5f));   // tracer streak, long axis = flight direction
   bulletMat_.type = MatType::Basic;
+  bulletMat_.fog = false;   // a tracer burns: it shows out in the dark
   acidMesh_ = Mesh::create(geo::icosahedron(.11f, 1));
   acidMat_.type = MatType::Basic;
   acidMat_.color = hexColor(0x9cff3a);
   crateMesh_ = Mesh::create(geo::box(.65f, .65f, .65f));
   crateMat_ = *lamMat(0xaa8800);
-  bombMesh_ = Mesh::create(geo::sphere(.18f, 6, 5));
-  bombMat_ = *basMat(0xff6600);
+  buildNightFx();
   beamMesh_ = Mesh::create(geo::cylinder(.25f, .6f, 24, 8));
   ringMesh_ = Mesh::create(geo::ring(.95f, 1, 32));
   laserMesh_ = Mesh::create(geo::cylinder(.04f, .04f, 28, 5));
   trailMesh_ = Mesh::create(geo::cylinder(.25f, 1, 1, 10));   // the nuke's streak: unit height, narrowing to the top
-  expMesh_ = Mesh::create(geo::cylinder(.1f, 3.5f, 18, 10));
   fireballMesh_ = Mesh::create(geo::sphere(4, 12, 8));
   snipeMesh_ = Mesh::create(geo::cylinder(.04f, .04f, 1, 4));   // scaled to the shot's length
   dotRingMesh_ = Mesh::create(geo::ring(.3f, .6f, 16));
@@ -224,9 +232,130 @@ void Game::buildScene() {
   missileGlowMat_.opacity = .9f;
   missileGlowMat_.blend = Blend::Additive;
   missileGlowMat_.depthWrite = false;
+  missileGlowMat_.fog = false;
   nukeTargetTex_ = loadTexture(NUKE_TARGET_TEX);
   if (!nukeTargetTex_) logWarn("nuke target texture failed to load — using a plain ring");
   rebuildBunkerTris();
+}
+
+// The night effects' textures (drawn here: no art for them), shapes and materials
+void Game::buildNightFx() {
+  // soft round glow: white, its alpha falling to 0 at the rim (the quads stretch it into streaks)
+  {
+    const int N = 64;
+    std::vector<uint8_t> px(N * N * 4);
+    for (int j = 0; j < N; j++)
+      for (int i = 0; i < N; i++) {
+        float x = (i + .5f) / N * 2 - 1, y = (j + .5f) / N * 2 - 1, k = std::max(0.f, 1 - std::sqrt(x * x + y * y));
+        uint8_t* p = &px[(j * N + i) * 4];
+        p[0] = p[1] = p[2] = 255;
+        p[3] = (uint8_t)std::lround(255 * k * k);
+      }
+    glowTex_ = Texture::create(N, N, px.data());
+  }
+  // Sensor Tower blip: a red disc and ring around a pale "!" (rows bottom-up: +y is the top of the glyph)
+  {
+    const int N = 128;
+    std::vector<uint8_t> px(N * N * 4);
+    const float aa = 1.5f / N;   // edge softness in the [-1, 1] square
+    auto cover = [&](float d) { return glm::clamp(0.5f - d / aa, 0.f, 1.f); };   // d: signed distance, < 0 inside
+    const glm::vec3 red = hexColor(0xff3b2f), pale = hexColor(0xffd0c8);
+    for (int j = 0; j < N; j++)
+      for (int i = 0; i < N; i++) {
+        float x = (i + .5f) / N * 2 - 1, y = (j + .5f) / N * 2 - 1, r = std::hypot(x, y);
+        float a = std::max(0.22f * cover(r - 0.8f), cover(std::abs(r - 0.8f) - 0.07f));   // fill, ring
+        float bar = std::hypot(x, y - glm::clamp(y, -0.02f, 0.46f)) - 0.09f, dot = std::hypot(x, y + 0.33f) - 0.1f;
+        float g = std::max(cover(bar), cover(dot));
+        glm::vec3 c = lerp3(red, pale, g);
+        uint8_t* p = &px[(j * N + i) * 4];
+        p[0] = (uint8_t)std::lround(255 * c.r);
+        p[1] = (uint8_t)std::lround(255 * c.g);
+        p[2] = (uint8_t)std::lround(255 * c.b);
+        p[3] = (uint8_t)std::lround(255 * std::max(a, g));
+      }
+    blipTex_ = Texture::create(N, N, px.data());
+  }
+  // flat quads lying in the xz plane (normal +y), the texture's top toward -z
+  Geometry halo = geo::plane(.5f, 1.6f);   // tracer halo: long axis = flight direction
+  halo.transform(trs({0, 0, 0}, {-PI / 2, 0, 0}));
+  glowQuadMesh_ = Mesh::create(halo);
+  Geometry blip = geo::plane(1, 1);
+  blip.transform(trs({0, 0, 0}, {-PI / 2, 0, 0}));
+  blipMesh_ = Mesh::create(blip);
+  {   // Viking missile, unit length along +z, nozzle at z = -0.5: body, nose cone, four tail fins
+    Geometry m = geo::cylinder(.09f, .09f, .72f, 10);
+    m.transform(trs({0, 0, -.14f}, {PI / 2, 0, 0}));   // cylinder / cone axis y → +z
+    Geometry nose = geo::cone(.09f, .28f, 10);
+    nose.transform(trs({0, 0, .36f}, {PI / 2, 0, 0}));
+    m = m.nonIndexed();
+    m.append(nose.nonIndexed());
+    for (int k = 0; k < 4; k++) {
+      float a = k * PI / 2;
+      Geometry fin = geo::box(.02f, .14f, .2f);
+      fin.transform(trs({std::cos(a) * .15f, std::sin(a) * .15f, -.38f}, {0, 0, a - PI / 2}));
+      m.append(fin.nonIndexed());
+    }
+    vmMesh_ = Mesh::create(m);
+    streakMesh_ = Mesh::create(geo::cylinder(1, 1, 1, 6));
+    vmBodyMat_.type = MatType::Standard;
+    vmBodyMat_.color = hexColor(0xc4c9d0);
+    vmBodyMat_.metalness = .5f;
+    vmBodyMat_.roughness = .4f;
+  }
+  // Sensor Tower range ring, per level: a soft glowing band with a brighter core (the glow texture's
+  // centre column gives the profile across it) and a triangle every 30°, its tip toward the bunker
+  for (int lvl = 1; lvl <= 3; lvl++) {
+    const float R = cfg::sensor_range[lvl];
+    Geometry g;
+    auto vtx = [&](float x, float z, float v) { g.v.push_back({{x, 0, z}, {0, 1, 0}, {0.5f, v}}); };
+    auto band = [&](float w) {   // inner edge v = 0, outer v = 1
+      const int S = 160;
+      for (int i = 0; i < S; i++) {
+        float a0 = i * 2 * PI / S, a1 = (i + 1) * 2 * PI / S, ri = R - w, ro = R + w;
+        float c0 = std::cos(a0), s0 = std::sin(a0), c1 = std::cos(a1), s1 = std::sin(a1);
+        vtx(c0 * ri, s0 * ri, 0); vtx(c0 * ro, s0 * ro, 1); vtx(c1 * ro, s1 * ro, 1);
+        vtx(c0 * ri, s0 * ri, 0); vtx(c1 * ro, s1 * ro, 1); vtx(c1 * ri, s1 * ri, 0);
+      }
+    };
+    band(0.45f);   // glow
+    band(0.12f);   // core
+    for (int k = 0; k < 12; k++) {
+      float a = k * PI / 6, c = std::cos(a), s = std::sin(a);   // radial (c, s), tangent (-s, c)
+      const float rBase = R + 0.35f, rTip = R - 0.6f, hw = 0.32f;
+      vtx(c * rBase - s * hw, s * rBase + c * hw, 0.5f);
+      vtx(c * rBase + s * hw, s * rBase - c * hw, 0.5f);
+      vtx(c * rTip, s * rTip, 0.5f);
+    }
+    sensorRingMesh_[lvl] = Mesh::create(g);
+  }
+  {   // a soft glowing band along a unit circle (the nuke's warning ring at night), scaled with it
+    Geometry g;
+    const int S = 96;
+    for (int i = 0; i < S; i++) {
+      float a0 = i * 2 * PI / S, a1 = (i + 1) * 2 * PI / S, ri = 0.95f, ro = 1.05f;
+      float c0 = std::cos(a0), s0 = std::sin(a0), c1 = std::cos(a1), s1 = std::sin(a1);
+      auto vtx = [&](float c, float s, float r, float v) { g.v.push_back({{c * r, 0, s * r}, {0, 1, 0}, {0.5f, v}}); };
+      vtx(c0, s0, ri, 0); vtx(c0, s0, ro, 1); vtx(c1, s1, ro, 1);
+      vtx(c0, s0, ri, 0); vtx(c1, s1, ro, 1); vtx(c1, s1, ri, 0);
+    }
+    glowRingMesh_ = Mesh::create(g);
+  }
+  for (Material* m : {&tracerGlowMat_, &tracerPoolMat_, &blipMat_, &sensorRingMat_, &vmFlameGlowMat_, &vmFlameCoreMat_}) {
+    m->type = MatType::Basic;
+    m->transparent = true;
+    m->blend = Blend::Additive;
+    m->depthWrite = false;
+    m->doubleSide = true;
+    m->fog = false;   // they glow in the dark
+  }
+  tracerGlowMat_.map = tracerPoolMat_.map = sensorRingMat_.map = glowTex_;
+  sensorRingMat_.color = hexColor(0xff503c);
+  blipMat_.map = blipTex_;
+  vmFlameGlowMat_.color = hexColor(0xff6a1a);
+  vmFlameGlowMat_.opacity = .55f;
+  vmFlameCoreMat_.color = hexColor(0xfff2d0);
+  vmFlameCoreMat_.opacity = .95f;
+  vmFlameGlowMat_.doubleSide = vmFlameCoreMat_.doubleSide = false;
 }
 
 // Asset arrived (loaded one per frame by main): swap it into the scene
@@ -513,6 +642,11 @@ void Game::updateCorpses(float dt) {
   }
 }
 
+// Sensor Tower: a Zerg out in the dark within its range shows as a blip, and the Shrike may engage it
+bool Game::sensed(const Enemy& e) const {
+  return sensorLvl_ >= 1 && !e.dead && !e.visible && std::hypot(e.pos.x, e.pos.z) <= cfg::sensor_range[sensorLvl_];
+}
+
 // ─── Shrike turret (HP Lv3) ──────────────────────────────────────────────────
 // Picks the best enemy in range (distance + how far the gun must turn, enemies
 // attacking the bunker first; the current target is kept unless another is
@@ -529,7 +663,7 @@ EnemyP Game::shrikePick() {
   bool curLive = false;
   for (auto* list : {&zerglings_, &roaches_})
     for (auto& e : *list) {
-      if (e->dead || !e->visible) continue;
+      if (e->dead || !(e->visible || sensed(*e))) continue;   // at night: in the light, or a Sensor Tower blip
       if (e == shrikeTgt_) curLive = true;
       float sc = shrikeScore(*e);
       if (sc < bestS) { bestS = sc; best = e; }
@@ -660,15 +794,19 @@ void Game::setGpuFx(bool on) {
 // The count lives in the small particles (sparks, embers): additive fire is
 // limited by overdraw — a first nuke with 18 000 large flames painted ~90 layers
 // over the screen (white, and ~15 ms of GPU fill per frame on a 3050 Ti).
-void Game::explosionFx(const glm::vec3& p, uint32_t col, float k) {
+// The nuke keeps only the sparks and embers: its mushroom cloud draws its fire and its
+// dust ring (these bursts, at its scale, hazed the whole field and hid the cloud).
+void Game::explosionFx(const glm::vec3& p, uint32_t col, float k, bool nuke) {
   if (!gpuFx()) return;
   using B = GpuParticles::Burst;
   const float k2 = k * k, rk = std::sqrt(k);
-  B fire;   // fireball: fewer, fainter flames cooling from orange to deep red, rising
-  fire.pos = p; fire.count = (int)(300 * k2); fire.radius = .5f * k; fire.speed = 7 * k; fire.up = 1.5f * k;
-  fire.c0 = 0xffa040; fire.c1 = 0x601000; fire.a0 = .35f; fire.life0 = .3f; fire.life1 = .8f + .3f * (k - 1);
-  fire.s0 = .35f * k; fire.s1 = .12f * k; fire.grav = -1; fire.drag = 2.5f;
-  gpuFx_.burst(fire);
+  if (!nuke) {
+    B fire;   // fireball: fewer, fainter flames cooling from orange to deep red, rising
+    fire.pos = p; fire.count = (int)(300 * k2); fire.radius = .5f * k; fire.speed = 7 * k; fire.up = 1.5f * k;
+    fire.c0 = 0xffa040; fire.c1 = 0x601000; fire.a0 = .35f; fire.life0 = .3f; fire.life1 = .8f + .3f * (k - 1);
+    fire.s0 = .35f * k; fire.s1 = .12f * k; fire.grav = -1; fire.drag = 2.5f;
+    gpuFx_.burst(fire);
+  }
   B spark;  // sparks: the bulk of the count, small, flung far
   spark.pos = p; spark.count = (int)(1200 * k2); spark.speed = 14 * k; spark.up = 2 * k;
   spark.c0 = 0xffe9a0; spark.c1 = col; spark.a0 = .9f; spark.life0 = .5f; spark.life1 = 1.2f + .2f * k;
@@ -679,6 +817,7 @@ void Game::explosionFx(const glm::vec3& p, uint32_t col, float k) {
   emb.c0 = 0xffc060; emb.c1 = 0xff3000; emb.a0 = .8f; emb.life0 = 1; emb.life1 = 2 + k;
   emb.s0 = .1f; emb.s1 = .04f; emb.grav = 6; emb.drag = .4f;
   gpuFx_.burst(emb);
+  if (nuke) return;
   // smoke is overdraw-bound (normal blending, large sprites): its count grows slower than the fire's
   B ring;   // shockwave dust skimming the ground
   ring.pos = {p.x, .15f, p.z}; ring.count = (int)(400 * k * rk); ring.shape = GpuParticles::Ring; ring.speed = 12 * k;
@@ -945,7 +1084,7 @@ void Game::doAirstrike() {
   waveAirs_++;
   std::vector<EnemyP> alive;
   for (auto& e : allEnemies()) if (!e->dead) alive.push_back(e);
-  // one bomb per enemy cluster (enemies within 3 of each other)
+  // one missile per enemy cluster (enemies within 3 of each other)
   std::vector<std::pair<glm::vec2, EnemyP>> targets;
   std::vector<Enemy*> assigned;
   auto isAssigned = [&](Enemy* e) { return std::find(assigned.begin(), assigned.end(), e) != assigned.end(); };
@@ -970,42 +1109,69 @@ void Game::doAirstrike() {
   }
 }
 
-// Bomb: falls from the Viking's altitude, then strikes
-void Game::dropBomb(float wx, float wz) {
-  auto bomb = std::make_shared<Prop>();
-  bomb->mesh = bombMesh_;
-  bomb->mat = bombMat_;
-  bomb->m = trs({wx, 5, wz});
-  props_.push_back(bomb);
-  auto life = std::make_shared<float>(0.35f);
-  auto y = std::make_shared<float>(5.f);
-  addTicker([this, bomb, life, y, wx, wz](float dt) {
-    *life -= dt;
-    *y = std::max(0.2f, *y - 37.5f * dt);
-    bomb->m = trs({wx, *y, wz});
-    if (*life > 0) return true;
-    strikeAt(wx, wz, 0xff8800, 4.5f);
-    return false;
-  }, [this, bomb]() { props_.erase(std::remove(props_.begin(), props_.end(), bomb), props_.end()); });
+// Air-to-ground missile: leaves the muzzle of one of the Viking's two launcher tubes (in
+// turn), runs on ahead, then dives on its target, homing on the lead enemy while it
+// lives; its blast kills within 4.5
+void Game::fireVikingMissile(glm::vec2 tgt, EnemyP e) {
+  vMissileSide_ = -vMissileSide_;
+  VMissile m;
+  // The SC2 model's launchers: the two long tubes either side of the nose, muzzles at
+  // (±0.2, 0.09, 0.91) in its normalised space (+z = nose). The procedural stand-in
+  // uses the same points.
+  m.p0 = m.p = glm::vec3(vikingMatrix() * glm::vec4(0.2f * vMissileSide_, 0.09f, 0.91f, 1));
+  m.p1 = m.p0 + glm::vec3(VM_RUN, -0.5f, 0);
+  m.tgt = tgt;
+  m.e = std::move(e);
+  vMissiles_.push_back(m);
+  for (int i = 0; i < 6; i++)   // ignition
+    emit(glow_, m.p0.x, m.p0.y, m.p0.z, -2 - rnd() * 3, (rnd() - .5f) * 1.5f, (rnd() - .5f) * 1.5f, .18f, .35f, .1f, .95f, 0xffd080, 0xff5010, 0, 2, 0);
+  audio::play("rocket");
+}
+
+void Game::updateVikingMissiles(float dt) {
+  for (size_t i = 0; i < vMissiles_.size();) {
+    VMissile& m = vMissiles_[i];
+    if (m.e && !m.e->dead) m.tgt = {m.e->pos.x, m.e->pos.z};
+    glm::vec3 prevTail = m.p - m.dir * VM_TAIL;
+    m.t = std::min(1.f, m.t + dt / VM_FLIGHT);
+    float u = m.t * (0.6f + 0.4f * m.t);   // speeds up through the dive
+    glm::vec3 p2(m.tgt.x, 0.15f, m.tgt.y);
+    m.p = (1 - u) * (1 - u) * m.p0 + 2 * (1 - u) * u * m.p1 + u * u * p2;
+    glm::vec3 d = (1 - u) * (m.p1 - m.p0) + u * (p2 - m.p1);
+    if (glm::length(d) > 1e-4f) m.dir = glm::normalize(d);
+    // smoke trail: a puff every ~0.12 along this frame's path (one per frame left a dotted line
+    // at this speed), and a few embers; the flame itself is drawn (render)
+    glm::vec3 tail = m.p - m.dir * VM_TAIL;
+    m.trail.push_back({tail, gameT_});   // the light streak: the last VM_STREAK s of the path
+    while (m.trail.size() > 2 && gameT_ - m.trail.front().w > VM_STREAK) m.trail.erase(m.trail.begin());
+    int n = std::clamp((int)std::ceil(glm::length(tail - prevTail) / 0.12f), 1, 16);
+    for (int k = 1; k <= n; k++) {
+      glm::vec3 q = prevTail + (tail - prevTail) * ((float)k / n);
+      emit(smoke_, q.x, q.y, q.z, (rnd() - .5f) * .2f, .2f, (rnd() - .5f) * .2f, .8f, .07f, .4f, .4f, 0xb0aaa0, 0x605c56, -.1f, .8f, 1);
+    }
+    if (rnd() < .5f)
+      emit(glow_, tail.x, tail.y, tail.z, -m.dir.x * 2 + (rnd() - .5f), -m.dir.y * 2 + (rnd() - .5f), -m.dir.z * 2 + (rnd() - .5f), .2f, .05f, .015f, .9f, 0xffd080, 0xc02000, 2, 1, 0);
+    if (m.t < 1) { i++; continue; }
+    glm::vec2 hit = m.tgt;
+    vMissiles_.erase(vMissiles_.begin() + i);
+    strikeAt(hit.x, hit.y, 0xff8800, 4.5f);   // may kill enemies: m is gone already
+  }
 }
 
 void Game::launchViking(std::vector<std::pair<glm::vec2, EnemyP>> targets, glm::vec2 cratePos) {
   if (vikingActive_) return;
   vikingActive_ = true;
   vikingPos_ = {-22, 5, 0};
-  // x = -22 → +22 at 14 units/s; each bomb drops as it passes its target's x,
-  // re-aimed at the lead enemy's current position
+  // x = -22 → +22 at 14 units/s; each missile leaves VM_FLIGHT s before the Viking
+  // would pass over its target, so it lands about then, homing on the lead enemy
   const float SPEED = 14, TOTAL_X = 44, START_X = -22;
   for (auto& t : targets) {
     glm::vec2 p = t.first;
     EnemyP e = t.second;
-    after(std::max(0.2f, (p.x - START_X) / SPEED), [this, p, e]() {
-      bool live = e && !e->dead;
-      dropBomb(live ? e->pos.x : p.x, live ? e->pos.z : p.y);
-    });
+    after(std::max(0.2f, (p.x - START_X) / SPEED - VM_FLIGHT), [this, p, e]() { fireVikingMissile(p, e); });
   }
   // Crate by the bunker as the Viking exits. It is promised from launch on: a wave
-  // cleared by these bombs waits for it (resupply)
+  // cleared by these missiles waits for it (resupply)
   awaitCrate([this]() { setStatus("Ammo restocked! Good hunting, Commander."); });
   // At night it drops a parachute flare that lights the battlefield (as in Beach Head)
   // (checked again when it fires: Y may have switched the cycle off meanwhile)
@@ -1017,6 +1183,8 @@ void Game::launchViking(std::vector<std::pair<glm::vec2, EnemyP>> targets, glm::
   after(TOTAL_X / SPEED + 0.4f, [this]() { removeViking(); });
 }
 void Game::removeViking() { vikingActive_ = false; }
+// Its clone's rotation replaces the template's: y = π/2 (nose +z → +x), banked
+glm::mat4 Game::vikingMatrix() const { return trs(vikingPos_, {0, PI / 2, -0.05f}); }
 void Game::updateViking(float dt) {
   if (!vikingActive_) return;
   vikingPos_.x += 14 * dt;
@@ -1067,6 +1235,7 @@ void Game::doNuke(bool force) {
   laser->mat.color = hexColor(0xff0000);
   laser->mat.transparent = true;
   laser->mat.opacity = .85f;
+  laser->mat.fog = false;
   laser->m = glm::translate(glm::mat4(1), glm::vec3(tx, 0, tz) + up * 14.f) * tilt;   // 28 long: target → sky
   // target marker: the SC2 nuke reticle (additive), or a plain red ring
   auto dot = std::make_shared<Prop>();
@@ -1082,6 +1251,7 @@ void Game::doNuke(bool force) {
     dot->mat.color = hexColor(0xff0000);
     dot->mat.doubleSide = true;
   }
+  dot->mat.fog = false;   // the reticle and the warning ring show in the dark
   dot->m = trs({tx, .05f, tz}, {-PI / 2, 0, 0});
   // the warhead streaks down the laser from the sky, nose first
   const Model* mm = models::get("nukeMissile");
@@ -1104,6 +1274,7 @@ void Game::doNuke(bool force) {
     p->mat.blend = Blend::Additive;
     p->mat.depthWrite = false;
     p->mat.opacity = op;
+    p->mat.fog = false;   // the burning trail shows out in the dark
     p->order = order;
     p->visible = false;   // until the warhead is in the air
     return p;
@@ -1123,8 +1294,14 @@ void Game::doNuke(bool force) {
   warn->mat.doubleSide = true;
   warn->mat.transparent = true;
   warn->mat.opacity = .6f;
+  warn->mat.fog = false;
   warn->m = trs({tx, .06f, tz}, {-PI / 2, 0, 0}, glm::vec3(0.1f));
-  for (auto& p : {laser, dot, missile, warn, trailGlow, trailCore, flare}) props_.push_back(p);
+  // at night the warning ring glows softly: a soft band along it, as strong as the night is dark
+  auto warnGlow = glowProp(glowRingMesh_, 0xff3018, 0, 1);
+  warnGlow->mat.map = glowTex_;
+  warnGlow->mat.doubleSide = true;
+  warnGlow->visible = true;
+  for (auto& p : {laser, dot, missile, warn, warnGlow, trailGlow, trailCore, flare}) props_.push_back(p);
 
   auto warnT = std::make_shared<float>(0.f);
   auto spin = std::make_shared<float>(0.f);
@@ -1134,6 +1311,8 @@ void Game::doNuke(bool force) {
     float prog = std::min(1.f, *warnT / WARN_DUR);
     warn->m = trs({tx, .06f, tz}, {-PI / 2, 0, 0}, glm::vec3(std::max(0.1f, prog * NUKE_RADIUS)));
     warn->mat.opacity = 0.4f + std::sin(*warnT * 12) * 0.3f;
+    warnGlow->m = trs({tx, .07f, tz}, glm::vec3(0), glm::vec3(std::max(0.1f, prog * NUKE_RADIUS)));
+    warnGlow->mat.opacity = 0.9f * dnFactor_ * (0.6f + 0.4f * std::sin(*warnT * 12));
     dot->mat.opacity = std::sin(*warnT * (6 + prog * 14)) > 0 ? 0.9f : 0.1f;
     laser->mat.opacity = 0.5f + std::sin(*warnT * 8) * 0.35f;
     // accelerating dive from the sky, lands at detonation
@@ -1166,27 +1345,21 @@ void Game::doNuke(bool force) {
     shock->mat.doubleSide = true;
     shock->mat.transparent = true;
     shock->mat.opacity = .9f;
+    shock->mat.fog = false;
     shock->m = trs({tx, .1f, tz}, {-PI / 2, 0, 0}, glm::vec3(.2f));
     beams_.push_back({shock, 1.2f, 1.2f, 1, {tx, .1f, tz}});
-    auto exp = std::make_shared<Prop>();
-    exp->mesh = expMesh_;
-    exp->mat.type = MatType::Basic;
-    exp->mat.color = hexColor(0xff4400);
-    exp->mat.transparent = true;
-    exp->mat.opacity = .92f;
-    exp->m = trs({tx, 9, tz});
-    beams_.push_back({exp, .9f, .9f, 0, {tx, 9, tz}});
-    auto fb = std::make_shared<Prop>();
-    fb->mesh = fireballMesh_;
-    fb->mat.type = MatType::Basic;
-    fb->mat.color = hexColor(0xff8800);
-    fb->mat.transparent = true;
-    fb->mat.opacity = .85f;
-    fb->m = trs({tx, 1.5f, tz});
-    beams_.push_back({fb, .7f, .7f, 0, {tx, 1.5f, tz}});
+    // the mushroom cloud of fire (it replaces the solid cone and ball the blast used to
+    // show), and the fireball's light (at night it lights the field)
+    mushrooms_.push_back({{tx, 0, tz}, 0});
+    nukeLightT_ = 0;
+    nukeLightPos_ = {tx, 3, tz};
     flash(0);
     spawnParts({tx, .5f, tz}, 0xff6600, 50);
-    explosionFx({tx, 1, tz}, 0xff4400, 4.5f);   // GPU: the mushroom of fire, dust and smoke
+    explosionFx({tx, 1, tz}, 0xff4400, 4.5f, true);   // GPU: sparks and embers (the cloud has the fire and the dust)
+    for (int i = 0; i < 40; i++) {   // black debris flung out of the blast
+      float a = rnd() * 2 * PI, v = 4 + rnd() * 7;
+      emit(smoke_, tx, .4f, tz, std::cos(a) * v, 4 + rnd() * 6, std::sin(a) * v, 1.2f + rnd() * .6f, .16f, .1f, .95f, 0x1a1410, 0x2a2018, 14, .3f, 0);
+    }
     spawnParts({tx, 3, tz}, 0xff4400, 30);
     spawnParts({tx, .5f, tz}, 0xffaa00, 25);
     int killed = 0;   // the bunker is hardened: only enemies die
@@ -1198,7 +1371,7 @@ void Game::doNuke(bool force) {
     setStatus("Nuclear detonation \xE2\x80\x94 " + std::to_string(killed) + " unit" + (killed != 1 ? "s" : "") + " annihilated. Bunker intact.");
     return false;
   }, [=, this]() {
-    for (auto& p : {laser, dot, missile, warn, flare}) props_.erase(std::remove(props_.begin(), props_.end(), p), props_.end());
+    for (auto& p : {laser, dot, missile, warn, warnGlow, flare}) props_.erase(std::remove(props_.begin(), props_.end(), p), props_.end());
     if (!*trailFading) for (auto& p : {trailGlow, trailCore}) props_.erase(std::remove(props_.begin(), props_.end(), p), props_.end());
     nukeInFlight_ = false;
   });
@@ -1493,6 +1666,27 @@ std::string Game::dayNightLabel() const {
   return std::string(dnFactor_ > 0.5f ? "\xE2\x98\xBD " : "\xE2\x98\x80 ") + phase;
 }
 
+// Top-bar countdown to the next phase of the cycle: "DUSK IN 0:42" (day), "NIGHT IN" (dusk),
+// "DAWN IN" (night), "DAY IN" (dawn)
+std::string Game::dayNightNext() const {
+  const float ends[4] = {DN_DAY, DN_DAY + DN_FADE, DN_DAY + DN_FADE + DN_NIGHT, DN_CYCLE};
+  const char* names[4] = {"DUSK", "NIGHT", "DAWN", "DAY"};
+  int k = 0;
+  while (k < 3 && dnTime_ >= ends[k]) k++;
+  float until = ends[k] - dnTime_;
+  // the label turns NIGHT / DAY at factor 0.97 / 0.03, a moment before that phase begins:
+  // then count to the one after ("NIGHT IN 0:01" under NIGHT read wrong)
+  const char* shown = dnFactor_ > 0.97f ? "NIGHT" : dnFactor_ < 0.03f ? "DAY" : "";
+  if (!strcmp(names[k], shown)) {
+    until = k < 3 ? ends[k + 1] - dnTime_ : DN_CYCLE + ends[0] - dnTime_;
+    k = (k + 1) % 4;
+  }
+  int sec = std::max(0, (int)std::ceil(until));
+  char buf[32];
+  snprintf(buf, sizeof buf, "%s IN %d:%02d", names[k], sec / 60, sec % 60);
+  return buf;
+}
+
 void Game::toggleDayNight() {
   dnEnabled_ = !dnEnabled_;
   // back to day: the night lifts over DN_SLEW s (updateDayNight — run by frame()
@@ -1513,9 +1707,18 @@ float Game::flareK() const {
   if (flareT_ < 0) return 0;
   return std::min(1.f, flareT_ / 0.4f) * std::min(1.f, (FLARE_DUR - flareT_) / 1.5f);
 }
-// The factor the lights and fog use: a flare lifts the night toward FLARE_F. The
-// top-bar label and the "is it night" tests keep the true factor (dnFactor_)
-float Game::dnLit() const { return dnFactor_ - flareK() * std::max(0.f, dnFactor_ - FLARE_F); }
+// Nuke fireball light: up in 0.08 s, full for NUKE_LIGHT_HOLD s, then cooling; 0 when none
+float Game::nukeLightK() const {
+  if (nukeLightT_ < 0) return 0;
+  float t = nukeLightT_;
+  return std::min(1.f, t / 0.08f) * (t < NUKE_LIGHT_HOLD ? 1 : std::exp(-(t - NUKE_LIGHT_HOLD) / 1.4f)) * std::min(1.f, NUKE_LIGHT_DUR - t);
+}
+// The factor the lights and fog use: a flare lifts the night toward FLARE_F, a nuke's
+// fireball toward NUKE_LIGHT_F. The top-bar label and the "is it night" tests keep the
+// true factor (dnFactor_)
+float Game::dnLit() const {
+  return dnFactor_ - std::max(flareK() * std::max(0.f, dnFactor_ - FLARE_F), nukeLightK() * std::max(0.f, dnFactor_ - NUKE_LIGHT_F));
+}
 
 void Game::startFlare() {
   flareT_ = 0;   // one already burning starts over
@@ -1875,7 +2078,7 @@ void Game::update(float dt) {
   }
   if (nukeCD_ > 0) nukeCD_ = std::max(0.f, nukeCD_ - dt);
 
-  tickScheduler(dt);   // wave countdown, Viking, bombs, nuke
+  tickScheduler(dt);   // wave countdown, Viking, its missiles, nuke
   if (phase_ != Phase::Playing) return;   // an event may have ended the game
   if (benchFire_ && shootCD_ <= 0) {   // test load: a player clicking as fast as the game allows
     EnemyP t;
@@ -2058,18 +2261,104 @@ void Game::update(float dt) {
   }
   updateMarines(dt);
   updateViking(dt);
+  updateVikingMissiles(dt);
   checkBunkerHover(dt);
   ghostSnipeTick(dt);
   updateShrike(dt);
   updateCorpses(dt);
-  updateFlare(dt);      // before the lights: they follow its strength
+  updateFlare(dt);      // before the lights: they follow its strength (and the nuke light's)
+  if (nukeLightT_ >= 0 && (nukeLightT_ += dt) >= NUKE_LIGHT_DUR) nukeLightT_ = -1;
   updateDayNight(dt);
+  updateMushrooms(dt);
   tutorialTick();
   for (FloatText& f : floatTexts_) { f.life -= dt; f.p.y += dt * 0.8f; }
   floatTexts_.erase(std::remove_if(floatTexts_.begin(), floatTexts_.end(), [](const FloatText& f) { return f.life <= 0; }), floatTexts_.end());
 }
 
+void Game::updateMushrooms(float dt) {
+  for (Mushroom& mc : mushrooms_) mc.t += dt;
+  mushrooms_.erase(std::remove_if(mushrooms_.begin(), mushrooms_.end(), [](const Mushroom& mc) { return mc.t >= MUSH_DUR; }), mushrooms_.end());
+}
+
 // ─── Render ──────────────────────────────────────────────────────────────────
+// A fixed pseudo-random value in [0, 1) per puff (the cloud keeps no per-puff state)
+static float puffHash(int i, int salt) {
+  float s = std::sin(i * 12.9898f + salt * 78.233f) * 43758.5453f;
+  return s - std::floor(s);
+}
+
+// Fire by temperature: white-hot → yellow → orange → deep red → soot
+static glm::vec3 fireRamp(float T) {
+  static const glm::vec3 c[5] = {hexColor(0x2e2420), hexColor(0x8a2a0c), hexColor(0xf06a18), hexColor(0xffb43a), hexColor(0xfff0c0)};
+  T = glm::clamp(T, 0.f, 1.f) * 4;
+  int i = std::min(3, (int)T);
+  return lerp3(c[i], c[i + 1], T - i);
+}
+
+// The mushroom cloud at its age, as soft sprites, as StarCraft II draws it: a cap of fire
+// (a rolling torus under a dome) on a fiery stem, burning white-yellow inside and orange
+// at the edges, cooling to dark red and soot; a grey dust ring surging out along the
+// ground around it. `lit` dims what has cooled to smoke with the scene's light (at night
+// it goes dark once the fireball fades); the fire is self-lit.
+static void mushroomSprites(const Mushroom& mc, float lit, std::vector<ParticleSystem::P>& smoke, std::vector<ParticleSystem::P>& fire) {
+  const float t = mc.t, g = 1 - std::exp(-t / 0.9f), spread = 1 - std::exp(-t / 1.0f);
+  const float heat = std::exp(-t / 2.8f);   // the cloud's temperature, 1 → 0
+  const float capH = 1.4f + 6.0f * g + 0.2f * t, capR = 0.9f + 2.7f * spread, tube = 0.7f + 0.9f * g, puff = 1.3f + 1.6f * g;
+  const float fade = std::min(1.f, t / 0.15f) * (1 - glm::smoothstep(MUSH_DUR - 2.5f, MUSH_DUR, t));
+  int n = 0;
+  // inner: how hot this puff burns for the cloud's temperature (1 = its core)
+  auto add = [&](glm::vec3 p, float size, float a, float inner) {
+    int i = n++;
+    float T = heat * inner * (0.9f + 0.2f * puffHash(i, 1));
+    ParticleSystem::P q{};
+    q.pos = mc.p + p;
+    q.size = size * (0.85f + 0.3f * puffHash(i, 2));
+    q.col = fireRamp(T);
+    if (T < 0.3f) q.col *= lit + (1 - lit) * T / 0.3f;   // cooled to smoke: lit by the scene
+    q.alpha = a * fade * (0.6f + 0.4f * std::min(1.f, T * 2));
+    smoke.push_back(q);
+    if (T < 0.45f) return;   // the hottest parts glow
+    q.size *= 0.6f;
+    q.col = fireRamp(std::min(1.f, T + 0.2f));
+    q.alpha = 0.5f * std::min(1.f, (T - 0.45f) / 0.55f) * fade;
+    fire.push_back(q);
+  };
+  const float PI2 = 2 * PI_F, stemTop = std::max(0.5f, capH - tube * 0.6f);
+  for (int i = 0; i < 22; i++) {   // stem: a column of fire, wider at the foot, twisting slowly
+    float f = i / 21.f, a = puffHash(i, 3) * PI2 + t * 0.7f, r = (0.12f + 0.25f * (1 - f)) * puffHash(i, 4);
+    add({std::cos(a) * r, 0.3f + f * (stemTop - 0.3f), std::sin(a) * r}, (1.2f + 0.9f * (1 - f)) * (0.6f + 0.4f * g), 0.6f, 1.05f - 0.15f * f);
+  }
+  for (int k = 0; k < 90; k++) {   // cap: the rolling torus (golden-angle offsets spread the puffs over its tube)
+    float a = PI2 * k / 90 + puffHash(k, 5) * 0.1f, phi = -t * 1.4f + k * 2.39996f, s = std::sin(phi), cph = std::cos(phi);
+    float rr = capR + tube * cph;
+    add({std::cos(a) * rr, capH + tube * 0.8f * s, std::sin(a) * rr}, puff * 0.85f, 0.55f, 0.85f + 0.2f * s - 0.1f * cph);   // the outer rim cools first
+  }
+  for (int k = 0; k < 18; k++) {   // dome and core of the cap: the hottest
+    float a = PI2 * puffHash(k, 6), r = capR * 0.7f * std::sqrt(puffHash(k, 7));
+    add({std::cos(a) * r, capH + tube * (0.2f + 0.6f * puffHash(k, 8)), std::sin(a) * r}, puff * 1.1f, 0.55f, 1.1f - 0.3f * r / std::max(capR, 0.1f));
+  }
+  // the dust ring: grey smoke rolling out along the ground, thickest at its rim, settling
+  float ringR = 1.8f + 5.0f * (1 - std::exp(-t / 0.8f)), settle = 1 - glm::smoothstep(3.f, MUSH_DUR, t);
+  for (int k = 0; k < 56; k++) {
+    float a = PI2 * k / 56 + puffHash(k, 9) * 0.1f, r = ringR + (puffHash(k, 10) - 0.5f) * 0.9f;
+    ParticleSystem::P q{};
+    q.pos = mc.p + glm::vec3(std::cos(a) * r, 0.35f + 0.3f * puffHash(k, 11), std::sin(a) * r);
+    q.size = (1.5f + 1.0f * g) * (0.8f + 0.4f * puffHash(k, 12));
+    float shade = 0.75f + 0.25f * puffHash(k, 13);
+    q.col = lerp3(hexColor(0x6a6460), hexColor(0x9a948c), shade) * lit;
+    q.alpha = 0.42f * settle * std::min(1.f, t / 0.2f);
+    smoke.push_back(q);
+  }
+  if (heat > 0.35f) {   // the white flash at the heart of the young fireball
+    ParticleSystem::P q{};
+    q.pos = mc.p + glm::vec3(0, capH * 0.8f, 0);
+    q.size = capR * 2.6f;
+    q.col = hexColor(0xfff0c0);
+    q.alpha = 0.55f * (heat - 0.35f) / 0.65f;
+    fire.push_back(q);
+  }
+}
+
 static void writeBulletMatrix(glm::mat4& m, const Bullet& b, float L) {
   float sy = b.sinY, cy = b.cosY, sp = b.sinP, cp = b.cosP;
   m[0] = {cy, 0, -sy, 0};
@@ -2133,13 +2422,13 @@ void Game::render() {
 
   // Viking (its clone's rotation replaces the template's: y = π/2, banked)
   if (vikingActive_) {
-    glm::mat4 vm = trs(vikingPos_, {0, PI / 2, -0.05f});
+    glm::mat4 vm = vikingMatrix();
     if (const Model* vk = models::get("viking"))
       for (const ModelPart& p : vk->parts) R.draw(p.mesh, &p.mat, vm, true, true);
     else for (const BakedPart& p : vikingProc_) R.draw(p.mesh, p.mat, vm, p.cast, true);
   }
 
-  // transient props (bombs, nuke visuals) and fading beams
+  // transient props (nuke visuals, the flare) and fading beams
   for (auto& p : props_) {
     if (!p->visible) continue;
     if (p->model) for (const ModelPart& mp : p->model->parts) R.draw(mp.mesh, &mp.mat, p->m, p->cast, true);
@@ -2147,20 +2436,91 @@ void Game::render() {
   }
   for (auto& b : beams_) R.draw(b.prop->mesh, &b.prop->mat, b.prop->m, false, false);
 
-  // bullets: one tracer batch, punisher grenades as their own batch
+  // bullets: one tracer batch, punisher grenades (and the Viking's missiles) as their own batch.
+  // Tracers ignore the fog; at night they run white-hot in a soft halo over a faint pool of
+  // light on the ground beneath them (a little halo by day too)
   {
-    static std::vector<Instance> tr, mi;
+    static std::vector<Instance> tr, mi, halo, pool;
     tr.clear();
     mi.clear();
+    halo.clear();
+    pool.clear();
     const Model* mm = models::get("marauderMissile");
+    const float night = dnFactor_;
+    auto addGlow = [&](const glm::mat4& m, uint32_t col) {
+      Instance h;
+      h.m = m;
+      h.c = hexColor(col);
+      halo.push_back(h);
+      if (night <= 0.01f) return;
+      Instance p = h;   // the pool: wider, flat on the ground
+      glm::vec3 f(m[2].x, 0, m[2].z);
+      float fl = glm::length(f);
+      f = fl > 1e-5f ? f / fl : glm::vec3(0, 0, 1);
+      p.m = glm::mat4(glm::vec4(-f.z * 2.4f, 0, f.x * 2.4f, 0), glm::vec4(0, 1, 0, 0), glm::vec4(f * 1.6f, 0), glm::vec4(m[3].x, 0.03f, m[3].z, 1));
+      pool.push_back(p);
+    };
     for (const Bullet& b : bullets_) {
       if (!b.alive) continue;
       Instance in;
-      if (mm && b.unit == Unit::Marauder) { writeBulletMatrix(in.m, b, 1); mi.push_back(in); continue; }
+      writeBulletMatrix(in.m, b, 1);
+      addGlow(in.m, b.color);
+      if (mm && b.unit == Unit::Marauder) { mi.push_back(in); continue; }
       writeBulletMatrix(in.m, b, b.len);
-      in.c = hexColor(b.color);
+      in.c = lerp3(hexColor(b.color), glm::vec3(1), 0.35f * night);
       tr.push_back(in);
     }
+    // Viking missiles, on their own axes (z along the flight), with the rocket's exhaust flame
+    // from the nozzle: a white-hot core in an orange glow, both tapering away, flickering
+    static std::vector<Instance> vm, flameCore, flameGlow, streakCore, streakGlow;
+    vm.clear();
+    flameCore.clear();
+    flameGlow.clear();
+    streakCore.clear();
+    streakGlow.clear();
+    int vi = 0;
+    for (const VMissile& v : vMissiles_) {
+      glm::vec3 side = std::abs(v.dir.y) < 0.99f ? glm::normalize(glm::cross(glm::vec3(0, 1, 0), v.dir)) : glm::vec3(1, 0, 0);
+      glm::vec3 up = glm::cross(v.dir, side);
+      Instance in;
+      in.m = glm::mat4(glm::vec4(side * VM_LEN, 0), glm::vec4(up * VM_LEN, 0), glm::vec4(v.dir * VM_LEN, 0), glm::vec4(v.p, 1));
+      vm.push_back(in);
+      glm::vec3 nozzle = v.p - v.dir * VM_TAIL;
+      float flick = 0.85f + 0.15f * std::sin(gameT_ * 70 + vi++ * 1.7f);
+      auto flame = [&](float len, float w) {   // trailMesh_: unit height on y, wide end (r 1) at y = -0.5
+        Instance f;
+        f.m = glm::mat4(glm::vec4(side * w, 0), glm::vec4(-v.dir * len, 0), glm::vec4(up * w, 0), glm::vec4(nozzle - v.dir * (len / 2), 1));
+        return f;
+      };
+      flameGlow.push_back(flame(0.45f * flick, 0.05f));
+      flameCore.push_back(flame(0.25f * flick, 0.02f));
+      // the light streak along its recent path: thin cylinders, dimming and narrowing with age
+      for (size_t k = 0; k + 1 < v.trail.size(); k++) {
+        glm::vec3 a(v.trail[k]), b(v.trail[k + 1]), d = b - a;
+        float L = glm::length(d);
+        if (L < 1e-4f) continue;
+        float age = gameT_ - v.trail[k + 1].w, kk = glm::clamp(1 - age / VM_STREAK, 0.f, 1.f);
+        glm::vec3 s = std::abs(d.y) < 0.99f * L ? glm::normalize(glm::cross(d, glm::vec3(0, 1, 0))) : glm::vec3(1, 0, 0);
+        glm::vec3 u = glm::normalize(glm::cross(s, d));
+        auto seg = [&](float w, uint32_t col) {
+          Instance f;
+          f.m = glm::mat4(glm::vec4(s * w, 0), glm::vec4(d, 0), glm::vec4(u * w, 0), glm::vec4((a + b) * 0.5f, 1));
+          f.c = hexColor(col) * kk;
+          return f;
+        };
+        streakGlow.push_back(seg(0.04f * (0.4f + 0.6f * kk), 0xff8a3a));
+        streakCore.push_back(seg(0.014f, 0xfff0c0));
+      }
+    }
+    R.drawInstanced(vmMesh_, &vmBodyMat_, vm.data(), (int)vm.size(), true, false);
+    R.drawInstanced(trailMesh_, &vmFlameGlowMat_, flameGlow.data(), (int)flameGlow.size(), false, false, 2);
+    R.drawInstanced(trailMesh_, &vmFlameCoreMat_, flameCore.data(), (int)flameCore.size(), false, false, 3);
+    R.drawInstanced(streakMesh_, &vmFlameGlowMat_, streakGlow.data(), (int)streakGlow.size(), false, false, 2);
+    R.drawInstanced(streakMesh_, &vmFlameCoreMat_, streakCore.data(), (int)streakCore.size(), false, false, 3);
+    tracerGlowMat_.opacity = 0.25f + 0.65f * night;
+    tracerPoolMat_.opacity = 0.3f * night;
+    R.drawInstanced(glowQuadMesh_, &tracerPoolMat_, pool.data(), (int)pool.size(), false, false, 1);
+    R.drawInstanced(glowQuadMesh_, &tracerGlowMat_, halo.data(), (int)halo.size(), false, false, 2);
     R.drawInstanced(bulletMesh_, &bulletMat_, tr.data(), (int)tr.size(), false, false);
     if (mm && !mi.empty())
       for (const ModelPart& p : mm->parts) {
@@ -2181,6 +2541,41 @@ void Game::render() {
     }
     R.drawInstanced(acidMesh_, &acidMat_, ai.data(), (int)ai.size(), false, false);
   }
+  // nuke mushroom clouds: smoke sprites back to front, the fire glowing over them
+  mushSmoke_.p.clear();
+  mushFire_.p.clear();
+  for (const Mushroom& mc : mushrooms_) mushroomSprites(mc, 1 - 0.75f * dnLightF_, mushSmoke_.p, mushFire_.p);
+  if (!mushSmoke_.p.empty()) {
+    auto viewZ = [this](const glm::vec3& p) { return view_[0][2] * p.x + view_[1][2] * p.y + view_[2][2] * p.z; };
+    std::sort(mushSmoke_.p.begin(), mushSmoke_.p.end(), [&](const ParticleSystem::P& a, const ParticleSystem::P& b) { return viewZ(a.pos) < viewZ(b.pos); });
+    R.drawParticles(&mushSmoke_, Blend::Normal, 2);
+    R.drawParticles(&mushFire_, Blend::Additive, 3);
+  }
+  // Sensor Tower at night: its range ring on the ground, and a red "!" disc lying on the ground over
+  // each Zerg out in the dark within it, upright as the camera sees it (its top away from the camera)
+  if (phase_ == Phase::Playing && sensorLvl_ >= 1) {
+    if (dnFactor_ > 0.1f) {
+      sensorRingMat_.opacity = 0.75f * dnFactor_;
+      R.draw(sensorRingMesh_[sensorLvl_], &sensorRingMat_, glm::translate(glm::mat4(1), {0, 0.03f, 0}), false, false, glm::vec3(1), 1);
+    }
+    static std::vector<Instance> bi;
+    bi.clear();
+    float pulse = 0.65f + 0.35f * std::sin(uiTime_ * 2 * PI * 1.5f);
+    // the screen's up direction on the ground: the camera's up and forward axes, flattened (no roll)
+    glm::vec2 f(view_[0][1] - view_[0][2], view_[2][1] - view_[2][2]);
+    f = glm::length(f) > 1e-4f ? glm::normalize(f) : glm::vec2(0, -1);
+    const glm::vec3 F(f.x, 0, f.y), right = glm::cross(F, glm::vec3(0, 1, 0));
+    for (auto* list : {&zerglings_, &roaches_})
+      for (auto& e : *list) {
+        if (!sensed(*e)) continue;
+        const float s = 1.4f * (0.94f + 0.06f * pulse);
+        Instance in;   // the glyph's top → F (the quad turned half a turn: its +z), its x → the screen's right
+        in.m = glm::mat4(glm::vec4(-right * s, 0), glm::vec4(0, 1, 0, 0), glm::vec4(F * s, 0), glm::vec4(e->pos.x, 0.05f, e->pos.z, 1));
+        in.c = glm::vec3(pulse);
+        bi.push_back(in);
+      }
+    R.drawInstanced(blipMesh_, &blipMat_, bi.data(), (int)bi.size(), false, false, 2);
+  }
   R.drawParticles(&smoke_, Blend::Normal, 2);   // glow over smoke
   R.drawParticles(&glow_, Blend::Additive, 3);
 
@@ -2195,6 +2590,7 @@ void Game::render() {
   sp.points[0] = {{0, 2.5f, 0}, hexColor(0xff9944), bunkerLightI_, 14, 2};   // night glow
   sp.points[1] = {muzzlePos_, hexColor(0xffb060), muzzleI_, 4.5f, 2};        // muzzle flash on the hull
   sp.points[2] = {firePos_, hexColor(0xff6a1a), fireI_, 6, 2};              // the bunker burns
+  sp.points[3] = {nukeLightPos_, hexColor(0xffa050), nukeLightK() * (1 + 3 * dnFactor_), 30, 1.5f};   // a nuke's fireball (strongest at night)
   sp.fogColor = fogCol_;
   sp.fogNear = fogNear_;
   sp.fogFar = fogFar_;
@@ -2254,7 +2650,7 @@ void Game::frame(float dt) {
 
 // ─── Start / game over ───────────────────────────────────────────────────────
 void Game::clearEntities() {
-  clearScheduler();   // drop pending wave countdown / Viking / bombs / nuke (runs their cleanup)
+  clearScheduler();   // drop pending wave countdown / Viking / missile launches / nuke (runs their cleanup)
   removeViking();
   crateCbs_.clear();   // the crate on its way went with the Viking / marines; a stale wait would stall the next game
   waveCrates_ = 0;
@@ -2280,7 +2676,10 @@ void Game::clearEntities() {
   spawnQueue_.clear();
   corpses_.clear();
   acids_.clear();
-  endFlare();   // the flare goes with the scene: the lights return to the true day / night
+  vMissiles_.clear();
+  mushrooms_.clear();
+  nukeLightT_ = -1;
+  endFlare();   // the flare and the nuke light go with the scene: the lights return to the true day / night
   applyDNLights(dnFactor_);
   props_.clear();
 }

@@ -50,15 +50,31 @@ closes it. HOW TO PLAY on the title has the rules on one card. What has been see
 The day/night cycle (Y, or Menu → Settings) runs day 78 s → dusk 24 s → night 54 s → dawn 24 s, eased with a
 smootherstep: the old curve jumped from full night back to day in one frame at the end of dusk. The fog radius
 shrinks geometrically (90 → 9) so the night closes in evenly, the sun turns orange on the way, enemy HP bars fade
-with the fog, and switching the cycle off lifts the night over 2.5 s, also behind the menu and title.
+with the fog, and switching the cycle off lifts the night over 2.5 s, also behind the menu and title. The top bar
+shows the phase and the countdown to the next one (`☀ DAY  DUSK IN 0:42`, then `NIGHT IN`, `DAWN IN`, `DAY IN`).
+
+Shooting in the dark: tracers ignore the fog and burn white-hot in a soft halo over a faint pool of light on the
+ground, so a volley shows where it goes past the lit edge; self-lit things (the nuke's laser, trail, reticle and
+warning ring, the Viking's missiles) show through the night too.
 
 Seeing the Zerg in the dark: the **Sensor Tower** research (roster, no unit needed, three levels) shows enemies
-beyond the lit edge (~9) within 10.75 / 12.5 / 16 of the bunker as pulsing red **!** blips — not which kind — with
-a faint ring at its range (cheat `sensor`; the icon is a placeholder glyph until the SC2 art is exported). An
-airstrike called at night drops a parachute flare 0.6 s later that lights the whole spawn ring for 7.5 s of game time.
+beyond the lit edge (~9) within 10.75 / 12.5 / 16 of the bunker as pulsing red **!** blips — not which kind —
+lying flat on the ground under them (upright as the camera sees them), inside a glowing ring at its range marked
+with 12 triangles pointing at the bunker (cheat `sensor`; the icon is a placeholder glyph until the SC2 art is
+exported). The Shrike turret engages blips as it does Zerg in the light. An airstrike called at night drops a
+parachute flare 0.6 s later that lights the whole spawn ring for 7.5 s of game time.
 
-One crate per wave: the Viking's crate is promised when it launches, so a wave its bombs clear waits for it, and
-a wave whose Viking crate already came in is refilled on the spot — a Marine fetches one crate, not two.
+The airstrike: the Viking fires one air-to-ground missile per enemy cluster from the muzzles of its two launcher
+tubes in turn (the long tubes either side of the nose); each runs ahead, then dives on its target, homing on the
+lead enemy, with an exhaust flame, a light streak and a smoke trail, and strikes as the bombs did (radius 4.5).
+
+The nuke: a mushroom cloud of fire as StarCraft II draws it — a cap rolling on a fiery stem, white-yellow inside,
+orange at the edges, cooling to dark red and soot over 7 s — with a grey dust ring surging along the ground and
+black debris. Its fireball lights the field: a warm point light, and at night the dark lifts (fog out to ~40)
+and settles back as it cools (6 s).
+
+One crate per wave: the Viking's crate is promised when it launches, so a wave its missiles clear waits for it,
+and a wave whose Viking crate already came in is refilled on the spot — a Marine fetches one crate, not two.
 
 ## What runs on which thread
 
@@ -80,10 +96,12 @@ the work is a few microseconds and waking threads costs more.
 `src/gpu_particles.*`: the CPU queues bursts; one compute pass creates the particles in a ring buffer
 (131 072 glow + 32 768 smoke), a second moves them (gravity, drag, bouncing on the ground), and the vertex
 shader reads them straight from the buffer. Used for sparks (×6 the CPU count), Zerg deaths, acid splashes, and
-explosions (fireball, sparks, embers, shockwave dust, smoke column — a nuke is ~57 000 particles). Menu →
-Settings → GPU particles; without OpenGL 4.3 the game keeps the CPU particles. Cost (RTX 3050 Ti, 1600×900,
-vsync off, averaged over the game): idle 2.99 ms on / 2.99 off; gunfire 4.10 / 3.93 ms; gunfire + 5 airstrikes
-+ 3 nukes 6.1 / 3.5 ms — the extra is pixel fill of the explosions, not simulation (CPU update stays < 0.1 ms).
+explosions (fireball, sparks, embers, shockwave dust, smoke column; a nuke only its ~30 000 sparks and embers —
+its mushroom cloud is ~250 soft sprites rebuilt on the CPU each frame, drawn with or without GPU particles).
+Menu → Settings → GPU particles; without OpenGL 4.3 the game keeps the CPU particles. Cost (RTX 3050 Ti,
+1600×900, vsync off, averaged over the game; measured before the nuke's cloud replaced its GPU fire, dust and
+smoke): idle 2.99 ms on / 2.99 off; gunfire 4.10 / 3.93 ms; gunfire + 5 airstrikes + 3 nukes 6.1 / 3.5 ms — the
+extra is pixel fill of the explosions, not simulation (CPU update stays < 0.1 ms).
 
 ## Graphics card
 

@@ -219,6 +219,24 @@ Geometry icosahedron(float r, int detail) {
 
 // ─── Mesh ────────────────────────────────────────────────────────────────────
 static std::vector<std::unique_ptr<Mesh>> g_meshes;
+static std::vector<std::unique_ptr<Texture>> g_genTextures;   // Texture::create
+
+const Texture* Texture::create(int w, int h, const uint8_t* rgba) {
+  auto t = std::make_unique<Texture>();
+  glGenTextures(1, &t->id);
+  glBindTexture(GL_TEXTURE_2D, t->id);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+  glGenerateMipmap(GL_TEXTURE_2D);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  t->w = w;
+  t->h = h;
+  g_genTextures.push_back(std::move(t));
+  return g_genTextures.back().get();
+}
 
 Mesh* Mesh::create(const Geometry& g) {
   auto m = std::make_unique<Mesh>();
@@ -316,10 +334,10 @@ uniform sampler2D uMap, uEmissiveMap, uNormalMap;
 uniform vec2 uNormalScale; uniform vec3 uTeamColor;
 uniform vec3 uCamPos, uAmbient;
 uniform vec3 uDirDir[2], uDirColor[2];
-uniform vec3 uPtPos[3], uPtColor[3]; uniform float uPtDist[3], uPtDecay[3];
+uniform vec3 uPtPos[4], uPtColor[4]; uniform float uPtDist[4], uPtDecay[4];
 uniform bool uReceiveShadow, uShadows;
 uniform sampler2DShadow uShadowMap; uniform float uShadowBias, uShadowTexel;
-uniform vec3 uFogColor; uniform float uFogNear, uFogFar;
+uniform vec3 uFogColor; uniform float uFogNear, uFogFar; uniform bool uFog;
 const float PI = 3.141592653589793;
 
 float sunShadow() {
@@ -396,7 +414,7 @@ void main() {
       rough = clamp(max(uRoughness, 0.0525), 0.0, 1.0);
     }
     vec3 direct = vec3(0.0), spec = vec3(0.0);
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
       vec3 L, col;
       if (i < 2) {
         L = uDirDir[i]; col = uDirColor[i];
@@ -420,8 +438,10 @@ void main() {
     if (uType == 1) direct *= sh;   // Lambert: the shadow mask darkens all direct light
     outC = dif * (uAmbient + direct) + spec + uEmissive * (uHasEmissiveMap ? texture(uEmissiveMap, vUV).rgb : vec3(1.0));
   }
-  float fogF = smoothstep(uFogNear, uFogFar, length(vWorld.xz));   // radial: distance from the bunker
-  outC = mix(outC, uFogColor, fogF);
+  if (uFog) {
+    float fogF = smoothstep(uFogNear, uFogFar, length(vWorld.xz));   // radial: distance from the bunker
+    outC = mix(outC, uFogColor, fogF);
+  }
   fragColor = vec4(outC, diffuse.a);
 }
 )";
@@ -614,6 +634,7 @@ void Renderer::setMaterial(const Material& m, bool receive, bool shadowsOn) {
   glUniform3fv(U(p, "uTeamColor"), 1, glm::value_ptr(m.teamColor));
   glUniform2fv(U(p, "uNormalScale"), 1, glm::value_ptr(m.normalScale));
   glUniform1i(U(p, "uReceiveShadow"), receive && shadowsOn);
+  glUniform1i(U(p, "uFog"), m.fog);
   glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, m.map ? m.map->id : whiteTex_);
   glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, m.emissiveMap ? m.emissiveMap->id : whiteTex_);
   glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, m.normalMap ? m.normalMap->id : whiteTex_);
@@ -688,18 +709,18 @@ void Renderer::render(const SceneParams& sp) {
   glm::vec3 dc[2] = {sp.sun.color * sp.sun.intensity, sp.fill.color * sp.fill.intensity};
   glUniform3fv(U(p, "uDirDir"), 2, glm::value_ptr(dd[0]));
   glUniform3fv(U(p, "uDirColor"), 2, glm::value_ptr(dc[0]));
-  glm::vec3 pp[3], pc[3];
-  float pd[3], pdec[3];
-  for (int i = 0; i < 3; i++) {
+  glm::vec3 pp[4], pc[4];
+  float pd[4], pdec[4];
+  for (int i = 0; i < 4; i++) {
     pp[i] = sp.points[i].pos;
     pc[i] = sp.points[i].color * sp.points[i].intensity;
     pd[i] = sp.points[i].distance;
     pdec[i] = sp.points[i].decay;
   }
-  glUniform3fv(U(p, "uPtPos"), 3, glm::value_ptr(pp[0]));
-  glUniform3fv(U(p, "uPtColor"), 3, glm::value_ptr(pc[0]));
-  glUniform1fv(U(p, "uPtDist"), 3, pd);
-  glUniform1fv(U(p, "uPtDecay"), 3, pdec);
+  glUniform3fv(U(p, "uPtPos"), 4, glm::value_ptr(pp[0]));
+  glUniform3fv(U(p, "uPtColor"), 4, glm::value_ptr(pc[0]));
+  glUniform1fv(U(p, "uPtDist"), 4, pd);
+  glUniform1fv(U(p, "uPtDecay"), 4, pdec);
   glUniform1i(U(p, "uShadows"), shadows);
   glUniform3fv(U(p, "uFogColor"), 1, glm::value_ptr(sp.fogColor));
   glUniform1f(U(p, "uFogNear"), sp.fogNear);

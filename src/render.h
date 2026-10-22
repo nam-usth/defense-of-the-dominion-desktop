@@ -54,6 +54,7 @@ struct Mesh {
 struct Texture {
   GLuint id = 0;
   int w = 0, h = 0;
+  static const Texture* create(int w, int h, const uint8_t* rgba);   // RGBA8 rows bottom-up, mipmapped; owned like meshes
 };
 
 enum class MatType { Standard, Lambert, Phong, Basic };
@@ -77,6 +78,7 @@ struct Material {
   Blend blend = Blend::Normal;
   bool depthWrite = true;
   bool doubleSide = false;
+  bool fog = true;                        // false: self-lit (tracers, fireballs, blips) — shows through the night fog
 };
 
 struct Instance {
@@ -101,7 +103,7 @@ struct SceneParams {
   glm::vec3 ambientColor{1};
   float ambientIntensity = 0;
   DirLight sun, fill;
-  PointLight points[3];
+  PointLight points[4];
   glm::vec3 fogColor{0};
   float fogNear = 1, fogFar = 100;
   bool shadows = true, msaa = true;

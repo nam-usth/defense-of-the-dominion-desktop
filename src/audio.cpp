@@ -225,11 +225,12 @@ bool build(const std::string& n, int64_t t, std::vector<Voice>& o) {
   else if (n == "deny") add(o, tone(t, .14, 190, 150, .09, W::Square));
   else if (n == "crate") add(o, tone(t, .16, 440, 880, .12, W::Sine));
   else if (n == "snipe") { add(o, tone(t, .25, 1600, 300, .16, W::Sine)); add(o, noise(t, .08, 3500, 3000, .16, F::Highpass)); }
+  else if (n == "rocket") { add(o, noise(t, .45, 900, 2600, .2, F::Bandpass, 1.5)); add(o, tone(t, .1, 160, 70, .12, W::Sine)); }   // Viking missile off the rail
   else return false;
   return true;
 }
 const std::map<std::string, double> MIN_GAP = {{"hit", .045}, {"bite", .22}, {"spit", .07}, {"acid", .06}, {"marine", .03}, {"marauder", .05},
-                                               {"ghost", .05}, {"shrike", .05}, {"zdie", .035}, {"rdie", .06}, {"boom", .07}};
+                                               {"ghost", .05}, {"shrike", .05}, {"zdie", .035}, {"rdie", .06}, {"boom", .07}, {"rocket", .06}};
 
 void applyMaster() { g_master.store(g_muted ? 0.f : g_volume); }
 

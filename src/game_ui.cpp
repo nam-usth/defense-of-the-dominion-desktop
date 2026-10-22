@@ -93,37 +93,11 @@ static void drawBtnBg(ImDrawList* dl, const Btn& b, const BtnStyle& st, bool ena
 }
 
 // ─── Canvas overlay: enemy HP bars, floating damage numbers, crosshair ───────
+// (the Sensor Tower's ring and blips lie on the ground in the 3D scene: Game::render)
 void Game::drawOverlayCanvas() {
   ImDrawList* dl = ImGui::GetBackgroundDrawList();
   dl->PushClipRect({canvasX_, canvasY_}, {canvasX_ + canvasW_, canvasY_ + canvasH_}, true);
   const float s = sc();
-  if (phase_ == Phase::Playing && sensorLvl_ >= 1) {
-    // Sensor Tower: at night a faint ring on the ground at its range, and a pulsing red "!"
-    // over each Zerg out in the dark within it (one marker for both kinds, no HP bar)
-    const float range = cfg::sensor_range[sensorLvl_], PI2 = 2 * 3.14159265f;
-    if (dnFactor_ > 0.1f) {
-      ImU32 rc = IM_COL32(255, 80, 60, (int)std::round(255 * 0.22f * dnFactor_));
-      float px = 0, py = 0;
-      bool prev = false;
-      for (int i = 0; i <= 64; i++) {   // segments that do not project are skipped
-        float a = i * PI2 / 64, x = 0, y = 0;
-        bool ok = project({std::cos(a) * range, 0, std::sin(a) * range}, x, y);
-        if (ok && prev) dl->AddLine({px, py}, {x, y}, rc, 1.5f * s);
-        px = x; py = y; prev = ok;
-      }
-    }
-    float pulse = 0.65f + 0.35f * std::sin(uiTime_ * PI2 * 1.5f);
-    Txt bang = TA(11, rgb(0xffd0c8, pulse), true);
-    for (auto* list : {&zerglings_, &roaches_})
-      for (auto& e : *list) {
-        if (e->dead || e->visible || std::hypot(e->pos.x, e->pos.z) > range) continue;
-        float sx, sy;
-        if (!project({e->pos.x, 0.3f, e->pos.z}, sx, sy)) continue;
-        dl->AddCircleFilled({sx, sy}, 8 * s, rgb(0xff3b2f, 0.18f * pulse), 20);
-        dl->AddCircle({sx, sy}, 8 * s, rgb(0xff3b2f, pulse), 20, 2 * s);
-        textB(dl, sx - textW("!", bang) / 2, sy + 0.36f * 11 * s, "!", bang);   // cap height centred
-      }
-  }
   if (phase_ == Phase::Playing) {
     // night: no bars beyond the fog, and fading with it in front of it, as the fog fades the enemy
     float fogRange = dnFactor_ > 0.1f ? fogFar_ : INFINITY;
@@ -320,7 +294,12 @@ void Game::drawTopBar() {
     textC(dl, rx, H / 2, rk.name, r);
     rx -= gapX;
   }
-  if (dnEnabled_) {
+  if (dnEnabled_) {   // e.g. "☀ DAY  DUSK IN 0:42": the phase, then the countdown to the next one
+    std::string next = dayNightNext();
+    Txt nt = T(12, MUTED, false, 0, true);
+    rx -= textW(next.c_str(), nt);
+    textC(dl, rx, H / 2, next.c_str(), nt);
+    rx -= 8 * s;
     std::string lbl = dayNightLabel();
     Txt d = T(12, dnFactor_ > 0.5f ? 0x8899ff : 0xffcc44, true, 1);
     rx -= textW(lbl.c_str(), d);
@@ -757,7 +736,7 @@ void Game::drawPortrait(float x0, float y0, float w, float h) {
 // ─── Command card ────────────────────────────────────────────────────────────
 struct CmdInfo { const char *t, *k, *d; };
 static const std::map<std::string, CmdInfo> CMD_INFO = {
-  {"air", {"AIRSTRIKE", "R", "A Viking bombs every enemy cluster and drops an ammo crate by the bunker \xE2\x80\x94 your reload once the magazine is empty."}},
+  {"air", {"AIRSTRIKE", "R", "A Viking fires a missile at every enemy cluster and drops an ammo crate by the bunker \xE2\x80\x94 your reload once the magazine is empty."}},
   {"stim", {"STIMPACK", "T", "Unlocked by a full Marine squad (6/6). For 11 s the Marines fire 50% faster (an extra round every other volley, no extra ammo). Costs 10 HP per Marine, paid by the bunker \xE2\x80\x94 free and repairing with the Super Stimpack research."}},
   {"nuke", {"NUKE", "N", "Tactical nuke on the centre of the swarm after a 2-second warning. Wipes out everything in a huge radius."}},
   {"roster", {"BUNKER ROSTER", "B", "Hire Marines, Marauders and Ghosts (6 slots) and research their upgrades. In Endless its armory sells more HP, damage, ammo and shorter strike / nuke cooldowns. The game pauses while it is open."}},
@@ -1957,7 +1936,7 @@ void Game::drawHowTo() {
   const std::pair<const char*, std::string> rows[] = {
     {"GOAL", fmt("Hold the bunker against the Zerg swarm. Campaign: clear %d waves to win \xE2\x80\x94 that unlocks Endless mode.", cfg::victory_wave)},
     {"FIRE", "Click the ground: every unit inside the bunker fires one volley at that spot, for one round. Hold the button for full auto \xE2\x80\x94 it empties the magazine fast."},
-    {"AMMO", "After each wave a Marine fetches a supply crate that refills the magazine. Out of ammo mid-wave? <kbd>R</kbd> calls a Viking: it bombs the swarm and drops an ammo crate \xE2\x80\x94 one crate covers the wave."},
+    {"AMMO", "After each wave a Marine fetches a supply crate that refills the magazine. Out of ammo mid-wave? <kbd>R</kbd> calls a Viking: it fires missiles into the swarm and drops an ammo crate \xE2\x80\x94 one crate covers the wave."},
     {"MONEY", "Kills and cleared waves pay minerals and gas. Spend them on upgrades <kbd>1</kbd>\xE2\x80\x93<kbd>4</kbd> (damage, armor, hull, ammo) and on units in the roster <kbd>B</kbd>, which pauses the game."},
     {"UNITS", "The bunker has 6 slots. Marine (1 slot): all-round. Marauder (2): locks onto the nearest Armored enemy, double damage to it. Ghost (2): bonus damage to Light, researches auto-Snipe."},
     {"POWERS", fmt("<kbd>N</kbd> nuke from wave %d. <kbd>T</kbd> Stimpack with six Marines. Bunker hull level 3: Shrike auto-turret and self-repair.", cfg::nuke_wave)},
@@ -2095,7 +2074,7 @@ static const std::vector<HintDef>& hintDefs() {
   static const std::vector<HintDef> h = {
     {"tour", nullptr, {}, "", "", ""},
     {"strike", nullptr, {"cmd-air"}, "r", "OUT OF AMMO",
-     "Call an airstrike: press <kbd>R</kbd> or click STRIKE. A Viking bombs every Zerg group and drops an ammo crate by the bunker \xE2\x80\x94 that crate is also this wave's resupply."},
+     "Call an airstrike: press <kbd>R</kbd> or click STRIKE. A Viking fires a missile at every Zerg group and drops an ammo crate by the bunker \xE2\x80\x94 that crate is also this wave's resupply."},
     {"cleared", nullptr, {"res-min", "res-gas"}, "", "WAVE CLEARED",
      "Kills and cleared waves pay minerals and vespene gas. A Marine runs out for the wave's supply crate (unless the Viking's crate already came in), the magazine is refilled, then the next wave comes. The game autosaves after every wave."},
     {"upgrade", "cleared", {"cmd-dmg", "cmd-ammo"}, "1234", "UPGRADES",
@@ -2134,7 +2113,7 @@ static const std::vector<TourDef>& tourDefs() {
 // The tour's own words for each button: shorter than the hover tooltips (CMD_INFO),
 // which name things a new player has not met yet
 static std::string tourText(const std::string& k) {
-  if (k == "air") return "When the magazine is empty: a Viking bombs every Zerg group and drops an ammo crate by the bunker.";
+  if (k == "air") return "When the magazine is empty: a Viking fires a missile at every Zerg group and drops an ammo crate by the bunker.";
   if (k == "nuke") return fmt("From wave %d (the button shows W%d until then): a nuke on the middle of the swarm wipes out everything in a huge radius. It recharges after each launch.", cfg::nuke_wave, cfg::nuke_wave);
   if (k == "roster") return "Hire Marines, Marauders and Ghosts into the bunker's 6 slots and research their upgrades. Every unit inside fires with each volley. The game pauses while it is open.";
   if (k == "view") return "Back to the overview. The mouse wheel zooms in on the bunker; INSERT / DELETE rotate the view.";
