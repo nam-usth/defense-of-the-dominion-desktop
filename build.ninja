@@ -1,0 +1,89 @@
+# Ninja build for MinGW-w64 GCC (e.g. the one shipped with Strawberry Perl).
+# Run build.ps1, or: ninja   (with gcc / g++ on PATH). Output: build/dotd.exe
+cc = gcc
+cxx = g++
+opt = -O2 -DNDEBUG
+inc = -Isrc -Ithird_party/glfw/include -Ithird_party/glfw/deps -Ithird_party/imgui -Ithird_party/imgui/backends -Ithird_party/glm -Ithird_party/cgltf -Ithird_party/stb -Ithird_party/miniaudio
+cflags = $opt $inc
+glfwflags = $opt -D_GLFW_WIN32 -DUNICODE -D_UNICODE -Ithird_party/glfw/include -Ithird_party/glfw/deps
+cxxflags = -std=c++20 $opt -Wall -Wno-unused-function $inc -DGLM_ENABLE_EXPERIMENTAL -DGLFW_INCLUDE_NONE
+ldflags = -static -mwindows
+libs = -ldxgi -lopengl32 -lgdi32 -luser32 -lshell32 -lole32 -luuid -lmfplat -lmfreadwrite -lmfuuid -lwinmm
+
+rule cc
+  command = $cc -MMD -MF $out.d $cflags -c $in -o $out
+  depfile = $out.d
+  deps = gcc
+  description = CC $in
+rule glfwcc
+  command = $cc -MMD -MF $out.d $glfwflags -c $in -o $out
+  depfile = $out.d
+  deps = gcc
+  description = CC $in
+rule cxx
+  command = $cxx -MMD -MF $out.d $cxxflags -c $in -o $out
+  depfile = $out.d
+  deps = gcc
+  description = CXX $in
+rule link
+  command = $cxx $in -o $out $ldflags $libs
+  description = LINK $out
+
+# game
+build build/obj/main.o: cxx src/main.cpp
+build build/obj/game.o: cxx src/game.cpp
+build build/obj/game_ui.o: cxx src/game_ui.cpp
+build build/obj/game_save.o: cxx src/game_save.cpp
+build build/obj/render.o: cxx src/render.cpp
+build build/obj/assets.o: cxx src/assets.cpp
+build build/obj/audio.o: cxx src/audio.cpp
+build build/obj/storage.o: cxx src/storage.cpp
+build build/obj/ui.o: cxx src/ui.cpp
+build build/obj/log.o: cxx src/log.cpp
+build build/obj/jobs.o: cxx src/jobs.cpp
+build build/obj/display.o: cxx src/display.cpp
+build build/obj/gpu_particles.o: cxx src/gpu_particles.cpp
+build build/obj/third_party_impl.o: cc src/third_party_impl.c
+
+# Dear ImGui
+build build/obj/imgui.o: cxx third_party/imgui/imgui.cpp
+build build/obj/imgui_draw.o: cxx third_party/imgui/imgui_draw.cpp
+build build/obj/imgui_tables.o: cxx third_party/imgui/imgui_tables.cpp
+build build/obj/imgui_widgets.o: cxx third_party/imgui/imgui_widgets.cpp
+build build/obj/imgui_impl_glfw.o: cxx third_party/imgui/backends/imgui_impl_glfw.cpp
+build build/obj/imgui_impl_opengl3.o: cxx third_party/imgui/backends/imgui_impl_opengl3.cpp
+
+# GLFW (Win32)
+build build/obj/glfw_context.o: glfwcc third_party/glfw/src/context.c
+build build/obj/glfw_init.o: glfwcc third_party/glfw/src/init.c
+build build/obj/glfw_input.o: glfwcc third_party/glfw/src/input.c
+build build/obj/glfw_monitor.o: glfwcc third_party/glfw/src/monitor.c
+build build/obj/glfw_platform.o: glfwcc third_party/glfw/src/platform.c
+build build/obj/glfw_vulkan.o: glfwcc third_party/glfw/src/vulkan.c
+build build/obj/glfw_window.o: glfwcc third_party/glfw/src/window.c
+build build/obj/glfw_egl_context.o: glfwcc third_party/glfw/src/egl_context.c
+build build/obj/glfw_osmesa_context.o: glfwcc third_party/glfw/src/osmesa_context.c
+build build/obj/glfw_null_init.o: glfwcc third_party/glfw/src/null_init.c
+build build/obj/glfw_null_monitor.o: glfwcc third_party/glfw/src/null_monitor.c
+build build/obj/glfw_null_window.o: glfwcc third_party/glfw/src/null_window.c
+build build/obj/glfw_null_joystick.o: glfwcc third_party/glfw/src/null_joystick.c
+build build/obj/glfw_win32_init.o: glfwcc third_party/glfw/src/win32_init.c
+build build/obj/glfw_win32_joystick.o: glfwcc third_party/glfw/src/win32_joystick.c
+build build/obj/glfw_win32_module.o: glfwcc third_party/glfw/src/win32_module.c
+build build/obj/glfw_win32_monitor.o: glfwcc third_party/glfw/src/win32_monitor.c
+build build/obj/glfw_win32_thread.o: glfwcc third_party/glfw/src/win32_thread.c
+build build/obj/glfw_win32_time.o: glfwcc third_party/glfw/src/win32_time.c
+build build/obj/glfw_win32_window.o: glfwcc third_party/glfw/src/win32_window.c
+build build/obj/glfw_wgl_context.o: glfwcc third_party/glfw/src/wgl_context.c
+
+build build/dotd.exe: link build/obj/main.o build/obj/game.o build/obj/game_ui.o build/obj/game_save.o build/obj/render.o $
+    build/obj/assets.o build/obj/audio.o build/obj/storage.o build/obj/ui.o build/obj/log.o build/obj/jobs.o build/obj/display.o build/obj/gpu_particles.o build/obj/third_party_impl.o $
+    build/obj/imgui.o build/obj/imgui_draw.o build/obj/imgui_tables.o build/obj/imgui_widgets.o build/obj/imgui_impl_glfw.o $
+    build/obj/imgui_impl_opengl3.o build/obj/glfw_context.o build/obj/glfw_init.o build/obj/glfw_input.o build/obj/glfw_monitor.o $
+    build/obj/glfw_platform.o build/obj/glfw_vulkan.o build/obj/glfw_window.o build/obj/glfw_egl_context.o $
+    build/obj/glfw_osmesa_context.o build/obj/glfw_null_init.o build/obj/glfw_null_monitor.o build/obj/glfw_null_window.o $
+    build/obj/glfw_null_joystick.o build/obj/glfw_win32_init.o build/obj/glfw_win32_joystick.o build/obj/glfw_win32_module.o $
+    build/obj/glfw_win32_monitor.o build/obj/glfw_win32_thread.o build/obj/glfw_win32_time.o build/obj/glfw_win32_window.o $
+    build/obj/glfw_wgl_context.o
+
+default build/dotd.exe
