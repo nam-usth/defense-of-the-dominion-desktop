@@ -357,8 +357,9 @@ class Game {
   bool gpuFxOn_ = true;
   bool gpuFx() const { return gpuFxOn_ && gpuFx_.ok(); }
   void setGpuFx(bool on);
-  void explosionFx(const glm::vec3& p, uint32_t col, float scale, bool nuke = false);   // Viking missiles (scale 1); the nuke: sparks and embers only
+  void explosionFx(const glm::vec3& p, uint32_t col, float scale);   // Viking missile strikes (the nuke has its mushroom cloud)
   void deathFx(const Enemy& e);
+  void bloodFx(const Enemy& e, const glm::vec3& p, float dx, float dz);   // a round hits it: a little blood along (dx, dz)
   void acidFx(const glm::vec3& p);
   void muzzleFlash(float x, float y, float z, float dx, float dz, uint32_t col, bool big);
   void render();
@@ -404,7 +405,7 @@ class Game {
   void spitAcid(Enemy& e);
   void updateAcids(float dt);
   void updateCorpses(float dt);
-  void killEnemy(const EnemyP& e, bool reward);
+  void killEnemy(const EnemyP& e, bool reward, bool splash = true);   // splash: its blood (not for a nuke: burnt)
   std::vector<EnemyP> allEnemies() const;
   Bullet makeBullet(float tx, float tz, float spread, Unit u, float ox, float oy, float oz, float ty);
   static void orientBullet(Bullet& b);

@@ -70,8 +70,13 @@ lead enemy, with an exhaust flame, a light streak and a smoke trail, and strikes
 
 The nuke: a mushroom cloud of fire as StarCraft II draws it — a cap rolling on a fiery stem, white-yellow inside,
 orange at the edges, cooling to dark red and soot over 7 s — with a grey dust ring surging along the ground and
-black debris. Its fireball lights the field: a warm point light, and at night the dark lifts (fog out to ~40)
-and settles back as it cools (6 s).
+the shockwave; nothing is flung across the field (sparks, embers and debris were hard to read and cost ~30 000
+GPU particles a blast). Its fireball lights the field: a warm point light, and at night the dark lifts (fog out
+to ~40) and settles back as it cools (6 s).
+
+A round hitting a Zerg spurts a little of its blood out the far side, instead of sparks in the round's colour
+flung up and out, which read as fireworks; a Zerg dying leaves a low splash of blood and a little smoke (not 220–450
+glowing drops and a burst of sparks), and one burnt by a nuke none.
 
 One crate per wave: the Viking's crate is promised when it launches, so a wave its missiles clear waits for it,
 and a wave whose Viking crate already came in is refilled on the spot — a Marine fetches one crate, not two.
@@ -95,12 +100,12 @@ the work is a few microseconds and waking threads costs more.
 
 `src/gpu_particles.*`: the CPU queues bursts; one compute pass creates the particles in a ring buffer
 (131 072 glow + 32 768 smoke), a second moves them (gravity, drag, bouncing on the ground), and the vertex
-shader reads them straight from the buffer. Used for sparks (×6 the CPU count), Zerg deaths, acid splashes, and
-explosions (fireball, sparks, embers, shockwave dust, smoke column; a nuke only its ~30 000 sparks and embers —
-its mushroom cloud is ~250 soft sprites rebuilt on the CPU each frame, drawn with or without GPU particles).
+shader reads them straight from the buffer. Used for sparks (×6 the CPU count), blood on hits, Zerg deaths, acid
+splashes, and Viking missile strikes (fireball, sparks, embers, shockwave dust, smoke column). The nuke uses none:
+its mushroom cloud is ~250 soft sprites rebuilt on the CPU each frame, drawn with or without GPU particles.
 Menu → Settings → GPU particles; without OpenGL 4.3 the game keeps the CPU particles. Cost (RTX 3050 Ti,
-1600×900, vsync off, averaged over the game; measured before the nuke's cloud replaced its GPU fire, dust and
-smoke): idle 2.99 ms on / 2.99 off; gunfire 4.10 / 3.93 ms; gunfire + 5 airstrikes + 3 nukes 6.1 / 3.5 ms — the
+1600×900, vsync off, averaged over the game; measured before the nuke's cloud replaced its GPU particles and
+hits spurted blood instead of sparks): idle 2.99 ms on / 2.99 off; gunfire 4.10 / 3.93 ms; gunfire + 5 airstrikes + 3 nukes 6.1 / 3.5 ms — the
 extra is pixel fill of the explosions, not simulation (CPU update stays < 0.1 ms).
 
 ## Graphics card

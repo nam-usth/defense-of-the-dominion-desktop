@@ -794,19 +794,15 @@ void Game::setGpuFx(bool on) {
 // The count lives in the small particles (sparks, embers): additive fire is
 // limited by overdraw — a first nuke with 18 000 large flames painted ~90 layers
 // over the screen (white, and ~15 ms of GPU fill per frame on a 3050 Ti).
-// The nuke keeps only the sparks and embers: its mushroom cloud draws its fire and its
-// dust ring (these bursts, at its scale, hazed the whole field and hid the cloud).
-void Game::explosionFx(const glm::vec3& p, uint32_t col, float k, bool nuke) {
+void Game::explosionFx(const glm::vec3& p, uint32_t col, float k) {
   if (!gpuFx()) return;
   using B = GpuParticles::Burst;
   const float k2 = k * k, rk = std::sqrt(k);
-  if (!nuke) {
-    B fire;   // fireball: fewer, fainter flames cooling from orange to deep red, rising
-    fire.pos = p; fire.count = (int)(300 * k2); fire.radius = .5f * k; fire.speed = 7 * k; fire.up = 1.5f * k;
-    fire.c0 = 0xffa040; fire.c1 = 0x601000; fire.a0 = .35f; fire.life0 = .3f; fire.life1 = .8f + .3f * (k - 1);
-    fire.s0 = .35f * k; fire.s1 = .12f * k; fire.grav = -1; fire.drag = 2.5f;
-    gpuFx_.burst(fire);
-  }
+  B fire;   // fireball: fewer, fainter flames cooling from orange to deep red, rising
+  fire.pos = p; fire.count = (int)(300 * k2); fire.radius = .5f * k; fire.speed = 7 * k; fire.up = 1.5f * k;
+  fire.c0 = 0xffa040; fire.c1 = 0x601000; fire.a0 = .35f; fire.life0 = .3f; fire.life1 = .8f + .3f * (k - 1);
+  fire.s0 = .35f * k; fire.s1 = .12f * k; fire.grav = -1; fire.drag = 2.5f;
+  gpuFx_.burst(fire);
   B spark;  // sparks: the bulk of the count, small, flung far
   spark.pos = p; spark.count = (int)(1200 * k2); spark.speed = 14 * k; spark.up = 2 * k;
   spark.c0 = 0xffe9a0; spark.c1 = col; spark.a0 = .9f; spark.life0 = .5f; spark.life1 = 1.2f + .2f * k;
@@ -817,7 +813,6 @@ void Game::explosionFx(const glm::vec3& p, uint32_t col, float k, bool nuke) {
   emb.c0 = 0xffc060; emb.c1 = 0xff3000; emb.a0 = .8f; emb.life0 = 1; emb.life1 = 2 + k;
   emb.s0 = .1f; emb.s1 = .04f; emb.grav = 6; emb.drag = .4f;
   gpuFx_.burst(emb);
-  if (nuke) return;
   // smoke is overdraw-bound (normal blending, large sprites): its count grows slower than the fire's
   B ring;   // shockwave dust skimming the ground
   ring.pos = {p.x, .15f, p.z}; ring.count = (int)(400 * k * rk); ring.shape = GpuParticles::Ring; ring.speed = 12 * k;
@@ -831,21 +826,49 @@ void Game::explosionFx(const glm::vec3& p, uint32_t col, float k, bool nuke) {
   gpuFx_.burst(plume);
 }
 
-// A Zerg dying: a splash of ichor that lands on the ground, and a little smoke
+// A Zerg dying: a low splash of its blood that lands on the ground, and a little smoke.
+// (220-450 glowing drops flung 3 units up, plus a burst of sparks, read as fireworks —
+// a field of them after a nuke.)
+static const uint32_t BLOOD[2][2] = {{0x3e9a2e, 0x0a2a0c}, {0xc8601e, 0x3a1200}};   // Zergling, Roach: fresh → dried
 void Game::deathFx(const Enemy& e) {
-  if (!gpuFx()) return;
   bool r = e.type == 'r';
+  const uint32_t c0 = BLOOD[r][0], c1 = BLOOD[r][1];
+  glm::vec3 p = e.pos + glm::vec3(0, .35f, 0);
+  if (!gpuFx()) {
+    for (int i = 0; i < (r ? 10 : 7); i++)
+      emit(smoke_, p.x, p.y, p.z, (rnd() - .5f) * 2.6f, .8f + rnd() * 2, (rnd() - .5f) * 2.6f, .45f + rnd() * .35f, .11f, .06f, .9f, c0, c1, 16, .8f, 0);
+    return;
+  }
   GpuParticles::Burst b;
-  b.pos = e.pos + glm::vec3(0, .4f, 0); b.count = r ? 450 : 220; b.shape = GpuParticles::Box;
-  b.vel = {0, 2, 0}; b.box = {r ? 5.f : 4.f, r ? 7.f : 6.f, r ? 5.f : 4.f}; b.radius = r ? .4f : .25f;
-  b.c0 = r ? 0xff8a30 : 0x6aff4a; b.c1 = r ? 0x3a1200 : 0x0a3a10; b.life0 = .6f; b.life1 = 1.4f;
-  b.s0 = .14f; b.s1 = .06f; b.grav = 18; b.drag = .8f;
+  b.pos = p; b.count = r ? 70 : 45; b.shape = GpuParticles::Box;
+  b.vel = {0, 1.2f, 0}; b.box = {r ? 3.f : 2.6f, r ? 3.5f : 3.f, r ? 3.f : 2.6f}; b.radius = r ? .35f : .22f;
+  b.c0 = c0; b.c1 = c1; b.a0 = .9f; b.life0 = .5f; b.life1 = 1.f;
+  b.s0 = .11f; b.s1 = .06f; b.grav = 16; b.drag = .8f; b.smoke = true;
   gpuFx_.burst(b);
   GpuParticles::Burst sm;
   sm.pos = e.pos + glm::vec3(0, .3f, 0); sm.count = r ? 40 : 24; sm.speed = 1.2f; sm.up = .6f; sm.radius = .3f;
   sm.c0 = r ? 0x4a3020 : 0x2a3a20; sm.c1 = 0x5a5a50; sm.a0 = .45f; sm.life0 = .8f; sm.life1 = 1.6f;
   sm.s0 = .4f; sm.s1 = 1.2f; sm.grav = -.6f; sm.drag = 1.5f; sm.smoke = true; sm.fade = true;
   gpuFx_.burst(sm);
+}
+
+// A round hitting a Zerg: a little of its blood spurts out the far side and falls (the
+// colours of its death splash, normal blending). Sparks in the round's colour, flung up
+// and out, read as fireworks.
+void Game::bloodFx(const Enemy& e, const glm::vec3& p, float dx, float dz) {
+  bool r = e.type == 'r';
+  const uint32_t c0 = BLOOD[r][0], c1 = BLOOD[r][1];
+  if (gpuFx()) {
+    GpuParticles::Burst b;
+    b.pos = p; b.count = r ? 16 : 12; b.shape = GpuParticles::Box; b.radius = .06f;
+    b.vel = {dx * 2.4f, .6f, dz * 2.4f}; b.box = {1.4f, 1.8f, 1.4f};
+    b.c0 = c0; b.c1 = c1; b.a0 = .9f; b.life0 = .3f; b.life1 = .55f;
+    b.s0 = .08f; b.s1 = .05f; b.grav = 14; b.drag = .6f; b.smoke = true;
+    gpuFx_.burst(b);
+    return;
+  }
+  for (int i = 0; i < 4; i++)
+    emit(smoke_, p.x, p.y, p.z, dx * 2.4f + (rnd() - .5f) * 1.4f, .6f + rnd() * 1.8f, dz * 2.4f + (rnd() - .5f) * 1.4f, .3f + rnd() * .25f, .09f, .05f, .9f, c0, c1, 14, .6f, 0);
 }
 
 // Roach acid splashing on the hull
@@ -1354,19 +1377,13 @@ void Game::doNuke(bool force) {
     nukeLightT_ = 0;
     nukeLightPos_ = {tx, 3, tz};
     flash(0);
-    spawnParts({tx, .5f, tz}, 0xff6600, 50);
-    explosionFx({tx, 1, tz}, 0xff4400, 4.5f, true);   // GPU: sparks and embers (the cloud has the fire and the dust)
-    for (int i = 0; i < 40; i++) {   // black debris flung out of the blast
-      float a = rnd() * 2 * PI, v = 4 + rnd() * 7;
-      emit(smoke_, tx, .4f, tz, std::cos(a) * v, 4 + rnd() * 6, std::sin(a) * v, 1.2f + rnd() * .6f, .16f, .1f, .95f, 0x1a1410, 0x2a2018, 14, .3f, 0);
-    }
-    spawnParts({tx, 3, tz}, 0xff4400, 30);
-    spawnParts({tx, .5f, tz}, 0xffaa00, 25);
+    // (no sparks, embers or debris flung across the field: hard to read, and ~30 000 GPU
+    // particles a blast; the cloud, its dust ring and the shockwave carry it)
     int killed = 0;   // the bunker is hardened: only enemies die
     for (auto& e : allEnemies()) {
       if (e->dead) continue;
       float dx = e->pos.x - tx, dz = e->pos.z - tz;
-      if (std::sqrt(dx * dx + dz * dz) <= NUKE_RADIUS) { killEnemy(e, true); killed++; }
+      if (std::sqrt(dx * dx + dz * dz) <= NUKE_RADIUS) { killEnemy(e, true, false); killed++; }   // burnt: no blood
     }
     setStatus("Nuclear detonation \xE2\x80\x94 " + std::to_string(killed) + " unit" + (killed != 1 ? "s" : "") + " annihilated. Bunker intact.");
     return false;
@@ -1378,12 +1395,11 @@ void Game::doNuke(bool force) {
 }
 
 // ─── Kill ────────────────────────────────────────────────────────────────────
-void Game::killEnemy(const EnemyP& e, bool reward) {
+void Game::killEnemy(const EnemyP& e, bool reward, bool splash) {
   if (e->dead) return;
   e->dead = true;
   e->slowed = false;
-  spawnParts(e->pos, e->type == 'r' ? 0xff6600 : 0x22cc44, e->type == 'r' ? 12 : 7);
-  deathFx(*e);
+  if (splash) deathFx(*e);
   audio::play(e->type == 'r' ? "rdie" : "zdie");
   if (e->pool && e->visible) {   // death animation
     if (corpses_.size() >= 80) corpses_.erase(corpses_.begin());
@@ -2239,7 +2255,8 @@ void Game::update(float dt) {
           spawnParts(e.pos, 0x4488ff, 10);
         }
       }
-      spawnParts(b.pos, def.bulletColor, 4);
+      float vl = std::max(1e-6f, std::hypot(b.vx, b.vz));
+      bloodFx(e, b.pos, b.vx / vl, b.vz / vl);
       b.alive = false;
       if (e.hp <= 0) killEnemy(hitE, true);
     }
