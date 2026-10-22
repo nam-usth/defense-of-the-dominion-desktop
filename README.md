@@ -54,14 +54,17 @@ with the fog, and switching the cycle off lifts the night over 2.5 s, also behin
 shows the phase and the countdown to the next one (`☀ DAY  DUSK IN 0:42`, then `NIGHT IN`, `DAWN IN`, `DAY IN`).
 
 Shooting in the dark: tracers ignore the fog and burn white-hot in a soft halo over a faint pool of light on the
-ground, so a volley shows where it goes past the lit edge; self-lit things (the nuke's laser, trail, reticle and
+ground, so a volley shows where it goes past the lit edge; every round from the bunker and the Shrike draws the
+same streak (1.8 × the tracer mesh), so both are as bright. Self-lit things (the nuke's laser, trail, reticle and
 warning ring, the Viking's missiles) show through the night too.
 
 Seeing the Zerg in the dark: the **Sensor Tower** research (roster, no unit needed, three levels) shows enemies
 beyond the lit edge (~9) within 10.75 / 12.5 / 16 of the bunker as pulsing red **!** blips — not which kind —
 lying flat on the ground under them (upright as the camera sees them), inside a glowing ring at its range marked
 with 12 triangles pointing at the bunker (cheat `sensor`; the icon is a placeholder glyph until the SC2 art is
-exported). The Shrike turret engages blips as it does Zerg in the light. An airstrike called at night drops a
+exported). The ring fades in when researched, crossfades on an upgrade and follows the night out; a blip fades in
+as its Zerg crosses into range and out as it nears the lit edge. The Shrike turret engages blips as it does Zerg in
+the light. An airstrike called at night drops a
 parachute flare 0.6 s later that lights the whole spawn ring for 7.5 s of game time.
 
 The airstrike: the Viking fires one air-to-ground missile per enemy cluster from the muzzles of its two launcher
@@ -81,8 +84,10 @@ glowing drops and a burst of sparks), and one burnt by a nuke none.
 One crate per wave: the Viking's crate is promised when it launches, so a wave its missiles clear waits for it,
 and a wave whose Viking crate already came in is refilled on the spot — a Marine fetches one crate, not two. At
 night the unit out on a crate run (Marine, Marauder or Ghost) wears a twin white LED pod on its chest armour:
-two small hot lamps whose beams lie on the ground ahead of it, soft fans brightest just past its feet, as the
-Marines' flashlights in StarCraft II.
+two small soft hot spots in one soft glow, and a soft pool of light on the ground ahead of it with no edge anywhere
+(it swells in past its feet, widens and dies away), as the Marines' flashlights in StarCraft II — and a real light:
+the renderer's spot light (a 40° cone, full only within 7°, aimed 12° down, fading fast with distance) lights the
+hull, the Zerg and the rocks it faces.
 
 ## What runs on which thread
 

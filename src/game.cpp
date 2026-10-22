@@ -59,6 +59,8 @@ static const float VM_LEN = 0.13f, VM_TAIL = 0.5f * VM_LEN;
 static const float VM_STREAK = 0.25f;   // its light streak covers the last this-many seconds of the path
 // A crate runner's chest lamps: height as a share of its model's height, ahead of its centre, apart from the middle
 static const float LAMP_CHEST = 0.62f, LAMP_FRONT = 0.22f, LAMP_SPACING = 0.07f;
+static const float LAMP_TILT = 0.21f;   // its spot light aims this far below level (12°): the ground ahead and a wall it faces; flatter, the cone's near rim spreads far over the ground (soft)
+static const float SENSOR_RING_FADE = 0.35f;   // s: the radar ring's fade time constant (~1 s to show or hide)
 
 static float angDiff(float a, float b) { return std::atan2(std::sin(a - b), std::cos(a - b)); }
 static glm::vec3 lerp3(const glm::vec3& a, const glm::vec3& b, float t) { return a + (b - a) * t; }
@@ -350,41 +352,41 @@ void Game::buildNightFx() {
     m->doubleSide = true;
     m->fog = false;   // they glow in the dark
   }
-  // a lamp's beam on the ground: a fan (narrow at z = 0, the lamp's end, wide at z = 1), its
-  // light brightest just past the start and fading out along and across it
+  // a lamp's light on the ground: a soft pool stretched ahead of it, no edge anywhere — across,
+  // a Gaussian that widens with distance (0.25 → 0.85 of the half-width); along, it swells in
+  // over the first quarter and dies away toward the far end (a fan with a tip and straight
+  // sides read as sharp rays)
   {
     const int W = 64, H = 128;
     std::vector<uint8_t> px(W * H * 4);
     for (int j = 0; j < H; j++)
       for (int i = 0; i < W; i++) {
-        float u = (i + .5f) / W, v = (j + .5f) / H, e = std::abs(u - 0.5f) * 2;
-        float along = glm::smoothstep(0.f, 0.08f, v) * std::pow(1 - v, 1.4f);
-        float across = (1 - glm::smoothstep(0.3f, 1.f, e)) * (0.7f + 0.3f * (1 - e));   // soft-edged, as SC2's flashlights
+        float x = (i + .5f) / W * 2 - 1, v = (j + .5f) / H, w = 0.25f + 0.6f * v;
+        float along = glm::smoothstep(0.f, 0.25f, v) * (1 - v) * (1 - v);
+        float across = std::exp(-3 * (x / w) * (x / w));
         uint8_t* p = &px[(j * W + i) * 4];
         p[0] = p[1] = p[2] = 255;
         p[3] = (uint8_t)std::lround(255 * along * across);
       }
     beamTex_ = Texture::create(W, H, px.data());
-    Geometry g;   // the fan, xz plane: 0.14 wide at z = 0, 1 wide at z = 1
+    Geometry g;   // a quad in the xz plane, 1 wide on x, z from 0 (the lamp's end) to 1
     auto vtx = [&](float x, float z, float u, float v) { g.v.push_back({{x, 0, z}, {0, 1, 0}, {u, v}}); };
-    vtx(-.07f, 0, 0, 0); vtx(.5f, 1, 1, 1); vtx(.07f, 0, 1, 0);
-    vtx(-.07f, 0, 0, 0); vtx(-.5f, 1, 0, 1); vtx(.5f, 1, 1, 1);
+    vtx(-.5f, 0, 0, 0); vtx(.5f, 1, 1, 1); vtx(.5f, 0, 1, 0);
+    vtx(-.5f, 0, 0, 0); vtx(-.5f, 1, 0, 1); vtx(.5f, 1, 1, 1);
     lampBeamMesh_ = Mesh::create(g);
   }
-  for (Material* m : {&lampBeamMat_, &lampCoreMat_, &lampGlowMat_}) {
-    m->type = MatType::Basic;
-    m->transparent = true;
-    m->blend = Blend::Additive;
-    m->depthWrite = false;
-    m->fog = false;   // the lamps light the dark
-  }
+  lampBeamMat_.type = MatType::Basic;
+  lampBeamMat_.transparent = true;
+  lampBeamMat_.blend = Blend::Additive;
+  lampBeamMat_.depthWrite = false;
+  lampBeamMat_.fog = false;   // the lamps light the dark
   lampBeamMat_.map = beamTex_;
   lampBeamMat_.doubleSide = true;
   lampBeamMat_.color = hexColor(0xf2f6ff);   // white LEDs
-  lampCoreMat_.color = hexColor(0xffffff);
-  lampGlowMat_.color = hexColor(0xe8f0ff);
+  lampFx_.init(16);           // the lamps themselves: soft sprites (spheres had hard rims)
   tracerGlowMat_.map = tracerPoolMat_.map = sensorRingMat_.map = glowTex_;
   sensorRingMat_.color = hexColor(0xff503c);
+  for (Material& m : sensorRingMats_) m = sensorRingMat_;
   blipMat_.map = blipTex_;
   vmFlameGlowMat_.color = hexColor(0xff6a1a);
   vmFlameGlowMat_.opacity = .55f;
@@ -677,6 +679,17 @@ void Game::updateCorpses(float dt) {
   }
 }
 
+// Sensor Tower ring: each level's ring eases (real time: also behind the menu) toward shown —
+// the level owned, while playing, as strong as the night is dark — or hidden: it fades in when
+// researched, the levels crossfade on an upgrade, it follows the night and fades out with the game
+void Game::updateSensorRing(float dt) {
+  float k = 1 - std::exp(-dt / SENSOR_RING_FADE);
+  for (int l = 1; l <= 3; l++) {
+    float target = phase_ == Phase::Playing && sensorLvl_ == l ? dnFactor_ : 0;
+    sensorRingA_[l] += (target - sensorRingA_[l]) * k;
+  }
+}
+
 // Sensor Tower: a Zerg out in the dark within its range shows as a blip, and the Shrike may engage it
 bool Game::sensed(const Enemy& e) const {
   return sensorLvl_ >= 1 && !e.dead && !e.visible && std::hypot(e.pos.x, e.pos.z) <= cfg::sensor_range[sensorLvl_];
@@ -763,7 +776,6 @@ void Game::updateShrike(float dt) {
   for (const glm::vec3& tip : shrikeTips_) {
     float ox = cy * tip.x + sy * tip.z, oz = -sy * tip.x + cy * tip.z, oy = shrikeY_ + tip.y;
     Bullet b = makeBullet(tx, tz, 0, Unit::Marine, ox, oy, oz, aimY);
-    b.len = 1.8f;
     if (od) b.color = shrike::overdriveColor;
     bullets_.push_back(b);
     muzzleFlash(ox, oy, oz, b.vx / b.speed, b.vz / b.speed, od ? 0xff4020 : 0xffb030, false);
@@ -2415,32 +2427,44 @@ static void mushroomSprites(const Mushroom& mc, float lit, std::vector<ParticleS
 // chest armour: two small hot lamps, and their beams lying on the ground ahead of it —
 // fans brightest just past its feet, fading and widening with distance
 void Game::drawUnitLamps() {
+  lampSpot_.intensity = 0;
+  lampFx_.p.clear();
   if (dnFactor_ <= 0.02f) return;
-  static std::vector<Instance> beams, cores, glows;
-  beams.clear(); cores.clear(); glows.clear();
+  static std::vector<Instance> beams;
+  beams.clear();
+  auto sprite = [&](const glm::vec3& at, float size, float alpha, uint32_t col) {
+    ParticleSystem::P q{};
+    q.pos = at; q.size = size; q.alpha = alpha * dnFactor_; q.col = hexColor(col);
+    lampFx_.p.push_back(q);
+  };
   for (const UnitFig& m : marines_) {
     if (!m.visible) continue;
     // chest height and front of the armour (the models differ in size; the procedural marine: 1.25 tall)
     const float h = m.modelP ? m.modelP->size.y * LAMP_CHEST : 0.8f, f = m.modelP ? LAMP_FRONT : 0.2f;
     glm::mat4 g = trs(m.pos, {0, m.rotY, 0});
-    for (float side : {-1.f, 1.f}) {
-      Instance in;
-      glm::vec3 lamp(g * glm::vec4(side * LAMP_SPACING, h, f, 1));
-      in.m = trs(lamp, glm::vec3(0), glm::vec3(0.045f / 4));   // fireballMesh_: r 4
-      cores.push_back(in);
-      in.m = trs(lamp, glm::vec3(0), glm::vec3(0.16f / 4));
-      glows.push_back(in);
-      glm::vec3 start(g * glm::vec4(side * LAMP_SPACING, 0, f + 0.1f, 1));
-      in.m = trs({start.x, 0.025f, start.z}, {0, m.rotY + side * 0.06f, 0}, {3.2f, 1, 4.4f});   // a little outward
-      beams.push_back(in);
+    if (lampSpot_.intensity == 0) {   // the pod's light, a real one (one runner at a time): it lights the hull, the Zerg and the rocks it faces
+      glm::vec3 fwd(std::sin(m.rotY), 0, std::cos(m.rotY));
+      lampSpot_.pos = glm::vec3(g * glm::vec4(0, h, f, 1));
+      lampSpot_.dir = fwd * std::cos(LAMP_TILT) - glm::vec3(0, std::sin(LAMP_TILT), 0);
+      lampSpot_.color = hexColor(0xf2f6ff);
+      lampSpot_.intensity = 3.5f * dnFactor_;
+      lampSpot_.distance = 8;
+      lampSpot_.decay = 2;   // fading fast with distance
+      lampSpot_.cosOuter = std::cos(0.7f);   // 40°: a wide soft rim, so its edge blurs on the ground
+      lampSpot_.cosInner = std::cos(0.12f);  // 7°
     }
+    // the two LEDs: small soft hot spots in one soft glow
+    for (float side : {-1.f, 1.f}) sprite(glm::vec3(g * glm::vec4(side * LAMP_SPACING, h, f, 1)), 0.12f, 1, 0xffffff);
+    sprite(glm::vec3(g * glm::vec4(0, h, f, 1)), 0.6f, 0.35f, 0xe8f0ff);
+    // one pool of light on the ground for the pod (two overlapping fans drew a sharp V)
+    glm::vec3 start(g * glm::vec4(0, 0, f, 1));
+    Instance in;
+    in.m = trs({start.x, 0.025f, start.z}, {0, m.rotY, 0}, {3.6f, 1, 5.0f});
+    beams.push_back(in);
   }
-  lampBeamMat_.opacity = 0.6f * dnFactor_;
-  lampCoreMat_.opacity = dnFactor_;
-  lampGlowMat_.opacity = 0.35f * dnFactor_;
+  lampBeamMat_.opacity = 0.55f * dnFactor_;   // over the ground the spot light lights too
   R.drawInstanced(lampBeamMesh_, &lampBeamMat_, beams.data(), (int)beams.size(), false, false, 1);
-  R.drawInstanced(fireballMesh_, &lampGlowMat_, glows.data(), (int)glows.size(), false, false, 2);
-  R.drawInstanced(fireballMesh_, &lampCoreMat_, cores.data(), (int)cores.size(), false, false, 3);
+  R.drawParticles(&lampFx_, Blend::Additive, 3);
 }
 
 static void writeBulletMatrix(glm::mat4& m, const Bullet& b, float L) {
@@ -2636,16 +2660,22 @@ void Game::render() {
     R.drawParticles(&mushSmoke_, Blend::Normal, 2);
     R.drawParticles(&mushFire_, Blend::Additive, 3);
   }
-  // Sensor Tower at night: its range ring on the ground, and a red "!" disc lying on the ground over
-  // each Zerg out in the dark within it, upright as the camera sees it (its top away from the camera)
+  // Sensor Tower at night: its range ring on the ground (each level's ring at its own fade:
+  // updateSensorRing), and a red "!" disc lying on the ground over each Zerg out in the dark
+  // within it, upright as the camera sees it (its top away from the camera)
+  for (int l = 1; l <= 3; l++) {
+    if (sensorRingA_[l] < 0.003f) continue;
+    sensorRingMats_[l].opacity = 0.75f * sensorRingA_[l];
+    R.draw(sensorRingMesh_[l], &sensorRingMats_[l], glm::translate(glm::mat4(1), {0, 0.03f, 0}), false, false, glm::vec3(1), 1);
+  }
   if (phase_ == Phase::Playing && sensorLvl_ >= 1) {
-    if (dnFactor_ > 0.1f) {
-      sensorRingMat_.opacity = 0.75f * dnFactor_;
-      R.draw(sensorRingMesh_[sensorLvl_], &sensorRingMat_, glm::translate(glm::mat4(1), {0, 0.03f, 0}), false, false, glm::vec3(1), 1);
-    }
     static std::vector<Instance> bi;
     bi.clear();
     float pulse = 0.65f + 0.35f * std::sin(uiTime_ * 2 * PI * 1.5f);
+    // the blips come in with the ring (fresh research), and each fades in as it crosses into
+    // range and out as it nears the lit edge (where its Zerg appears) instead of popping
+    const float blipsA = glm::clamp(sensorRingA_[sensorLvl_] / std::max(0.1f, dnFactor_), 0.f, 1.f);
+    const float range = cfg::sensor_range[sensorLvl_], lit = fogFar_ * 1.05f;   // e.visible's edge (update)
     // the screen's up direction on the ground: the camera's up and forward axes, flattened (no roll)
     glm::vec2 f(view_[0][1] - view_[0][2], view_[2][1] - view_[2][2]);
     f = glm::length(f) > 1e-4f ? glm::normalize(f) : glm::vec2(0, -1);
@@ -2653,10 +2683,13 @@ void Game::render() {
     for (auto* list : {&zerglings_, &roaches_})
       for (auto& e : *list) {
         if (!sensed(*e)) continue;
+        float d = std::hypot(e->pos.x, e->pos.z);
+        float a = blipsA * glm::smoothstep(lit, lit + 0.8f, d) * (1 - glm::smoothstep(range - 0.8f, range, d));
+        if (a < 0.01f) continue;
         const float s = 1.4f * (0.94f + 0.06f * pulse);
         Instance in;   // the glyph's top → F (the quad turned half a turn: its +z), its x → the screen's right
         in.m = glm::mat4(glm::vec4(-right * s, 0), glm::vec4(0, 1, 0, 0), glm::vec4(F * s, 0), glm::vec4(e->pos.x, 0.05f, e->pos.z, 1));
-        in.c = glm::vec3(pulse);
+        in.c = glm::vec3(pulse * a);   // additive: the colour scales its light
         bi.push_back(in);
       }
     R.drawInstanced(blipMesh_, &blipMat_, bi.data(), (int)bi.size(), false, false, 2);
@@ -2676,6 +2709,7 @@ void Game::render() {
   sp.points[1] = {muzzlePos_, hexColor(0xffb060), muzzleI_, 4.5f, 2};        // muzzle flash on the hull
   sp.points[2] = {firePos_, hexColor(0xff6a1a), fireI_, 6, 2};              // the bunker burns
   sp.points[3] = {nukeLightPos_, hexColor(0xffa050), nukeLightK() * (1 + 3 * dnFactor_), 30, 1.5f};   // a nuke's fireball (strongest at night)
+  sp.spot = lampSpot_;   // a crate runner's chest lamps
   sp.fogColor = fogCol_;
   sp.fogNear = fogNear_;
   sp.fogFar = fogFar_;
@@ -2710,6 +2744,7 @@ void Game::frame(float dt) {
   update(dt);
   double t1 = glfwGetTime();
   gpuFx_.update(phase_ == Phase::Playing && !isPaused() ? dt : 0);   // spawn this frame's bursts, move the GPU particles
+  updateSensorRing(dt);
   render();
   double t2 = glfwGetTime();
   drawUI(dt);

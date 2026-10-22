@@ -96,6 +96,12 @@ struct PointLight {
   glm::vec3 color{1};
   float intensity = 0, distance = 0, decay = 1;
 };
+// A cone of light (three.js SpotLight's falloff): full inside cosInner, none past cosOuter
+struct SpotLight {
+  glm::vec3 pos{0}, dir{0, -1, 0};
+  glm::vec3 color{1};
+  float intensity = 0, distance = 0, decay = 1, cosOuter = 0.8f, cosInner = 0.9f;
+};
 
 struct SceneParams {
   glm::mat4 view{1}, proj{1};
@@ -104,6 +110,7 @@ struct SceneParams {
   float ambientIntensity = 0;
   DirLight sun, fill;
   PointLight points[4];
+  SpotLight spot;   // a crate runner's chest lamps at night
   glm::vec3 fogColor{0};
   float fogNear = 1, fogFar = 100;
   bool shadows = true, msaa = true;

@@ -88,7 +88,7 @@ struct Bullet {
   bool alive = true;
   float dist = 0, speed;
   Unit unit;
-  float len = 1;
+  float len = 1.8f;   // streak length × the tracer mesh, alike for every round (bunker and Shrike: the same brightness)
   float sinY = 0, cosY = 1, sinP = 0, cosP = 1;
 };
 
@@ -338,14 +338,18 @@ class Game {
   Mesh *glowQuadMesh_ = nullptr, *blipMesh_ = nullptr, *vmMesh_ = nullptr;   // vmMesh_: a Viking missile, unit length on +z
   Material vmBodyMat_;
   ParticleSystem mushSmoke_, mushFire_;   // the mushroom clouds' sprites, rebuilt every frame (not simulated)
-  Material tracerGlowMat_, tracerPoolMat_, blipMat_, sensorRingMat_;
+  Material tracerGlowMat_, tracerPoolMat_, blipMat_, sensorRingMat_, sensorRingMats_[4];   // sensorRingMats_: per level (their fades differ)
+  float sensorRingA_[4] = {};   // each level's ring opacity (updateSensorRing)
+  void updateSensorRing(float dt);
   Mesh* sensorRingMesh_[4] = {};   // per Sensor Tower level: the range ring with its 12 triangles
   Mesh* glowRingMesh_ = nullptr;   // a soft band along a unit circle (xz plane)
   // a crate runner's chest lamps at night (white LED pod) and their beams on the ground
   const Texture* beamTex_ = nullptr;
   Mesh* lampBeamMesh_ = nullptr;
-  Material lampBeamMat_, lampCoreMat_, lampGlowMat_;
+  Material lampBeamMat_;
+  ParticleSystem lampFx_;   // the lamps themselves, soft sprites rebuilt every frame
   void drawUnitLamps();
+  SpotLight lampSpot_;   // their light (drawUnitLamps sets it, the scene uses it)
   void buildNightFx();
   bool sensed(const Enemy& e) const;   // a Zerg out in the dark within the Sensor Tower's range
   std::vector<Mushroom> mushrooms_;

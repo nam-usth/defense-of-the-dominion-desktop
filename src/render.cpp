@@ -335,6 +335,7 @@ uniform vec2 uNormalScale; uniform vec3 uTeamColor;
 uniform vec3 uCamPos, uAmbient;
 uniform vec3 uDirDir[2], uDirColor[2];
 uniform vec3 uPtPos[4], uPtColor[4]; uniform float uPtDist[4], uPtDecay[4];
+uniform vec3 uSpPos, uSpDir, uSpColor; uniform float uSpDist, uSpDecay; uniform vec2 uSpCos;   // cos outer, inner
 uniform bool uReceiveShadow, uShadows;
 uniform sampler2DShadow uShadowMap; uniform float uShadowBias, uShadowTexel;
 uniform vec3 uFogColor; uniform float uFogNear, uFogFar; uniform bool uFog;
@@ -414,12 +415,12 @@ void main() {
       rough = clamp(max(uRoughness, 0.0525), 0.0, 1.0);
     }
     vec3 direct = vec3(0.0), spec = vec3(0.0);
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 7; i++) {   // 2 directional, 4 point, 1 spot
       vec3 L, col;
       if (i < 2) {
         L = uDirDir[i]; col = uDirColor[i];
         if (i == 0 && uType != 1) col *= sh;
-      } else {
+      } else if (i < 6) {
         int k = i - 2;
         vec3 lv = uPtPos[k] - vWorld;
         float d = length(lv);
@@ -427,6 +428,13 @@ void main() {
         float att = 1.0;
         if (uPtDist[k] > 0.0 && uPtDecay[k] > 0.0) att = pow(clamp(1.0 - d / uPtDist[k], 0.0, 1.0), uPtDecay[k]);
         col = uPtColor[k] * att;
+      } else {
+        if (dot(uSpColor, uSpColor) == 0.0) continue;
+        vec3 lv = uSpPos - vWorld;
+        float d = length(lv);
+        L = lv / max(d, 1e-5);
+        float att = uSpDist > 0.0 ? pow(clamp(1.0 - d / uSpDist, 0.0, 1.0), uSpDecay) : 1.0;
+        col = uSpColor * att * smoothstep(uSpCos.x, uSpCos.y, dot(-L, uSpDir));
       }
       if (dot(col, col) == 0.0) continue;
       float dNL = clamp(dot(N, L), 0.0, 1.0);
@@ -721,6 +729,13 @@ void Renderer::render(const SceneParams& sp) {
   glUniform3fv(U(p, "uPtColor"), 4, glm::value_ptr(pc[0]));
   glUniform1fv(U(p, "uPtDist"), 4, pd);
   glUniform1fv(U(p, "uPtDecay"), 4, pdec);
+  glm::vec3 spc = sp.spot.color * sp.spot.intensity, spd = glm::length(sp.spot.dir) > 0 ? glm::normalize(sp.spot.dir) : glm::vec3(0, -1, 0);
+  glUniform3fv(U(p, "uSpPos"), 1, glm::value_ptr(sp.spot.pos));
+  glUniform3fv(U(p, "uSpDir"), 1, glm::value_ptr(spd));
+  glUniform3fv(U(p, "uSpColor"), 1, glm::value_ptr(spc));
+  glUniform1f(U(p, "uSpDist"), sp.spot.distance);
+  glUniform1f(U(p, "uSpDecay"), sp.spot.decay);
+  glUniform2f(U(p, "uSpCos"), sp.spot.cosOuter, sp.spot.cosInner);
   glUniform1i(U(p, "uShadows"), shadows);
   glUniform3fv(U(p, "uFogColor"), 1, glm::value_ptr(sp.fogColor));
   glUniform1f(U(p, "uFogNear"), sp.fogNear);
