@@ -341,6 +341,11 @@ class Game {
   Material tracerGlowMat_, tracerPoolMat_, blipMat_, sensorRingMat_;
   Mesh* sensorRingMesh_[4] = {};   // per Sensor Tower level: the range ring with its 12 triangles
   Mesh* glowRingMesh_ = nullptr;   // a soft band along a unit circle (xz plane)
+  // a crate runner's chest lamps at night (white LED pod) and their beams on the ground
+  const Texture* beamTex_ = nullptr;
+  Mesh* lampBeamMesh_ = nullptr;
+  Material lampBeamMat_, lampCoreMat_, lampGlowMat_;
+  void drawUnitLamps();
   void buildNightFx();
   bool sensed(const Enemy& e) const;   // a Zerg out in the dark within the Sensor Tower's range
   std::vector<Mushroom> mushrooms_;

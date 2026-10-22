@@ -79,7 +79,10 @@ flung up and out, which read as fireworks; a Zerg dying leaves a low splash of b
 glowing drops and a burst of sparks), and one burnt by a nuke none.
 
 One crate per wave: the Viking's crate is promised when it launches, so a wave its missiles clear waits for it,
-and a wave whose Viking crate already came in is refilled on the spot — a Marine fetches one crate, not two.
+and a wave whose Viking crate already came in is refilled on the spot — a Marine fetches one crate, not two. At
+night the unit out on a crate run (Marine, Marauder or Ghost) wears a twin white LED pod on its chest armour:
+two small hot lamps whose beams lie on the ground ahead of it, soft fans brightest just past its feet, as the
+Marines' flashlights in StarCraft II.
 
 ## What runs on which thread
 

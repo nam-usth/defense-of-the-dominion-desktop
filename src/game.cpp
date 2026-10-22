@@ -57,6 +57,8 @@ static const float VM_FLIGHT = 0.6f, VM_RUN = 4;
 // its length (a tenth of the punisher grenade model it first borrowed, scaled 1.7) and the centre → nozzle distance
 static const float VM_LEN = 0.13f, VM_TAIL = 0.5f * VM_LEN;
 static const float VM_STREAK = 0.25f;   // its light streak covers the last this-many seconds of the path
+// A crate runner's chest lamps: height as a share of its model's height, ahead of its centre, apart from the middle
+static const float LAMP_CHEST = 0.62f, LAMP_FRONT = 0.22f, LAMP_SPACING = 0.07f;
 
 static float angDiff(float a, float b) { return std::atan2(std::sin(a - b), std::cos(a - b)); }
 static glm::vec3 lerp3(const glm::vec3& a, const glm::vec3& b, float t) { return a + (b - a) * t; }
@@ -348,6 +350,39 @@ void Game::buildNightFx() {
     m->doubleSide = true;
     m->fog = false;   // they glow in the dark
   }
+  // a lamp's beam on the ground: a fan (narrow at z = 0, the lamp's end, wide at z = 1), its
+  // light brightest just past the start and fading out along and across it
+  {
+    const int W = 64, H = 128;
+    std::vector<uint8_t> px(W * H * 4);
+    for (int j = 0; j < H; j++)
+      for (int i = 0; i < W; i++) {
+        float u = (i + .5f) / W, v = (j + .5f) / H, e = std::abs(u - 0.5f) * 2;
+        float along = glm::smoothstep(0.f, 0.08f, v) * std::pow(1 - v, 1.4f);
+        float across = (1 - glm::smoothstep(0.3f, 1.f, e)) * (0.7f + 0.3f * (1 - e));   // soft-edged, as SC2's flashlights
+        uint8_t* p = &px[(j * W + i) * 4];
+        p[0] = p[1] = p[2] = 255;
+        p[3] = (uint8_t)std::lround(255 * along * across);
+      }
+    beamTex_ = Texture::create(W, H, px.data());
+    Geometry g;   // the fan, xz plane: 0.14 wide at z = 0, 1 wide at z = 1
+    auto vtx = [&](float x, float z, float u, float v) { g.v.push_back({{x, 0, z}, {0, 1, 0}, {u, v}}); };
+    vtx(-.07f, 0, 0, 0); vtx(.5f, 1, 1, 1); vtx(.07f, 0, 1, 0);
+    vtx(-.07f, 0, 0, 0); vtx(-.5f, 1, 0, 1); vtx(.5f, 1, 1, 1);
+    lampBeamMesh_ = Mesh::create(g);
+  }
+  for (Material* m : {&lampBeamMat_, &lampCoreMat_, &lampGlowMat_}) {
+    m->type = MatType::Basic;
+    m->transparent = true;
+    m->blend = Blend::Additive;
+    m->depthWrite = false;
+    m->fog = false;   // the lamps light the dark
+  }
+  lampBeamMat_.map = beamTex_;
+  lampBeamMat_.doubleSide = true;
+  lampBeamMat_.color = hexColor(0xf2f6ff);   // white LEDs
+  lampCoreMat_.color = hexColor(0xffffff);
+  lampGlowMat_.color = hexColor(0xe8f0ff);
   tracerGlowMat_.map = tracerPoolMat_.map = sensorRingMat_.map = glowTex_;
   sensorRingMat_.color = hexColor(0xff503c);
   blipMat_.map = blipTex_;
@@ -2376,6 +2411,38 @@ static void mushroomSprites(const Mushroom& mc, float lit, std::vector<ParticleS
   }
 }
 
+// At night a unit out of the bunker (on a crate run) wears a twin white LED pod on its
+// chest armour: two small hot lamps, and their beams lying on the ground ahead of it —
+// fans brightest just past its feet, fading and widening with distance
+void Game::drawUnitLamps() {
+  if (dnFactor_ <= 0.02f) return;
+  static std::vector<Instance> beams, cores, glows;
+  beams.clear(); cores.clear(); glows.clear();
+  for (const UnitFig& m : marines_) {
+    if (!m.visible) continue;
+    // chest height and front of the armour (the models differ in size; the procedural marine: 1.25 tall)
+    const float h = m.modelP ? m.modelP->size.y * LAMP_CHEST : 0.8f, f = m.modelP ? LAMP_FRONT : 0.2f;
+    glm::mat4 g = trs(m.pos, {0, m.rotY, 0});
+    for (float side : {-1.f, 1.f}) {
+      Instance in;
+      glm::vec3 lamp(g * glm::vec4(side * LAMP_SPACING, h, f, 1));
+      in.m = trs(lamp, glm::vec3(0), glm::vec3(0.045f / 4));   // fireballMesh_: r 4
+      cores.push_back(in);
+      in.m = trs(lamp, glm::vec3(0), glm::vec3(0.16f / 4));
+      glows.push_back(in);
+      glm::vec3 start(g * glm::vec4(side * LAMP_SPACING, 0, f + 0.1f, 1));
+      in.m = trs({start.x, 0.025f, start.z}, {0, m.rotY + side * 0.06f, 0}, {3.2f, 1, 4.4f});   // a little outward
+      beams.push_back(in);
+    }
+  }
+  lampBeamMat_.opacity = 0.6f * dnFactor_;
+  lampCoreMat_.opacity = dnFactor_;
+  lampGlowMat_.opacity = 0.35f * dnFactor_;
+  R.drawInstanced(lampBeamMesh_, &lampBeamMat_, beams.data(), (int)beams.size(), false, false, 1);
+  R.drawInstanced(fireballMesh_, &lampGlowMat_, glows.data(), (int)glows.size(), false, false, 2);
+  R.drawInstanced(fireballMesh_, &lampCoreMat_, cores.data(), (int)cores.size(), false, false, 3);
+}
+
 static void writeBulletMatrix(glm::mat4& m, const Bullet& b, float L) {
   float sy = b.sinY, cy = b.cosY, sp = b.sinP, cp = b.cosP;
   m[0] = {cy, 0, -sy, 0};
@@ -2434,6 +2501,7 @@ void Game::render() {
       else for (const ModelPart& p : m.modelP->parts) R.draw(p.mesh, &p.mat, w, true, true);
     } else for (const BakedPart& p : marineProc_[m.idx % 6]) R.draw(p.mesh, p.mat, g, p.cast, true);
   }
+  drawUnitLamps();
 
   for (auto& c : crates_) R.draw(c->mesh, &c->mat, c->m, false, false);
 
