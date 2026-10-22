@@ -25,6 +25,10 @@ constexpr int dmg_costs[3][2]   = {{100, 20}, {160, 32}, {256, 51}};
 constexpr int armor_costs[3][2] = {{125, 30}, {200, 48}, {320, 77}};
 constexpr int hp_costs[3][2]    = {{150, 40}, {255, 68}, {434, 116}};
 constexpr int ammo_costs[3][2]  = {{80, 15}, {130, 25}, {200, 40}};
+// Sensor Tower research: at night, Zerg in the dark within this range of the bunker show as radar blips.
+// Per level (0 = not researched); the night's lit edge is ~9, so the band beyond it doubles: +1.75, +3.5, +7
+constexpr float sensor_range[4] = {0, 10.75f, 12.5f, 16};
+constexpr int sensor_costs[3][2] = {{100, 25}, {175, 50}, {275, 100}};
 }  // namespace cfg
 
 // ─── ASSET PATHS ─────────────────────────────────────────────────────────────
@@ -137,6 +141,8 @@ constexpr const char* ammo[4] = {UI_DIR "btn-upgrade-terran-magrailmunitions.png
 constexpr const char* superstim = UI_DIR "btn-upgrade-terran-superstimppack.png";
 constexpr const char* concussive = UI_DIR "btn-upgrade-terran-explosiveshrapnelshells.png";
 constexpr const char* snipe = UI_DIR "btn-upgrade-terran-ui-lazertargetingsystem.png";
+// Sensor Tower: no PNG yet — the "sensor" stroke glyph (ui.cpp) stands in until
+// btn-building-terran-sensortower.png is exported
 constexpr const char* armor = UI_DIR "btn-upgrade-terran-buildingarmor.png";
 constexpr const char* neosteel = UI_DIR "btn-upgrade-terran-neosteelframe.png";
 constexpr const char* fleet = UI_DIR "btn-progression-hornerhan-5-fleetcalldown.png";

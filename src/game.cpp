@@ -38,6 +38,9 @@ const uint32_t overdriveColor = 0xff2a1a;
 static const float DN_DAY = 78, DN_FADE = 24, DN_NIGHT = 54, DN_CYCLE = DN_DAY + DN_FADE + DN_NIGHT + DN_FADE;
 static const float DN_SLEW = 2.5f;   // turning the cycle on / off blends over at most this many seconds
 static const float DN_NIGHT_FOG_NEAR = 2.5f, DN_NIGHT_FOG_FAR = 9.0f, DN_DAY_FOG_NEAR = 45, DN_DAY_FOG_FAR = 90;
+// Viking flare: burns FLARE_DUR s of game time and lifts the night to FLARE_F at full
+// strength (fog far ≈ 21.6: the whole spawn ring shows)
+static const float FLARE_DUR = 7.5f, FLARE_F = 0.62f;
 static const float FIRE_HP = 0.5f;
 static const float FIRE_SPOTS_XZ[6][2] = {{0.55f, 0.35f}, {-0.6f, -0.3f}, {0.1f, -0.8f}, {-0.4f, 0.75f}, {0.95f, -0.35f}, {-1.0f, 0.15f}};
 static const float NUKE_RADIUS = 16, WARN_DUR = 2.0f;
@@ -1004,6 +1007,9 @@ void Game::launchViking(std::vector<std::pair<glm::vec2, EnemyP>> targets, glm::
   // Crate by the bunker as the Viking exits. It is promised from launch on: a wave
   // cleared by these bombs waits for it (resupply)
   awaitCrate([this]() { setStatus("Ammo restocked! Good hunting, Commander."); });
+  // At night it drops a parachute flare that lights the battlefield (as in Beach Head)
+  // (checked again when it fires: Y may have switched the cycle off meanwhile)
+  if (dnEnabled_ && dnFactor_ > 0.5f) after(0.6f, [this]() { if (dnEnabled_ && dnFactor_ > 0.5f) startFlare(); });
   after((22 - START_X) / SPEED * 0.85f, [this, cratePos]() {
     setStatus("Crate deployed! Marine incoming...");
     deliverCrate(cratePos.x, cratePos.y);
@@ -1439,6 +1445,7 @@ struct GfxLights { uint32_t ambCol; float amb, sun, fill; };
 static const GfxLights GFX_HIGH = {0x99aabb, 0.7f, 1.8f, 0.5f}, GFX_LOW = {0xaaaaaa, 1.0f, 1.1f, 0};
 
 void Game::applyDNLights(float f) {
+  dnLightF_ = f;
   const GfxLights& b = gfxHigh_ ? GFX_HIGH : GFX_LOW;
   ambCol_ = lerp3(hexColor(b.ambCol), hexColor(0x112233), f);
   ambI_ = b.amb * (1 - f) + 0.18f * f;
@@ -1473,8 +1480,10 @@ void Game::updateDayNight(float dt) {
   // Slew-limited: the cycle itself moves slower than this, so only switching
   // the cycle on / off is blended (the night lifts over DN_SLEW s, not at once)
   float step = dt / DN_SLEW;
-  float f = std::max(dnFactor_ - step, std::min(dnFactor_ + step, target));
-  if (f != dnFactor_) { dnFactor_ = f; applyDNLights(f); }
+  dnFactor_ = std::max(dnFactor_ - step, std::min(dnFactor_ + step, target));
+  // the lights follow the factor lifted by a flare: re-applied also as one lights up or burns out
+  float lit = dnLit();
+  if (lit != dnLightF_) applyDNLights(lit);
 }
 
 // Top-bar label (a night still lifting after the cycle restarted at day reads DAWN)
@@ -1495,7 +1504,64 @@ void Game::setDayNightTime(float t) {   // test: the cycle on at t seconds, ligh
   dnEnabled_ = true;
   dnTime_ = std::fmod(std::max(0.f, t), DN_CYCLE);
   dnFactor_ = dnCycleFactor(dnTime_);
-  applyDNLights(dnFactor_);
+  applyDNLights(dnLit());
+}
+
+// ─── Viking flare (night airstrikes) ─────────────────────────────────────────
+// Strength: up over 0.4 s, full, down over the last 1.5 s; 0 when none burns
+float Game::flareK() const {
+  if (flareT_ < 0) return 0;
+  return std::min(1.f, flareT_ / 0.4f) * std::min(1.f, (FLARE_DUR - flareT_) / 1.5f);
+}
+// The factor the lights and fog use: a flare lifts the night toward FLARE_F. The
+// top-bar label and the "is it night" tests keep the true factor (dnFactor_)
+float Game::dnLit() const { return dnFactor_ - flareK() * std::max(0.f, dnFactor_ - FLARE_F); }
+
+void Game::startFlare() {
+  flareT_ = 0;   // one already burning starts over
+  // it hangs beyond the bunker as the camera sees it, so it is not between the two
+  glm::vec2 c(camPos_.x, camPos_.z);
+  flareDir_ = glm::length(c) > 1e-4f ? -glm::normalize(c) : glm::vec2(0, -1);
+  if (!flareCore_) {
+    auto glowProp = [&](uint32_t col, int order) {
+      auto p = std::make_shared<Prop>();
+      p->mesh = fireballMesh_;
+      p->mat.type = MatType::Basic;
+      p->mat.color = hexColor(col);
+      p->mat.transparent = true;
+      p->mat.blend = Blend::Additive;
+      p->mat.depthWrite = false;
+      p->order = order;
+      p->visible = false;   // until it is lit
+      props_.push_back(p);
+      return p;
+    };
+    flareGlow_ = glowProp(0xffd9a0, 1);
+    flareCore_ = glowProp(0xfff6d8, 2);
+  }
+  setStatus("Viking flare \xE2\x80\x94 the battlefield is lit!");
+}
+
+// Live frames only: it burns and falls in game time
+void Game::updateFlare(float dt) {
+  if (flareT_ < 0) return;
+  flareT_ += dt;
+  if (flareT_ >= FLARE_DUR) { endFlare(); return; }
+  float k = flareK();
+  glm::vec2 side(-flareDir_.y, flareDir_.x), xz = flareDir_ * 2.5f + side * (0.35f * std::sin(flareT_ * 1.3f));   // sways from the centre
+  glm::vec3 p(xz.x, 11 - (11 - 6.5f) * flareT_ / FLARE_DUR, xz.y);   // drifts down under its parachute
+  flareCore_->m = trs(p, glm::vec3(0), glm::vec3(0.22f / 4));   // fireballMesh_: r 4
+  flareGlow_->m = trs(p, glm::vec3(0), glm::vec3(0.8f / 4));
+  flareCore_->mat.opacity = 0.95f * k;
+  flareGlow_->mat.opacity = 0.35f * k;
+  flareCore_->visible = flareGlow_->visible = k > 0;
+}
+
+void Game::endFlare() {
+  flareT_ = -1;
+  for (const PropP& p : {flareCore_, flareGlow_}) props_.erase(std::remove(props_.begin(), props_.end(), p), props_.end());
+  flareCore_.reset();
+  flareGlow_.reset();
 }
 
 // ─── Scheduler ───────────────────────────────────────────────────────────────
@@ -1735,6 +1801,19 @@ void Game::researchUpgrade(const std::string& key, int tier) {
     {"snipe", Unit::Ghost, "Snipe", {250, 100},
      {{{200, 80}, "Snipe Lv.1 \xE2\x80\x94 CD 8s \xE2\x86\x92 6s"}, {{320, 130}, "Snipe Lv.2 \xE2\x80\x94 CD 6s \xE2\x86\x92 4s"}, {{500, 200}, "Snipe Lv.3 \xE2\x80\x94 CD 4s \xE2\x86\x92 2.5s (MAX)"}}, 3},
   };
+  if (key == "sensor") {   // Sensor Tower: needs no unit; tier = the level owned (-1 = not researched)
+    int lvl = std::max(0, tier);
+    if (lvl >= 3) return;
+    const int* c = cfg::sensor_costs[lvl];
+    if (minerals_ < c[0] || gas_ < c[1]) { setStatus(needText(c[0], c[1])); return; }
+    minerals_ -= c[0];
+    gas_ -= c[1];
+    sensorLvl_ = lvl + 1;
+    char r[16];
+    snprintf(r, sizeof r, "%g", (double)cfg::sensor_range[sensorLvl_]);
+    setStatus("Sensor Tower lv." + std::to_string(sensorLvl_) + " \xE2\x80\x94 blips out to " + r);
+    return;
+  }
   const UD* d = nullptr;
   for (const UD& x : U) if (key == x.key) d = &x;
   if (!d) return;
@@ -1766,6 +1845,7 @@ void Game::resetRoster() {
   roster_ = {Unit::Marine, Unit::Marine};
   concussiveUnlocked_ = snipeUnlocked_ = superStimUnlocked_ = false;
   snipeLvl_ = concussiveLvl_ = 0;
+  sensorLvl_ = 0;
   snipeReady_.clear();
   syncMarines();
 }
@@ -1982,6 +2062,7 @@ void Game::update(float dt) {
   ghostSnipeTick(dt);
   updateShrike(dt);
   updateCorpses(dt);
+  updateFlare(dt);      // before the lights: they follow its strength
   updateDayNight(dt);
   tutorialTick();
   for (FloatText& f : floatTexts_) { f.life -= dt; f.p.y += dt * 0.8f; }
@@ -2199,6 +2280,8 @@ void Game::clearEntities() {
   spawnQueue_.clear();
   corpses_.clear();
   acids_.clear();
+  endFlare();   // the flare goes with the scene: the lights return to the true day / night
+  applyDNLights(dnFactor_);
   props_.clear();
 }
 

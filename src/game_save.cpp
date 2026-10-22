@@ -72,6 +72,7 @@ storage::Record Game::snapshot() const {
   r["superStimUnlocked"] = superStimUnlocked_ ? "1" : "0";
   r["concussiveLvl"] = num(concussiveLvl_);
   r["snipeLvl"] = num(snipeLvl_);
+  r["sensorLvl"] = num(sensorLvl_);
   r["armoryHp"] = num(armory_[0]);
   r["armoryDmg"] = num(armory_[1]);
   r["armoryAmmo"] = num(armory_[2]);
@@ -175,6 +176,7 @@ void Game::loadGame(bool autoSlot) {
   superStimUnlocked_ = getStr(d, "superStimUnlocked") == "1";
   concussiveLvl_ = (int)getNum(d, "concussiveLvl");
   snipeLvl_ = (int)getNum(d, "snipeLvl");
+  sensorLvl_ = std::clamp((int)getNum(d, "sensorLvl"), 0, 3);   // older saves: none (it indexes the range table)
   armory_[0] = (int)getNum(d, "armoryHp");   // HP / ammo purchases are already in maxHp / maxAmmo
   armory_[1] = (int)getNum(d, "armoryDmg");
   armory_[2] = (int)getNum(d, "armoryAmmo");
@@ -217,6 +219,7 @@ static const Cheat CHEATS[] = {
   {"terran", "+2 Marines deployed"},
   {"siege", "Damage maxed (lv3) instantly"},
   {"bunker", "HP maxed + Armor maxed instantly"},
+  {"sensor", "Sensor Tower maxed \xE2\x80\x94 blips out to 16"},
   {"zergrush", "Skip +5 waves \xE2\x80\x94 Zerg hive mind surges!"},
   {"swarm", "Spawn 10 Zerglings right now"},
   {"roachwave", "Spawn 5 Roaches right now"},
@@ -317,6 +320,7 @@ void Game::submitCheat(const std::string& raw) {
       after(i * 0.18f, [this, e]() { if (!e->dead) strikeAt(e->pos.x, e->pos.z, 0xff3300, 3); });
     }
   } else if (key == "general") { kills_ += 280; score_ += 2800; }
+  else if (key == "sensor") { sensorLvl_ = 3; setStatus("Sensor Tower maxed \xE2\x80\x94 blips out to 16"); }
   else if (key == "help") {
     cheatMsgCol_ = 0x44ff88;
     cheatMsg_.clear();

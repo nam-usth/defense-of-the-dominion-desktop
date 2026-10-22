@@ -97,6 +97,33 @@ void Game::drawOverlayCanvas() {
   ImDrawList* dl = ImGui::GetBackgroundDrawList();
   dl->PushClipRect({canvasX_, canvasY_}, {canvasX_ + canvasW_, canvasY_ + canvasH_}, true);
   const float s = sc();
+  if (phase_ == Phase::Playing && sensorLvl_ >= 1) {
+    // Sensor Tower: at night a faint ring on the ground at its range, and a pulsing red "!"
+    // over each Zerg out in the dark within it (one marker for both kinds, no HP bar)
+    const float range = cfg::sensor_range[sensorLvl_], PI2 = 2 * 3.14159265f;
+    if (dnFactor_ > 0.1f) {
+      ImU32 rc = IM_COL32(255, 80, 60, (int)std::round(255 * 0.22f * dnFactor_));
+      float px = 0, py = 0;
+      bool prev = false;
+      for (int i = 0; i <= 64; i++) {   // segments that do not project are skipped
+        float a = i * PI2 / 64, x = 0, y = 0;
+        bool ok = project({std::cos(a) * range, 0, std::sin(a) * range}, x, y);
+        if (ok && prev) dl->AddLine({px, py}, {x, y}, rc, 1.5f * s);
+        px = x; py = y; prev = ok;
+      }
+    }
+    float pulse = 0.65f + 0.35f * std::sin(uiTime_ * PI2 * 1.5f);
+    Txt bang = TA(11, rgb(0xffd0c8, pulse), true);
+    for (auto* list : {&zerglings_, &roaches_})
+      for (auto& e : *list) {
+        if (e->dead || e->visible || std::hypot(e->pos.x, e->pos.z) > range) continue;
+        float sx, sy;
+        if (!project({e->pos.x, 0.3f, e->pos.z}, sx, sy)) continue;
+        dl->AddCircleFilled({sx, sy}, 8 * s, rgb(0xff3b2f, 0.18f * pulse), 20);
+        dl->AddCircle({sx, sy}, 8 * s, rgb(0xff3b2f, pulse), 20, 2 * s);
+        textB(dl, sx - textW("!", bang) / 2, sy + 0.36f * 11 * s, "!", bang);   // cap height centred
+      }
+  }
   if (phase_ == Phase::Playing) {
     // night: no bars beyond the fog, and fading with it in front of it, as the fog fades the enemy
     float fogRange = dnFactor_ > 0.1f ? fogFar_ : INFINITY;
@@ -371,7 +398,42 @@ void Game::drawConsole(float dt) {
   // ── centre: bunker status ──
   const float cx0 = lw + 2 * s, cx1 = rx0 - 2 * s;
   gradRect(dl, {cx0, top}, {cx1, top + ch}, rgb(0x102036, 0.5f), rgb(0x060c16, 0.4f));
-  const float chipsW = (3 * 34 + 2 * 5) * s;
+  // upgrade chips: 3 columns; 4 when all ten show (Endless with all research), as the web
+  // console does — a 4th row would overflow the console
+  struct Chip { const char* id; int lvl; bool show; const char* ico; const char* tip; };
+  int en = endlessWaves();
+  bool anyArmory = armory_[0] || armory_[1] || armory_[2] || armory_[3];
+  bool od = shrikeOverdrive();
+  std::string endTip;
+  if (en) endTip = fmt("Endless reinforcements \xC3\x97%d: damage +%d%%, max HP +%d, repair +%d%%, magazine +%d", en, (int)std::round(cfg::endless_dmg * en * 100),
+                       (int)(cfg::endless_hp * en), (int)std::round(cfg::endless_repair * en * 100), cfg::endless_ammo * en);
+  if (anyArmory) {
+    std::vector<std::string> b;
+    if (armory_[0]) b.push_back(fmt("+%d HP", armory_[0] * (int)cfg::armory_hp));
+    if (armory_[1]) b.push_back(fmt("+%d%% damage", (int)std::round(armory_[1] * cfg::armory_dmg * 100)));
+    if (armory_[2]) b.push_back(fmt("+%d rounds", armory_[2] * cfg::armory_ammo));
+    if (armory_[3]) b.push_back(fmt("cooldowns \xC3\x97%.2f", armoryCdMult(armory_[3])));
+    std::string j;
+    for (size_t i = 0; i < b.size(); i++) j += (i ? ", " : "") + b[i];
+    endTip += (endTip.empty() ? "" : "\n") + std::string("Armory: ") + j;
+  }
+  std::string sensorTip = fmt("Sensor Tower \xE2\x80\x94 blips out to %g", (double)cfg::sensor_range[sensorLvl_]);
+  Chip chips[] = {
+    {"dmg", dmgLvl_, true, ui_icons::dmg[dmgLvl_], "Infantry weapons"},
+    {"armor", armorLvl_, true, ui_icons::armor, "Armor"},
+    {"hp", hpLvl_, true, ui_icons::neosteel, "Bunker HP"},
+    {"ammo", ammoLvl_, true, ui_icons::ammo[ammoLvl_], "Ammo storage"},
+    {"conc", concussiveLvl_, concussiveUnlocked_, ui_icons::concussive, "Concussive Shells"},
+    {"snipe", snipeLvl_, snipeUnlocked_, ui_icons::snipe, "Snipe"},
+    {"sensor", sensorLvl_, sensorLvl_ >= 1, nullptr, sensorTip.c_str()},   // placeholder glyph, no PNG yet
+    {"superstim", 3, superStimUnlocked_, ui_icons::superstim, "Super Stimpack"},
+    {"endless", 3, en > 0 || anyArmory, nullptr, endTip.c_str()},
+    {"shrike", 3, hpLvl_ >= 3, ui_icons::shrike, od ? "Shrike overdrive \xE2\x80\x94 six Marines inside: rate of fire \xC3\x97" "2.5" : "Shrike turret \xE2\x80\x94 auto-fire, firepower of 2 marines"},
+  };
+  int nShow = 0;
+  for (auto& c : chips) nShow += c.show;
+  const int chipCols = nShow > 9 ? 4 : 3;
+  const float chipsW = (chipCols * 34 + (chipCols - 1) * 5) * s;
   float mx0 = cx0 + 14 * s, mx1 = cx1 - 14 * s - chipsW - 12 * s;
   float y = top + 9 * s;
   const Rank& rk = getRank(kills_);
@@ -508,43 +570,13 @@ void Game::drawConsole(float dt) {
     rich(dl, {mx0, y}, sv.c_str(), st);
   }
 
-  // upgrade chips (3 columns, centred vertically)
-  struct Chip { const char* id; int lvl; bool show; const char* ico; const char* tip; };
-  int en = endlessWaves();
-  bool anyArmory = armory_[0] || armory_[1] || armory_[2] || armory_[3];
-  bool od = shrikeOverdrive();
-  std::string endTip;
-  if (en) endTip = fmt("Endless reinforcements \xC3\x97%d: damage +%d%%, max HP +%d, repair +%d%%, magazine +%d", en, (int)std::round(cfg::endless_dmg * en * 100),
-                       (int)(cfg::endless_hp * en), (int)std::round(cfg::endless_repair * en * 100), cfg::endless_ammo * en);
-  if (anyArmory) {
-    std::vector<std::string> b;
-    if (armory_[0]) b.push_back(fmt("+%d HP", armory_[0] * (int)cfg::armory_hp));
-    if (armory_[1]) b.push_back(fmt("+%d%% damage", (int)std::round(armory_[1] * cfg::armory_dmg * 100)));
-    if (armory_[2]) b.push_back(fmt("+%d rounds", armory_[2] * cfg::armory_ammo));
-    if (armory_[3]) b.push_back(fmt("cooldowns \xC3\x97%.2f", armoryCdMult(armory_[3])));
-    std::string j;
-    for (size_t i = 0; i < b.size(); i++) j += (i ? ", " : "") + b[i];
-    endTip += (endTip.empty() ? "" : "\n") + std::string("Armory: ") + j;
-  }
-  Chip chips[] = {
-    {"dmg", dmgLvl_, true, ui_icons::dmg[dmgLvl_], "Infantry weapons"},
-    {"armor", armorLvl_, true, ui_icons::armor, "Armor"},
-    {"hp", hpLvl_, true, ui_icons::neosteel, "Bunker HP"},
-    {"ammo", ammoLvl_, true, ui_icons::ammo[ammoLvl_], "Ammo storage"},
-    {"conc", concussiveLvl_, concussiveUnlocked_, ui_icons::concussive, "Concussive Shells"},
-    {"snipe", snipeLvl_, snipeUnlocked_, ui_icons::snipe, "Snipe"},
-    {"superstim", 3, superStimUnlocked_, ui_icons::superstim, "Super Stimpack"},
-    {"endless", 3, en > 0 || anyArmory, nullptr, endTip.c_str()},
-    {"shrike", 3, hpLvl_ >= 3, ui_icons::shrike, od ? "Shrike overdrive \xE2\x80\x94 six Marines inside: rate of fire \xC3\x97" "2.5" : "Shrike turret \xE2\x80\x94 auto-fire, firepower of 2 marines"},
-  };
-  int nShow = 0;
-  for (auto& c : chips) nShow += c.show;
-  int rows = (nShow + 2) / 3;
+  // upgrade chips (centred vertically; built above, with the column count)
+  int rows = (nShow + chipCols - 1) / chipCols;
   float gx0 = cx1 - 14 * s - chipsW, gy0 = top + (ch - (rows * 34 * s + (rows - 1) * 5 * s)) / 2;
   int k = 0;
   for (auto& c : chips) {
     if (!c.show) continue;
-    float x = gx0 + (k % 3) * 39 * s, yy = gy0 + (k / 3) * 39 * s;
+    float x = gx0 + (k % chipCols) * 39 * s, yy = gy0 + (k / chipCols) * 39 * s;
     k++;
     ImVec2 a(x, yy), b(x + 34 * s, yy + 34 * s);
     bool maxed = c.lvl >= 3, active = c.lvl > 0;
@@ -563,6 +595,8 @@ void Game::drawConsole(float dt) {
         Txt nt = T(10, GOLD, false, 0, true);
         text(dl, {ctr.x - textW(n.c_str(), nt) / 2, ctr.y + 5 * s}, n.c_str(), nt);
       }
+    } else if (!strcmp(c.id, "sensor")) {   // the stroke glyph until the Sensor Tower PNG is exported
+      svgIcon(dl, "sensor", ctr, 16 * s, alpha(rgb(maxed ? GOLD : 0x9fd2ff), op));
     } else {
       float isz = (hasPips ? 18 : 24) * s;
       image(dl, icon(c.ico), {ctr.x - isz / 2, ctr.y - isz / 2}, {ctr.x + isz / 2, ctr.y + isz / 2}, IM_COL32(255, 255, 255, (int)(255 * op)));
@@ -1210,24 +1244,30 @@ void Game::drawRoster() {
   // research (2 columns)
   {
     struct R { const char* key; Unit unit; const char* name; const char* icon; int cost[2]; bool unlocked; int lvl; int tiers; int tc[3][2]; const char* desc; };
-    R rs[3] = {
+    // Sensor Tower: levels 1-3 bought in turn (the first is the research), no unit needed
+    const auto& sk = cfg::sensor_costs;
+    R rs[4] = {
       {"superstim", Unit::Marine, "Super Stimpack", ui_icons::superstim, {250, 150}, superStimUnlocked_, 0, 0, {}, "Nova's Marines: Stimpack costs no HP and repairs the bunker while it lasts (stacks with the hull's self-repair)"},
       {"concussive", Unit::Marauder, "Concussive Shell", ui_icons::concussive, {300, 75}, concussiveUnlocked_, concussiveLvl_, 3, {{250, 80}, {400, 130}, {600, 200}}, "Marauder hits slow the target to 40% speed for 2.5s \xE2\x80\x94 single target"},
       {"snipe", Unit::Ghost, "Snipe", ui_icons::snipe, {250, 100}, snipeUnlocked_, snipeLvl_, 3, {{200, 80}, {320, 130}, {500, 200}}, "Ghost auto-snipes highest-threat enemy (8s CD)"},
+      {"sensor", Unit::Marine, "Sensor Tower", nullptr, {sk[0][0], sk[0][1]}, sensorLvl_ >= 1, sensorLvl_, 3, {{sk[0][0], sk[0][1]}, {sk[1][0], sk[1][1]}, {sk[2][0], sk[2][1]}},
+       "At night, Zerg in the dark within range show as red ! blips (not which kind). Range 10.75 / 12.5 / 16; the lit area reaches about 9."},
     };
     float cw = (iw - 8 * s) / 2;
     float rowY = y, rowH = 0;
-    for (int k = 0; k < 3; k++) {
+    for (int k = 0; k < 4; k++) {
       R& r = rs[k];
+      bool sensor = !strcmp(r.key, "sensor");
       float x = x0 + (k % 2) * (cw + 8 * s);
-      if (k == 2) { rowY += rowH + 8 * s; rowH = 0; }
-      bool hasUnit = std::find(roster_.begin(), roster_.end(), r.unit) != roster_.end();
+      if (k > 0 && k % 2 == 0) { rowY += rowH + 8 * s; rowH = 0; }
+      bool hasUnit = sensor || std::find(roster_.begin(), roster_.end(), r.unit) != roster_.end();
       bool locked = !hasUnit && !r.unlocked;
       std::string status = r.desc;
       if (r.unlocked) {
         if (!strcmp(r.key, "snipe")) status = fmt("CD: %.1fs | tier %d/3", (double)(r.lvl == 0 ? 8 : r.lvl == 1 ? 6 : r.lvl == 2 ? 4 : 2.5), r.lvl);
         if (!strcmp(r.key, "concussive")) status = r.lvl == 0 ? "Single target" : fmt("AOE radius %.1f | tier %d/3", (double)(r.lvl == 1 ? 1.5 : r.lvl == 2 ? 2.2 : 3.0), r.lvl);
         if (!strcmp(r.key, "superstim")) status = fmt("Stim: no HP cost, +%d HP/s to the bunker for %d s (stacks with self-repair)", (int)cfg::superstim_heal, (int)cfg::stim_duration);
+        if (sensor) status = fmt("Blips out to %g | tier %d/3", (double)cfg::sensor_range[r.lvl], r.lvl);
       }
       if (locked) status += std::string(" \xE2\x80\x94 need ") + unitDef(r.unit).key;
       std::string lbl;
@@ -1244,9 +1284,9 @@ void Game::drawRoster() {
         dis = !afford;
         tier = r.lvl;
       } else { lbl = "\xE2\x98\x85 MAXED"; dis = true; }
-      unsigned bc = r.unit == Unit::Marine ? 0x3a78d4 : r.unit == Unit::Marauder ? 0xd4761e : 0x9152e0;
-      unsigned bgc = r.unit == Unit::Marine ? 0x143c82 : r.unit == Unit::Marauder ? 0x823c0a : 0x46148c;
-      unsigned nc = r.unit == Unit::Marine ? 0x9fc8ff : r.unit == Unit::Marauder ? 0xffbd8a : 0xd6b0ff;
+      unsigned bc = sensor ? 0xc0453a : r.unit == Unit::Marine ? 0x3a78d4 : r.unit == Unit::Marauder ? 0xd4761e : 0x9152e0;   // Sensor Tower: radar red
+      unsigned bgc = sensor ? 0x821e14 : r.unit == Unit::Marine ? 0x143c82 : r.unit == Unit::Marauder ? 0x823c0a : 0x46148c;
+      unsigned nc = sensor ? 0xffa294 : r.unit == Unit::Marine ? 0x9fc8ff : r.unit == Unit::Marauder ? 0xffbd8a : 0xd6b0ff;
       float op = locked ? 0.6f : 1;
       Txt dt3 = T(13, 0xb9cfe6);
       dt3.col = alpha(dt3.col, op);
@@ -1258,7 +1298,10 @@ void Game::drawRoster() {
       float yy = rowY;
       cutPanel(dl, {x, yy}, {x + cw, yy + hgt}, 8 * s, rgb(bgc, 0.16f * op), rgb(bgc, 0.16f * op), rgb(bc, op));
       ImVec2 ia(x + 11 * s, yy + 8 * s);
-      image(dl, icon(r.icon), ia, {ia.x + 40 * s, ia.y + 40 * s}, locked ? IM_COL32(150, 150, 150, 160) : IM_COL32_WHITE);
+      if (sensor) {   // PLACEHOLDER: the radar glyph in a dark square until btn-building-terran-sensortower.png is exported
+        gradRect(dl, ia, {ia.x + 40 * s, ia.y + 40 * s}, rgb(0x0b1726), rgb(0x050b14));
+        svgIcon(dl, "sensor", {ia.x + 20 * s, ia.y + 20 * s}, 28 * s, rgb(0xff7a6a));
+      } else image(dl, icon(r.icon), ia, {ia.x + 40 * s, ia.y + 40 * s}, locked ? IM_COL32(150, 150, 150, 160) : IM_COL32_WHITE);
       dl->AddRect(ia, {ia.x + 40 * s, ia.y + 40 * s}, IM_COL32(140, 200, 255, (int)(89 * op)), 2 * s);
       float tx = ia.x + 49 * s;
       text(dl, {tx, yy + 8 * s}, (std::string(r.name) + (r.unlocked ? " \xE2\x9C\x93" : "")).c_str(), TA(15, alpha(rgb(nc), op), true, 1));
@@ -2417,7 +2460,7 @@ void Game::closeRoster() {
 }
 void Game::setGfx(bool high) {
   gfxHigh_ = high;
-  applyDNLights(dnFactor_);   // light levels for this quality, blended with day/night
+  applyDNLights(dnLit());   // light levels for this quality, blended with day/night (and a flare)
   storage::set("gfx", high ? "HIGH" : "LOW");
 }
 // Window / fullscreen and resolution, applied at once and remembered

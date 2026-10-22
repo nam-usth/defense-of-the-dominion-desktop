@@ -52,6 +52,11 @@ smootherstep: the old curve jumped from full night back to day in one frame at t
 shrinks geometrically (90 → 9) so the night closes in evenly, the sun turns orange on the way, enemy HP bars fade
 with the fog, and switching the cycle off lifts the night over 2.5 s, also behind the menu and title.
 
+Seeing the Zerg in the dark: the **Sensor Tower** research (roster, no unit needed, three levels) shows enemies
+beyond the lit edge (~9) within 10.75 / 12.5 / 16 of the bunker as pulsing red **!** blips — not which kind — with
+a faint ring at its range (cheat `sensor`; the icon is a placeholder glyph until the SC2 art is exported). An
+airstrike called at night drops a parachute flare 0.6 s later that lights the whole spawn ring for 7.5 s of game time.
+
 One crate per wave: the Viking's crate is promised when it launches, so a wave its bombs clear waits for it, and
 a wave whose Viking crate already came in is refilled on the spot — a Marine fetches one crate, not two.
 

@@ -201,6 +201,16 @@ class Game {
   // day / night
   bool dnEnabled_ = false;
   float dnTime_ = 0, dnFactor_ = 0;
+  float dnLightF_ = 0;   // the factor the lights / fog were last applied at (a flare lifts it below dnFactor_)
+  float dnLit() const;   // that factor now: dnFactor_ lifted by a burning Viking flare
+  // Viking flare (night airstrikes): lights the field for FLARE_DUR s of game time
+  float flareT_ = -1;    // seconds since it lit, -1 = none burning
+  glm::vec2 flareDir_{0, -1};   // bunker → far side of the field as the camera saw it at the light-up
+  PropP flareCore_, flareGlow_;
+  float flareK() const;  // strength 0..1
+  void startFlare();
+  void updateFlare(float dt);
+  void endFlare();
   // camera rig
   float zoom_ = 0, zoomT_ = 0, camYaw_ = 0, camYawT_ = 0;
   glm::mat4 view_{1}, proj_{1};
@@ -254,6 +264,7 @@ class Game {
   std::vector<float> snipeReady_;
   bool concussiveUnlocked_ = false, snipeUnlocked_ = false, superStimUnlocked_ = false;
   int snipeLvl_ = 0, concussiveLvl_ = 0;
+  int sensorLvl_ = 0;   // Sensor Tower research: 0 none, 1-3 (radar blips at night out to cfg::sensor_range)
   int armory_[4] = {0, 0, 0, 0};   // hp, dmg, ammo, cd
   int endlessSteps_ = 0;
   float stimT_ = 0;
@@ -537,7 +548,7 @@ class Game {
 
   // UI
   void drawUI(float dt);
-  void drawOverlayCanvas();   // HP bars, floating numbers, crosshair
+  void drawOverlayCanvas();   // HP bars, Sensor Tower blips, floating numbers, crosshair
   void drawTopBar();
   void drawConsole(float dt);
   void drawPortrait(float x, float y, float w, float h);

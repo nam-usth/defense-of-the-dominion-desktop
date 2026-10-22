@@ -417,6 +417,10 @@ std::map<std::string, Icon>& icons() {
   def("keys", {"M2.5 6.5h19v11h-19z", "M6 10h1.5M10 10h1.5M14 10h1.5M17.5 10h.5M7 14h10"});
   def("help", {circle(12, 12, 9), "M9.3 9.4a2.8 2.8 0 1 1 3.9 2.6c-.8.4-1.2 1-1.2 1.9v.4M12 17.2v.3"});
   def("display", {"M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"});   // the window / fullscreen corners
+  // Sensor Tower radar, the web sprite's #i-sensor: two quarter arcs from a base point, a sweep line
+  // and a blip (its filled dot drawn as a tiny stroked circle). PLACEHOLDER: replace with
+  // btn-building-terran-sensortower.png once it is exported
+  def("sensor", {"M4 12A8 8 0 0 1 12 20", "M4 5A15 15 0 0 1 19 20", "M4 20L14.5 9.5", circle(14, 14.3f, 0.8f)});
   return m;
 }
 }  // namespace
