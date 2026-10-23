@@ -40,8 +40,18 @@ std::vector<Gpu> adapters() {
   return out;
 }
 
+const char* noGpuChoiceNote() {
+#ifdef _WIN32
+  return "Only one graphics card found \xE2\x80\x94 nothing to switch.";
+#else
+  // Linux: the driver stack picks the card from the environment the game starts in
+  return "On Linux the card is chosen when the game starts: DRI_PRIME=1 (Mesa) or prime-run (NVIDIA) for the dedicated one.";
+#endif
+}
+
 static GLFWmonitor* monitorOf(GLFWwindow* win) {
   if (GLFWmonitor* m = glfwGetWindowMonitor(win)) return m;   // fullscreen
+  if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) return glfwGetPrimaryMonitor();   // a Wayland window is not told where it is
   int x, y, w, h, n;
   glfwGetWindowPos(win, &x, &y);
   glfwGetWindowSize(win, &w, &h);

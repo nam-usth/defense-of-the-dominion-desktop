@@ -42,10 +42,21 @@ static bool readFile(const fs::path& p, Record& r) {
   return true;
 }
 
-std::string init(const std::string& dir) {
+static fs::path baseDir() {
+#ifdef _WIN32
   const char* app = std::getenv("APPDATA");
-  fs::path base = app ? fs::path(app) : fs::current_path();
-  g_dir = dir.empty() ? base / "DefenseOfTheDominion" : fs::path(dir);
+  return app ? fs::path(app) : fs::current_path();
+#else
+  // XDG base directories: $XDG_DATA_HOME if it is an absolute path, else ~/.local/share
+  const char* xdg = std::getenv("XDG_DATA_HOME");
+  if (xdg && xdg[0] == '/') return fs::path(xdg);
+  const char* home = std::getenv("HOME");
+  return home && home[0] ? fs::path(home) / ".local" / "share" : fs::current_path();
+#endif
+}
+
+std::string init(const std::string& dir) {
+  g_dir = dir.empty() ? baseDir() / "DefenseOfTheDominion" : fs::path(dir);
   std::error_code ec;
   fs::create_directories(g_dir, ec);
   if (ec) { g_dir.clear(); return ""; }

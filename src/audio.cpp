@@ -24,6 +24,12 @@
 #include <mferror.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
+#elif defined(DOTD_FFMPEG)
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/avutil.h>
+}
 #endif
 
 namespace audio {
@@ -243,13 +249,14 @@ std::vector<std::string> listOf(const std::string& scene) {
   return {};
 }
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(DOTD_FFMPEG)
 struct Decoder {
-  IMFSourceReader* reader = nullptr;
   int rate = 0, ch = 0;
   double pos = 0;                 // resampler read position in source frames
   std::vector<float> src;         // decoded source frames not yet resampled (interleaved, ch)
   bool eos = false;
+#ifdef _WIN32
+  IMFSourceReader* reader = nullptr;
   bool open(const std::string& path) {
     close();
     int wn = MultiByteToWideChar(CP_ACP, 0, path.c_str(), -1, nullptr, 0);
@@ -300,6 +307,79 @@ struct Decoder {
     s->Release();
     return true;
   }
+#else   // FFmpeg (Linux): libavformat reads the ADTS stream, libavcodec decodes it
+  AVFormatContext* fmt = nullptr;
+  AVCodecContext* codec = nullptr;
+  AVPacket* pkt = nullptr;
+  AVFrame* frame = nullptr;
+  int stream = -1;
+  bool flushed = false;   // the end of the file was passed to the decoder
+  static int channelsOf(const AVFrame* f) {
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 28, 100)   // FFmpeg 5.1: AVChannelLayout
+    return f->ch_layout.nb_channels;
+#else
+    return f->channels;
+#endif
+  }
+  bool open(const std::string& path) {
+    close();
+    if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) < 0) { fmt = nullptr; return false; }
+    if (avformat_find_stream_info(fmt, nullptr) < 0 || (stream = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0)) < 0) { close(); return false; }
+    const AVCodecParameters* par = fmt->streams[stream]->codecpar;
+    const AVCodec* dc = avcodec_find_decoder(par->codec_id);
+    if (!dc || !(codec = avcodec_alloc_context3(dc)) || avcodec_parameters_to_context(codec, par) < 0 || avcodec_open2(codec, dc, nullptr) < 0) { close(); return false; }
+    pkt = av_packet_alloc();
+    frame = av_frame_alloc();
+    if (!pkt || !frame) { close(); return false; }
+    rate = codec->sample_rate;
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(59, 37, 100)
+    ch = codec->ch_layout.nb_channels;
+#else
+    ch = codec->channels;
+#endif
+    pos = 0; src.clear(); eos = false;
+    return rate > 0 && ch > 0;
+  }
+  void close() {
+    av_frame_free(&frame);
+    av_packet_free(&pkt);
+    avcodec_free_context(&codec);
+    avformat_close_input(&fmt);
+    stream = -1;
+    flushed = false;
+  }
+  bool readMore() {   // appends one decoded frame to src
+    if (!codec || eos) return false;
+    for (;;) {
+      int r = avcodec_receive_frame(codec, frame);
+      if (r == 0) break;
+      if (r == AVERROR_EOF || flushed) { eos = true; return false; }
+      // the decoder wants input (or skipped a damaged frame): the next packet of the audio stream, or the end-of-file flush
+      if (av_read_frame(fmt, pkt) < 0) { avcodec_send_packet(codec, nullptr); flushed = true; continue; }
+      if (pkt->stream_index == stream) avcodec_send_packet(codec, pkt);   // a damaged packet is skipped
+      av_packet_unref(pkt);
+    }
+    // to interleaved float: AAC decodes to planar float; packed and 16 / 32-bit integer handled too
+    const AVSampleFormat sf = (AVSampleFormat)frame->format;
+    const bool planar = av_sample_fmt_is_planar(sf);
+    const AVSampleFormat packed = av_get_packed_sample_fmt(sf);
+    const int fc = channelsOf(frame), n = frame->nb_samples;
+    size_t at = src.size();
+    src.resize(at + (size_t)n * ch);
+    for (int i = 0; i < n; i++)
+      for (int c = 0; c < ch; c++) {
+        int sc = std::min(c, fc - 1);
+        const uint8_t* d = frame->extended_data[planar ? sc : 0];
+        size_t k = planar ? i : (size_t)i * fc + sc;
+        float v = packed == AV_SAMPLE_FMT_FLT ? ((const float*)d)[k]
+                : packed == AV_SAMPLE_FMT_S16 ? ((const int16_t*)d)[k] / 32768.f
+                : packed == AV_SAMPLE_FMT_S32 ? ((const int32_t*)d)[k] / 2147483648.f : 0.f;
+        src[at + (size_t)i * ch + c] = v;
+      }
+    av_frame_unref(frame);
+    return true;
+  }
+#endif
   // produces up to `frames` stereo frames at RATE; returns how many
   size_t produce(float* out, size_t frames) {
     size_t made = 0;
@@ -307,7 +387,7 @@ struct Decoder {
     while (made < frames) {
       size_t have = src.size() / ch;
       if ((size_t)pos + 1 >= have) {
-        if (!readMore() && (eos || !reader)) break;
+        if (!readMore()) break;   // the end of the track (or no track open)
         continue;
       }
       size_t i0 = (size_t)pos;
@@ -330,8 +410,12 @@ struct Decoder {
 };
 
 void musicThread() {
+#ifdef _WIN32
   CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   if (FAILED(MFStartup(MF_VERSION))) { logWarn("music: Media Foundation unavailable — no music"); CoUninitialize(); return; }
+#else
+  av_log_set_level(AV_LOG_ERROR);   // FFmpeg's own notices stay off stderr
+#endif
   Decoder dec;
   std::vector<std::string> list;
   size_t idx = 0;
@@ -374,11 +458,13 @@ void musicThread() {
     }
   }
   dec.close();
+#ifdef _WIN32
   MFShutdown();
   CoUninitialize();
+#endif
 }
 #else
-void musicThread() { logWarn("music: AAC decoding is only implemented on Windows"); }
+void musicThread() { logWarn("music: this build has no AAC decoder (built with -DDOTD_MUSIC=OFF, without FFmpeg) — no music"); }
 #endif
 }  // namespace
 

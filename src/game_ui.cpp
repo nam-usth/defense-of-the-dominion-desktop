@@ -1662,7 +1662,7 @@ void Game::drawMenu() {
           card("##gpuInt", bx0 + cw + 10 * s, "INTEGRATED", integ, !gpuChoiceDedicated_, false);
           y += chh;
         }
-        if (!(ded && integ)) note("Running on: " + gpuRunning_ + ". Only one graphics card found \xE2\x80\x94 nothing to switch.");
+        if (!(ded && integ)) note("Running on: " + gpuRunning_ + ". " + display::noGpuChoiceNote());
         else if (gpuChoiceDedicated_ != gpuRunningDedicated_) {
           note("Running on: " + gpuRunning_ + ". The choice takes effect after a restart; the current game is not saved.", WARN);
           y += 8 * s;
