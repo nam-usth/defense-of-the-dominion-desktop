@@ -1875,7 +1875,10 @@ void Game::drawTitle() {
     if (modeButton(dl, "##loadgame", {ix0, y}, iw, "load", "LOAD GAME", "Saved game \xE2\x80\x94 " + saveLabel(m), false, ready)) loadGame(false);
     y += bh + 8 * s;
   }
-  if (modeButton(dl, "##howto", {ix0, y}, iw, "help", "HOW TO PLAY", "The goal, the controls, your units and the Zerg", false, true)) showHowTo();
+  // HOW TO PLAY and SETTINGS share a row; SETTINGS opens the menu on its tab
+  float hw = (iw - 8 * s) / 2;
+  if (modeButton(dl, "##howto", {ix0, y}, hw, "help", "HOW TO PLAY", "Rules, controls, units", false, true)) showHowTo();
+  if (modeButton(dl, "##settings", {ix0 + hw + 8 * s, y}, hw, "gfx", "SETTINGS", "Graphics, sound, display", false, true)) { menuTab_ = 1; openMenu(); }
   y += bh + 8 * s;
   y += 14 * s - 8 * s;
   // loading progress
@@ -2571,7 +2574,7 @@ void Game::onKey(int key, int action, int mods) {
   }
   if (tutorialKey(key)) return;   // a tutorial box open: its keys (a key a hint names falls through and does its job)
   if (phase_ != Phase::Playing) {   // title / results: only the menu (for load and settings)
-    if (key == GLFW_KEY_M) openMenu();
+    if (key == GLFW_KEY_M || key == GLFW_KEY_ESCAPE) openMenu();
     return;
   }
   if (rosterPaused_) {

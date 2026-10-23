@@ -27,7 +27,8 @@ Home, M/Esc, Q, Y, K; type `dotd` for the cheat console), plus **F3** for a perf
 ## Menu (M / Esc)
 
 The web version's layout: two columns, the tabs and RESUME / RESTART / MAIN MENU on the left, the chosen tab's
-page on the right, the same height on every tab. ↑ ↓ switch tabs; the last tab chosen opens again.
+page on the right, the same height on every tab. ↑ ↓ switch tabs; the last tab chosen opens again. On the title
+screen, SETTINGS (beside HOW TO PLAY) opens it on the Settings tab, and M / Esc open it there too.
 
 - **Game** — save / load (one slot; the game also autosaves after every cleared wave).
 - **Settings** — quality HIGH / LOW, GPU particles, mute, music, volume, day/night cycle.
