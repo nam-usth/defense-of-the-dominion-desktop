@@ -105,14 +105,17 @@ The crate runner: click a unit in the roster to send it out for the supply crate
 its corner; click it again for any unit); unelected, a Marine goes, else any free unit (`--cheat runner:N` in
 tests). The research and armory cards keep one height whatever their text (three lines; longer is cut off).
 
-The nuke: StarCraft II's, rebuilt on one closed-form timeline (src/nuke_fx.h). The flash blows the field out to
-white through the HDR exposure (the HUD stays clear), then a soft fireball of overlapping fire round a white-hot
-heart that blooms rises, flattens and rolls into the mushroom cloud, whose heart widens into a soft ember glow as
-it cools. A ragged shock front races over the ground under a fading shock dome; a ring of dust with a burning
-leading edge rolls out past the kill radius; the Zerg freeze white in the flash and are flung out, charred, when the
-front reaches them, and the shock booms as it passes the bunker (no camera shake). It leaves a small pit of
-scorched earth whose cracks glow deep red, cool and fade by 16 s. Its fireball lights the field: a warm point light,
-and at night the dark lifts (fog out to ~40) and settles back as it cools.
+The nuke: StarCraft II's, rebuilt on one closed-form timeline (src/nuke_fx.h) and timed from SC2's own (Nuke.m3).
+The flash blows the field out to white through the HDR exposure (the HUD stays clear) while a six-rayed star opens
+flat over the blast; then SC2's glow cards, a soft ball of light, swell round a soft fireball of overlapping fire
+that rises, flattens and rolls into the mushroom cloud. As in SC2 the fire never turns to a grey cloud: it dims and
+is gone by 5.4 s, and small embers keep rising off the crater until 9 s. A ragged shock front races over the
+ground under a fading shock dome; a ring of dust with a burning leading edge rolls out past the kill radius; the
+Zerg freeze white in the flash and are flung out, charred, when the front reaches them, and the shock booms as it
+passes the bunker (no camera shake). It leaves a small pit of scorched earth whose cracks glow deep red, cool and
+fade by 16 s. Its light (SC2's curve: full by 0.5 s, held to 1.8 s, out by 3.9 s) lights the field, and at night
+the dark lifts (fog out to ~40) and settles back.
+
 
 The scene renders into an HDR target (R11G11B10F, RGBA16F if refused; 4x MSAA on GFX HIGH): a bloom chain and a
 hue-preserving tone curve composite it before the HUD (src/post.h). Lit surfaces stay as before; only emitters
