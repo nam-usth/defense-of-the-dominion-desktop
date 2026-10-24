@@ -51,10 +51,10 @@ void main() {
 }
 )";
 
-// The scar: a charred pit and a ragged burn ring with a faint tint beyond; fissures run out
-// of the pit (each forking once) and the pit itself is shattered. The cracks open behind the
-// shock front, glow white-hot, cool through orange to dull red, then stay as black lines
-// until the scar fades. Premultiplied: the burn darkens, the cracks glow (self-lit).
+// The scar: a small scorched pit of churned earth. Short cracks run out of it (each forking
+// once) and its floor is shattered; they open behind the shock front and glow a deep
+// red-orange through the soil, dimming over ~8 s, then the pit fades. Premultiplied: the
+// earth darkens the grass, the cracks glow (self-lit).
 const char* SCAR_FS = R"(
 in vec3 vW; out vec4 frag;
 uniform vec3 uC; uniform float uAge, uSeed, uFront, uK; uniform bool uHdr;
@@ -63,52 +63,54 @@ const float TAU = 6.2831853;
 float adiff(float a, float b) { return mod(a - b + 3.14159265, TAU) - 3.14159265; }
 float ln1(float x) { float i = floor(x); return mix(h12(vec2(i, uSeed)), h12(vec2(i + 1., uSeed)), fract(x)); }   // linear: a polyline
 // a crack's lateral wander (world units) at radius r: straight runs with sharp kinks, and a fine jag
-float wander(float r, float i) { return (ln1(r * .9 + i * 7.31) - .5) * 1.1 + (ln1(r * 3.4 + i * 3.17 + 40.) - .5) * .28; }
+float wander(float r, float i) { return (ln1(r * 1.6 + i * 7.31) - .5) * .6 + (ln1(r * 5. + i * 3.17 + 40.) - .5) * .16; }
 void main() {
   vec2 d = vW.xz - uC.xz; float r = length(d);
-  if (r > 11.5) discard;
+  if (r > 6.) discard;
   float ang = atan(d.y, d.x);
-  float mott = fbm2(vW.xz * .45 + uSeed, 3);
-  float pit = 1. - smoothstep(1.4, 3.2 + mott, r);
-  float burn = 1. - smoothstep(5.0, 7.5 + 2. * mott, r);
-  float tint = 1. - smoothstep(6.5, 11., r);
+  float mott = fbm2(vW.xz * .8 + uSeed, 3);
+  float pit = 1. - smoothstep(.8, 1.8 + .6 * mott, r);       // the churned centre
+  float soil = 1. - smoothstep(2.4, 3.6 + 1.2 * mott, r);     // scorched earth
+  float tint = 1. - smoothstep(3.5, 5.8, r);                  // a faint singe on the grass
   float crack = 0.;
-  for (int i = 0; i < 14; i++) {
+  for (int i = 0; i < 10; i++) {
     float fi = float(i);
-    float len = 3.5 + 4.5 * h12(vec2(fi + 31., uSeed));
-    if (r > len + .3) continue;
-    float phi = (fi + .7 * h12(vec2(fi, uSeed))) * TAU / 14.;
+    float len = 2. + 1.8 * h12(vec2(fi + 31., uSeed));
+    if (r > len + .2) continue;
+    float phi = (fi + .7 * h12(vec2(fi, uSeed))) * TAU / 10.;
     float da = adiff(ang, phi) * r;   // arc distance from the crack's base line
-    if (abs(da) > 3.5) continue;
+    if (abs(da) > 2.) continue;
     float w = wander(r, fi);
-    float taper = 1. - smoothstep(.5, len, r);
-    float wid = .03 + .08 * taper;
-    crack = max(crack, (1. - smoothstep(wid * .35, wid, abs(da - w))) * smoothstep(.5, 1.1, r) * sqrt(taper));
-    float rb = 1.6 + .45 * len * h12(vec2(fi + 7., uSeed));   // the fork leaves at rb, bending off ~25 deg
+    float taper = 1. - smoothstep(.3, len, r);
+    float wid = .03 + .06 * taper;
+    crack = max(crack, (1. - smoothstep(wid * .35, wid, abs(da - w))) * smoothstep(.3, .7, r) * sqrt(taper));
+    float rb = .9 + .4 * len * h12(vec2(fi + 7., uSeed));   // the fork leaves at rb, bending off ~25 deg
     if (r > rb) {
       float side = h12(vec2(fi + 13., uSeed)) < .5 ? -1. : 1.;
-      float tb = 1. - smoothstep(rb, rb + len * (.45 + .3 * h12(vec2(fi + 17., uSeed))), r);
-      float xb = abs(da - w - side * (r - rb) * .5 - (ln1(r * 3.8 + fi * 5.1 + 90.) - .5) * .22);
-      float wb = .025 + .06 * tb;
+      float tb = 1. - smoothstep(rb, rb + len * (.35 + .25 * h12(vec2(fi + 17., uSeed))), r);
+      float xb = abs(da - w - side * (r - rb) * .5 - (ln1(r * 6. + fi * 5.1 + 90.) - .5) * .12);
+      float wb = .02 + .045 * tb;
       crack = max(crack, (1. - smoothstep(wb * .35, wb, xb)) * tb);
     }
   }
-  if (r < 4.5) {   // the shattered pit: Voronoi cell edges
-    vec2 x = vW.xz * 1.3 + uSeed * 3.; vec2 g = floor(x), f = fract(x); float F1 = 8., F2 = 8.;
+  if (r < 2.6) {   // the shattered floor: Voronoi cell edges
+    vec2 x = vW.xz * 2.2 + uSeed * 3.; vec2 g = floor(x), f = fract(x); float F1 = 8., F2 = 8.;
     for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
       vec2 o = vec2(i, j); vec2 dd = o + h22(g + o) - f; float q = dot(dd, dd);
       if (q < F1) { F2 = F1; F1 = q; } else if (q < F2) F2 = q;
     }
-    crack = max(crack, (1. - smoothstep(.03, .1, sqrt(F2) - sqrt(F1))) * (1. - smoothstep(2.2, 4.4, r)));
+    crack = max(crack, (1. - smoothstep(.03, .09, sqrt(F2) - sqrt(F1))) * (1. - smoothstep(1.2, 2.5, r)));
   }
-  crack *= (1. - smoothstep(uFront * .9 - .5, uFront * .9, r)) * (1. - smoothstep(5.5, 7.5, r));   // opened by the front, inside the burn
-  float E = 1.1 * exp(-uAge / 2.0) + .3 * exp(-uAge / 6.);
-  float T = E * (1.05 - .06 * r) * (.85 + .3 * n2(vW.xz * 2. + uAge * .7));
-  vec3 glow = fireCol(.18 + .75 * clamp(T, 0., 1.), uHdr) * smoothstep(0., .35, T) * crack;   // lava: white-hot, then orange, then a dull red
-  glow += fireCol(.3 + .6 * clamp(E, 0., 1.), uHdr) * .3 * (1. - smoothstep(0., 3., r)) * exp(-uAge / 1.2) * (.6 + .4 * mott);   // the molten pit
-  float a = uK * (pit * .45 + burn * (.6 + .3 * mott) + tint * .15);
-  a = clamp(a + crack * .5 * uK, 0., .95);
-  vec3 ch = mix(vec3(.075, .06, .048), vec3(.022, .018, .015), max(pit, crack));
+  crack *= 1. - smoothstep(uFront * .9 - .3, uFront * .9, r);   // opened by the front
+  // a deep red-orange glow, brightest in the pit, flickering a little, dimming over ~8 s
+  float E = .85 * exp(-uAge / 3.) + .15 * exp(-uAge / 8.);
+  float T = E * (1. - .12 * r) * (.75 + .5 * n2(vW.xz * 3. + uAge * .6));
+  vec3 hot = fireCol(.28 + .3 * clamp(T, 0., 1.), uHdr), earth = vec3(.3, .19, .11);
+  vec3 glow = mix(earth * .5, hot, .75) * crack * smoothstep(0., .25, T) * (uHdr ? 1.6 : 1.);   // red through the soil
+  glow += hot * .22 * pit * E * (.5 + .5 * mott);   // the pit floor smoulders
+  float a = uK * (pit * .35 + soil * (.45 + .25 * mott) + tint * .12);
+  a = clamp(a + crack * .35 * uK, 0., .9);
+  vec3 ch = mix(vec3(.16, .11, .07), vec3(.07, .05, .035), max(pit, crack));   // churned brown earth, darker in the pit and cracks
   ch = mix(ch, uFogCol, smoothstep(uFogNear, uFogFar, length(vW.xz)));
   frag = vec4(ch * a + glow * uK, a);
 }
@@ -251,7 +253,7 @@ void NukeRenderer::drawScar(Renderer& R, glm::vec2 p, float age, float seed, flo
   const glm::vec3 c(p.x, 0.03f, p.y);
   R.drawCustom(-50, c, [=, this](const FrameCtx& f) {   // before every other transparent: it lies on the ground
     GLuint g = progScar_;
-    use(g, f, glm::scale(glm::translate(glm::mat4(1), c), {23, 1, 23}));
+    use(g, f, glm::scale(glm::translate(glm::mat4(1), c), {12.5f, 1, 12.5f}));
     u3(g, "uC", c);
     u1(g, "uAge", age);
     u1(g, "uSeed", seed);

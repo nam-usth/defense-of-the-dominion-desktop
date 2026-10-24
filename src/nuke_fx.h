@@ -1,8 +1,8 @@
 // The nuke's blast, drawn with its own shaders as the renderer's custom draws: a white-hot
 // fireball that rises, flattens and burns out into the mushroom cloud's sprites; the shock
 // front (a ragged ring of light racing over the ground under a fading shock dome); and the
-// scar it leaves (a burn with glowing cracks that cool to black, then fade). The base surge
-// (a ring of dust with a burning leading edge) is the cloud's sprites (game.cpp).
+// scar it leaves (a small pit of scorched earth, its cracks glowing red, then fading). The
+// base surge (a ring of dust with a burning leading edge) is the cloud's sprites (game.cpp).
 // The timeline is closed-form curves (nk::), so every view and every frame reads the same blast.
 #pragma once
 #include <glad/gl.h>
