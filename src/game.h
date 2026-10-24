@@ -287,7 +287,7 @@ class Game {
   bool groundPoint(double cx, double cy, glm::vec3& out) const;
 
   // lights (three.js parameters)
-  glm::vec3 ambCol_{0}, sunCol_{0};
+  glm::vec3 ambCol_{0}, sunCol_{0}, fillCol_{0}, fillPos_{-8, 10, -6};   // fill: the day's sky fill, the moon at night
   float ambI_ = 0.7f, sunI_ = 1.8f, fillI_ = 0.5f, bunkerLightI_ = 0, muzzleI_ = 0, fireI_ = 0;
   glm::vec3 muzzlePos_{0}, firePos_{0, 1.8f, 0};
   glm::vec3 fogCol_{0};
@@ -355,8 +355,11 @@ class Game {
   std::vector<FloatText> floatTexts_;
 
   // scene
-  Mesh *groundMesh_ = nullptr, *dirtMesh_ = nullptr, *rockMesh_ = nullptr;
-  Material groundMat_, dirtMat_, rockMat_;
+  Mesh *groundMesh_ = nullptr, *rockMesh_[3] = {};
+  Material groundMat_, rockMat_;
+  std::vector<Instance> rockInst_[3];   // the boulders, by shape
+  const Texture* terrainTex_ = nullptr; // the ground's noise (buildTerrainTex)
+  void buildTerrainTex();
   Baked bunkerProc_, marineProc_[6], zerglingProc_[3], roachProc_, vikingProc_;
   std::vector<ModelPart> bunkerParts_, shrikeParts_;   // own copies: their materials are re-tinted
   const Model* bunkerModel_ = nullptr;
@@ -391,6 +394,9 @@ class Game {
   Mesh* glowRingMesh_ = nullptr;   // a soft band along a unit circle (xz plane)
   Material blastWashMat_;              // grenade blasts' glow on the ground (additive, tinted per instance)
   const Texture* blastTex_ = nullptr;  // its shape: a soft disk with no edge
+  Material blobMat_;                   // contact shadows under the Zerg and the units (alpha blended)
+  const Texture* blobTex_ = nullptr;
+  std::vector<Instance> blobInst_;     // filled every frame
   Material mgBlueGlowMat_, mgBlueCoreMat_;   // concussive shells: their flames and light streaks burn blue
   std::vector<MBlast> mBlasts_;
   GlowLight glows_[MAX_GLOWS];   // small lights this frame: Marauder grenades in flight and their bursts

@@ -7,7 +7,7 @@
 
 #include "log.h"
 
-GLuint compileProgram(const char* vs, const char* fs, const char* name);   // render.cpp
+GLuint compileProgram(const char* vs, const char* fs, const char* name, const char* defines = nullptr);   // render.cpp
 
 namespace {
 // One triangle over the whole viewport (no vertex buffer: gl_VertexID)

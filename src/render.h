@@ -57,10 +57,11 @@ struct Mesh {
 struct Texture {
   GLuint id = 0;
   int w = 0, h = 0;
-  static const Texture* create(int w, int h, const uint8_t* rgba);   // RGBA8 rows bottom-up, mipmapped; owned like meshes
+  // RGBA8 rows bottom-up, mipmapped; owned like meshes. repeat: tiles (else clamped); aniso: anisotropic filtering (1 = off)
+  static const Texture* create(int w, int h, const uint8_t* rgba, bool repeat = false, float aniso = 1);
 };
 
-enum class MatType { Standard, Lambert, Phong, Basic };
+enum class MatType { Standard, Lambert, Phong, Basic, Terrain };   // Terrain: the ground, drawn procedurally (LIT_FS, TERRAIN)
 enum class Blend { Normal, Additive };
 
 struct Material {
@@ -82,6 +83,8 @@ struct Material {
   bool depthWrite = true;
   bool doubleSide = false;
   bool fog = true;                        // false: self-lit (tracers, fireballs, blips) — shows through the night fog
+  bool scenery = false;                   // rocks and the like: at night the fog leaves their own moonlit, colourless trace
+  bool instAlpha = false;                 // soft decals: the instance colour's red is the alpha (the colour is the material's)
 };
 
 struct Instance {
@@ -129,6 +132,12 @@ struct SceneParams {
   bool shadows = true, msaa = true;
   int vpX = 0, vpY = 0, vpW = 1, vpH = 1;   // framebuffer pixels, origin bottom-left
   PostParams post;                          // HDR target, bloom, tone curve (post.h)
+  // night: how much of the fog is darkness (the field fades to its moonlit value, not to the fog colour),
+  // how much colour the ground and scenery lose; the ground's noise texture (TERRAIN); close-up detail
+  float night = 0, nightDesat = 0;
+  glm::vec3 moonTint{0.20f, 0.27f, 0.42f};
+  const Texture* terrainTex = nullptr;
+  bool hiDetail = false;
 };
 
 // Soft round sprites with per-particle size / colour / alpha (the web version's
@@ -200,13 +209,14 @@ class Renderer {
   struct Custom { glm::vec3 at; CustomDraw fn; };
   std::vector<Custom> customs_;
   std::vector<Instance> inst_;
-  GLuint litProg_ = 0, depthProg_ = 0, partProg_ = 0;
+  GLuint litProg_ = 0, terrainProg_ = 0, depthProg_ = 0, partProg_ = 0;   // terrainProg_: LIT_FS with TERRAIN (0: the ground falls back to Phong)
   GLuint instVbo_ = 0, shadowFbo_ = 0, shadowTex_ = 0;
   GLuint partVao_ = 0, partQuadVbo_ = 0, partInstVbo_ = 0;
   GLuint whiteTex_ = 0;
   class GpuParticles* gpuParticles_ = nullptr;
   void bindInstances(int first);
-  void setMaterial(const Material& m, bool receive, bool shadowsOn);
+  void setMaterial(GLuint prog, const Material& m, bool receive, bool shadowsOn);
 };
 
-GLuint compileProgram(const char* vs, const char* fs, const char* name);
+// defines: lines put after each source's #version line (a shader variant)
+GLuint compileProgram(const char* vs, const char* fs, const char* name, const char* defines = nullptr);

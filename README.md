@@ -99,6 +99,14 @@ shrinks geometrically (90 → 9) so the night closes in evenly, the sun turns or
 with the fog, and switching the cycle off lifts the night over 2.5 s, also behind the menu and title. The top bar
 shows the phase and the countdown to the next one (`☀ DAY  DUSK IN 0:42`, then `NIGHT IN`, `DAWN IN`, `DAY IN`).
 
+The field is drawn by the shader from one small tiling noise texture read at three rotated scales (no repeat
+shows): two grass tones, soft dirt patches, a worn ring round the bunker with shade at its foot, and a fine
+pebbly relief for the light (finer still close up on GFX HIGH). Clusters of faceted boulders lie out past the
+Sensor ring, and every Zerg, corpse and unit out of the bunker sits on a soft contact shadow. At night the
+field does not go black: the fog fades it to its own grey, moon-blue value under a cool moon from behind left
+(no shadows), a Zerg in the dark fades to the ground under it, the bunker's light is warm white, and the sky
+turns violet at dusk. Boulders stay paler than the field in the dark, so none reads as a crouching Zerg.
+
 Shooting in the dark: tracers ignore the fog and burn white-hot in a soft halo over a faint pool of light on the
 ground, so a volley shows where it goes past the lit edge; every round from the bunker and the Shrike draws the
 same streak (1.8 × the tracer mesh), so both are as bright. Self-lit things (the nuke's laser, trail, reticle and
@@ -252,6 +260,8 @@ and logs the volleys fired · `--post on|off` the HDR post-processing. Each clea
 - Desktop window, native OpenGL: three.js materials re-implemented in one shader (Standard / Lambert / Phong /
   Basic, SC2 team colour, DXT5nm normal maps), PCF sun shadows, radial fog, instanced enemies and particles.
 - GFX LOW turns off shadows and 4× MSAA (the web LOW turned off shadows and HiDPI rendering).
+- The ground (grass tones, dirt, boulders, contact shadows) and the moonlit night are desktop-only so far; the
+  web field is still flat green with dirt quads and fades to the near-black fog colour at night.
 - `help` in the cheat console lists the codes in the console itself (the web printed them to the browser console).
 - Saves are `key=value` files in `%APPDATA%` (Linux: `~/.local/share`) instead of `localStorage`, so web saves
   do not carry over.

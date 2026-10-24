@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <unordered_map>
 
@@ -221,7 +222,7 @@ Geometry icosahedron(float r, int detail) {
 static std::vector<std::unique_ptr<Mesh>> g_meshes;
 static std::vector<std::unique_ptr<Texture>> g_genTextures;   // Texture::create
 
-const Texture* Texture::create(int w, int h, const uint8_t* rgba) {
+const Texture* Texture::create(int w, int h, const uint8_t* rgba, bool repeat, float aniso) {
   auto t = std::make_unique<Texture>();
   glGenTextures(1, &t->id);
   glBindTexture(GL_TEXTURE_2D, t->id);
@@ -230,8 +231,14 @@ const Texture* Texture::create(int w, int h, const uint8_t* rgba) {
   glGenerateMipmap(GL_TEXTURE_2D);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
+  if (aniso > 1) {   // EXT_texture_filter_anisotropic (core in 4.6): glad has no enum for it
+    float maxA = 0;
+    while (glGetError() != GL_NO_ERROR) {}
+    glGetFloatv(0x84FF, &maxA);   // GL_MAX_TEXTURE_MAX_ANISOTROPY
+    if (glGetError() == GL_NO_ERROR && maxA > 1) glTexParameterf(GL_TEXTURE_2D, 0x84FE, std::min(aniso, maxA));   // GL_TEXTURE_MAX_ANISOTROPY
+  }
   t->w = w;
   t->h = h;
   g_genTextures.push_back(std::move(t));
@@ -340,7 +347,38 @@ uniform bool uReceiveShadow, uShadows;
 uniform sampler2DShadow uShadowMap; uniform float uShadowBias, uShadowTexel;
 uniform vec3 uFogColor; uniform float uFogNear, uFogFar; uniform bool uFog;
 uniform vec4 uGlPos[8], uGlColor[8]; uniform int uGlCount;   // small lights: xyz + radius · rgb + reveal
+uniform sampler2D uTerrainTex;                                  // the ground's noise (R macro, G mid, BA a fine slope)
+uniform float uNight, uNightDesat; uniform vec3 uMoonTint;      // how much of the fog is night; colour the ground loses
+uniform bool uScenery, uInstAlpha, uHiDetail;
 const float PI = 3.141592653589793;
+const vec3 LUMA = vec3(0.299, 0.587, 0.114);
+
+// The ground at xz, from the noise at three rotated scales that never line up (no tiling shows):
+// two grass tones, soft dirt patches with a darker seam where they meet the grass, a worn ring
+// round the bunker, a fine slope for the light, and shade at the bunker's foot. lod >= 0 reads
+// blurred mips without derivatives (a unit's fog target, in a per-pixel branch).
+const mat2 ROT1 = mat2(0.825, 0.565, -0.565, 0.825), ROT2 = mat2(-0.320, 0.947, -0.947, -0.320), ROT3 = mat2(0.199, -0.980, 0.980, 0.199);
+const vec3 GRASS_LUSH = vec3(.184, .290, .102), GRASS_DRY = vec3(.290, .310, .133), DIRT_DARK = vec3(.290, .224, .141), DIRT_LIGHT = vec3(.431, .353, .227);
+struct Ground { vec3 alb; vec3 N; float ao; };
+Ground ground(vec2 xz, float lod) {
+  vec2 u1 = ROT1 * xz / 41.0, u2 = ROT2 * xz / 12.7, u3 = ROT3 * xz / 2.9;
+  vec4 a, b, c;
+  if (lod < 0.0) { a = texture(uTerrainTex, u1); b = texture(uTerrainTex, u2); c = texture(uTerrainTex, u3); }
+  else { a = textureLod(uTerrainTex, u1, lod); b = textureLod(uTerrainTex, u2, lod); c = vec4(0.5); }
+  float r = length(xz);
+  vec3 grass = mix(GRASS_LUSH, GRASS_DRY, smoothstep(0.38, 0.72, 0.6 * b.g + 0.4 * a.g)) * (0.8 + 0.4 * a.r) * (0.9 + 0.2 * c.r);
+  float dn = a.g * 0.6 + b.r * 0.4 + (c.r - 0.5) * 0.08;
+  float dirt = max(smoothstep(0.64, 0.74, dn), 0.85 * (1.0 - smoothstep(2.0, 4.6, r + (b.r - 0.5) * 1.6)));
+  Ground G;
+  G.alb = mix(grass, mix(DIRT_DARK, DIRT_LIGHT, c.r) * (0.9 + 0.2 * a.r), dirt) * (1.0 - 0.64 * dirt * (1.0 - dirt));
+  vec2 g = transpose(ROT3) * (c.ba * 2.0 - 1.0) * mix(0.45, 0.75, dirt);
+  if (lod < 0.0 && uHiDetail) g += transpose(ROT1) * (texture(uTerrainTex, ROT1 * xz / 0.93).ba * 2.0 - 1.0) * 0.22;
+  G.N = normalize(vec3(-g.x, 1.0, -g.y));
+  G.ao = mix(0.55, 1.0, smoothstep(1.4, 2.8, r));
+  return G;
+}
+// a surface's moonlit value at night: its brightness, moon-blue, lit by the moon (the fill light)
+vec3 nightOf(vec3 alb, vec3 N) { return dot(alb, LUMA) * uMoonTint * (0.45 + 0.55 * max(dot(N, uDirDir[1]), 0.0)); }
 
 float sunShadow() {
   if (!uShadows || !uReceiveShadow) return 1.0;
@@ -384,7 +422,12 @@ vec3 specBlinn(vec3 L, vec3 V, vec3 N, vec3 f0, float shin) {
   return F_Schlick(f0, dLH) * (0.25 * (1.0 / PI) * (shin * 0.5 + 1.0) * pow(dNH, shin));
 }
 void main() {
-  vec4 diffuse = vec4(uColor * vColor, uOpacity);
+#ifdef TERRAIN
+  Ground G = ground(vWorld.xz, -1.0);
+  vec4 diffuse = vec4(mix(G.alb, vec3(dot(G.alb, LUMA)), uNightDesat), 1.0);   // at night it greys out
+#else
+  vec4 diffuse = uInstAlpha ? vec4(uColor, uOpacity * vColor.r) : vec4(uColor * vColor, uOpacity);
+#endif
   if (uHasMap) {
     vec4 t = texture(uMap, vUV);
     if (uTeamColorOn) {   // SC2 team colour: the alpha masks the painted panels
@@ -393,12 +436,16 @@ void main() {
       diffuse.rgb *= mix(t.rgb, tc, m);
     } else diffuse *= t;
   }
-  vec3 outC;
+  if (uScenery) diffuse.rgb = mix(diffuse.rgb, vec3(dot(diffuse.rgb, LUMA)), uNightDesat);
+  vec3 outC, Nn = vec3(0.0, 1.0, 0.0);
   if (uType == 3) {
     outC = diffuse.rgb;
   } else {
     float faceDir = gl_FrontFacing ? 1.0 : -1.0;
     vec3 N = length(vNormal) > 0.0 ? normalize(vNormal) : vec3(0.0, 1.0, 0.0);
+#ifdef TERRAIN
+    N = G.N;
+#endif
     if (uType == 0 && uHasNormalMap) {   // DXT5nm: X in alpha, Y in green, Z rebuilt
       vec4 nt = texture(uNormalMap, vUV);
       vec3 mapN = vec3(nt.a * 2.0 - 1.0, nt.g * 2.0 - 1.0, 0.0);
@@ -453,14 +500,35 @@ void main() {
     }
     // the lit term is clamped as the 8-bit target clamped it: lit surfaces look as before and never
     // bloom (smoke over a brightly lit hull stays as dense); only emitters exceed 1 in the HDR target
+#ifdef TERRAIN
+    outC = min(dif * (uAmbient * G.ao + direct * mix(1.0, G.ao, 0.35)), vec3(1.0));
+#else
     outC = min(dif * (uAmbient + direct) + spec, vec3(1.0)) + uEmissive * (uHasEmissiveMap ? texture(uEmissiveMap, vUV).rgb : vec3(1.0));
+#endif
+    Nn = N;
   }
   if (uFog) {
     float fogF = smoothstep(uFogNear, uFogFar, length(vWorld.xz));   // radial: distance from the bunker
     float lift = 0.0;   // the small lights lift the night around them (full near, none at their reach)
     for (int i = 0; i < uGlCount; i++)
       lift = max(lift, uGlColor[i].a * (1.0 - smoothstep(0.35 * uGlPos[i].w, uGlPos[i].w, length(uGlPos[i].xyz - vWorld))));
-    outC = mix(outC, uFogColor, fogF * (1.0 - lift));
+    float k = fogF * (1.0 - lift);
+    if (k > 0.0) {
+      // at night the fogged field is not black: it fades to its own moonlit value, and everything
+      // else to the ground's under it (a unit there blends in, as it did into the black)
+      vec3 target = uFogColor;
+      if (uNight > 0.0) {
+#ifdef TERRAIN
+        vec3 dark = nightOf(G.alb, G.N) * G.ao;
+#else
+        vec3 dark;
+        if (uScenery) dark = nightOf(1.5 * diffuse.rgb, Nn);   // paler than the field: a boulder in the dark reads as a stone, not a crouching Zerg
+        else { Ground U = ground(vWorld.xz, 3.0); dark = nightOf(U.alb, vec3(0.0, 1.0, 0.0)) * U.ao; }
+#endif
+        target = mix(uFogColor, dark, uNight);
+      }
+      outC = mix(outC, target, k);
+    }
   }
   fragColor = vec4(outC, diffuse.a);
 }
@@ -527,9 +595,14 @@ void main() {
 }
 )";
 
-static GLuint compileShader(GLenum type, const char* src, const char* name) {
+static GLuint compileShader(GLenum type, const char* src, const char* name, const char* defines) {
   GLuint s = glCreateShader(type);
-  glShaderSource(s, 1, &src, nullptr);
+  if (defines && *defines) {   // after the source's own #version line
+    const char* nl = std::strchr(src, '\n');
+    std::string head(src, nl ? nl + 1 - src : std::strlen(src));
+    const char* parts[3] = {head.c_str(), defines, nl ? nl + 1 : ""};
+    glShaderSource(s, 3, parts, nullptr);
+  } else glShaderSource(s, 1, &src, nullptr);
   glCompileShader(s);
   GLint ok = 0;
   glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
@@ -542,8 +615,8 @@ static GLuint compileShader(GLenum type, const char* src, const char* name) {
   }
   return s;
 }
-GLuint compileProgram(const char* vs, const char* fs, const char* name) {
-  GLuint v = compileShader(GL_VERTEX_SHADER, vs, name), f = compileShader(GL_FRAGMENT_SHADER, fs, name);
+GLuint compileProgram(const char* vs, const char* fs, const char* name, const char* defines) {
+  GLuint v = compileShader(GL_VERTEX_SHADER, vs, name, defines), f = compileShader(GL_FRAGMENT_SHADER, fs, name, defines);
   if (!v || !f) return 0;
   GLuint p = glCreateProgram();
   glAttachShader(p, v);
@@ -567,6 +640,8 @@ static const int SHADOW_SIZE = 2048;
 
 bool Renderer::init() {
   litProg_ = compileProgram(LIT_VS, LIT_FS, "lit");
+  terrainProg_ = compileProgram(LIT_VS, LIT_FS, "terrain", "#define TERRAIN 1\n");
+  if (!terrainProg_) logWarn("terrain shader unavailable: the ground is drawn plain");
   depthProg_ = compileProgram(DEPTH_VS, DEPTH_FS, "depth");
   partProg_ = compileProgram(PART_VS, PART_FS, "particles");
   if (!litProg_ || !depthProg_ || !partProg_) return false;
@@ -667,9 +742,10 @@ static GLint U(GLuint p, const char* n) {
   return m[n] = glGetUniformLocation(p, n);
 }
 
-void Renderer::setMaterial(const Material& m, bool receive, bool shadowsOn) {
-  GLuint p = litProg_;
-  glUniform1i(U(p, "uType"), (int)m.type);
+void Renderer::setMaterial(GLuint p, const Material& m, bool receive, bool shadowsOn) {
+  glUniform1i(U(p, "uType"), m.type == MatType::Terrain && p != terrainProg_ ? (int)MatType::Phong : (int)m.type);
+  glUniform1i(U(p, "uScenery"), m.scenery);
+  glUniform1i(U(p, "uInstAlpha"), m.instAlpha);
   glUniform3fv(U(p, "uColor"), 1, glm::value_ptr(m.color));
   glUniform1f(U(p, "uOpacity"), m.transparent ? m.opacity : 1.f);
   glUniform1f(U(p, "uRoughness"), m.roughness);
@@ -749,21 +825,9 @@ void Renderer::render(const SceneParams& sp) {
   glDepthMask(GL_TRUE);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-  glUseProgram(litProg_);
-  GLuint p = litProg_;
-  glUniformMatrix4fv(U(p, "uView"), 1, GL_FALSE, glm::value_ptr(sp.view));
-  glUniformMatrix4fv(U(p, "uProj"), 1, GL_FALSE, glm::value_ptr(sp.proj));
-  glUniformMatrix4fv(U(p, "uLightVP"), 1, GL_FALSE, glm::value_ptr(lightVP));
-  glUniform1f(U(p, "uNormalBias"), 0.02f);
-  glUniform1f(U(p, "uShadowBias"), -0.0005f);
-  glUniform1f(U(p, "uShadowTexel"), 1.f / SHADOW_SIZE);
-  glUniform3fv(U(p, "uCamPos"), 1, glm::value_ptr(sp.camPos));
   glm::vec3 amb = sp.ambientColor * sp.ambientIntensity;
-  glUniform3fv(U(p, "uAmbient"), 1, glm::value_ptr(amb));
   glm::vec3 dd[2] = {sunDir, glm::normalize(sp.fill.pos)};
   glm::vec3 dc[2] = {sp.sun.color * sp.sun.intensity, sp.fill.color * sp.fill.intensity};
-  glUniform3fv(U(p, "uDirDir"), 2, glm::value_ptr(dd[0]));
-  glUniform3fv(U(p, "uDirColor"), 2, glm::value_ptr(dc[0]));
   glm::vec3 pp[4], pc[4];
   float pd[4], pdec[4];
   for (int i = 0; i < 4; i++) {
@@ -772,21 +836,7 @@ void Renderer::render(const SceneParams& sp) {
     pd[i] = sp.points[i].distance;
     pdec[i] = sp.points[i].decay;
   }
-  glUniform3fv(U(p, "uPtPos"), 4, glm::value_ptr(pp[0]));
-  glUniform3fv(U(p, "uPtColor"), 4, glm::value_ptr(pc[0]));
-  glUniform1fv(U(p, "uPtDist"), 4, pd);
-  glUniform1fv(U(p, "uPtDecay"), 4, pdec);
   glm::vec3 spc = sp.spot.color * sp.spot.intensity, spd = glm::length(sp.spot.dir) > 0 ? glm::normalize(sp.spot.dir) : glm::vec3(0, -1, 0);
-  glUniform3fv(U(p, "uSpPos"), 1, glm::value_ptr(sp.spot.pos));
-  glUniform3fv(U(p, "uSpDir"), 1, glm::value_ptr(spd));
-  glUniform3fv(U(p, "uSpColor"), 1, glm::value_ptr(spc));
-  glUniform1f(U(p, "uSpDist"), sp.spot.distance);
-  glUniform1f(U(p, "uSpDecay"), sp.spot.decay);
-  glUniform2f(U(p, "uSpCos"), sp.spot.cosOuter, sp.spot.cosInner);
-  glUniform1i(U(p, "uShadows"), shadows);
-  glUniform3fv(U(p, "uFogColor"), 1, glm::value_ptr(sp.fogColor));
-  glUniform1f(U(p, "uFogNear"), sp.fogNear);
-  glUniform1f(U(p, "uFogFar"), sp.fogFar);
   glm::vec4 glP[MAX_GLOWS], glC[MAX_GLOWS];   // the small lights (lit shader and sprites)
   const int glN = std::clamp(sp.glowCount, 0, MAX_GLOWS);
   for (int i = 0; i < glN; i++) {
@@ -799,16 +849,56 @@ void Renderer::render(const SceneParams& sp) {
     glUniform4fv(U(prog, "uGlPos"), glN, glm::value_ptr(glP[0]));
     glUniform4fv(U(prog, "uGlColor"), glN, glm::value_ptr(glC[0]));
   };
-  glowUniforms(p);
-  glUniform1i(U(p, "uMap"), 0);
-  glUniform1i(U(p, "uEmissiveMap"), 1);
-  glUniform1i(U(p, "uNormalMap"), 2);
-  glUniform1i(U(p, "uShadowMap"), 3);
+  // the frame's uniforms, alike for the lit program and its terrain variant (GL 3.3: set on the bound program)
+  auto frameUniforms = [&](GLuint p) {
+    glUseProgram(p);
+    glUniformMatrix4fv(U(p, "uView"), 1, GL_FALSE, glm::value_ptr(sp.view));
+    glUniformMatrix4fv(U(p, "uProj"), 1, GL_FALSE, glm::value_ptr(sp.proj));
+    glUniformMatrix4fv(U(p, "uLightVP"), 1, GL_FALSE, glm::value_ptr(lightVP));
+    glUniform1f(U(p, "uNormalBias"), 0.02f);
+    glUniform1f(U(p, "uShadowBias"), -0.0005f);
+    glUniform1f(U(p, "uShadowTexel"), 1.f / SHADOW_SIZE);
+    glUniform3fv(U(p, "uCamPos"), 1, glm::value_ptr(sp.camPos));
+    glUniform3fv(U(p, "uAmbient"), 1, glm::value_ptr(amb));
+    glUniform3fv(U(p, "uDirDir"), 2, glm::value_ptr(dd[0]));
+    glUniform3fv(U(p, "uDirColor"), 2, glm::value_ptr(dc[0]));
+    glUniform3fv(U(p, "uPtPos"), 4, glm::value_ptr(pp[0]));
+    glUniform3fv(U(p, "uPtColor"), 4, glm::value_ptr(pc[0]));
+    glUniform1fv(U(p, "uPtDist"), 4, pd);
+    glUniform1fv(U(p, "uPtDecay"), 4, pdec);
+    glUniform3fv(U(p, "uSpPos"), 1, glm::value_ptr(sp.spot.pos));
+    glUniform3fv(U(p, "uSpDir"), 1, glm::value_ptr(spd));
+    glUniform3fv(U(p, "uSpColor"), 1, glm::value_ptr(spc));
+    glUniform1f(U(p, "uSpDist"), sp.spot.distance);
+    glUniform1f(U(p, "uSpDecay"), sp.spot.decay);
+    glUniform2f(U(p, "uSpCos"), sp.spot.cosOuter, sp.spot.cosInner);
+    glUniform1i(U(p, "uShadows"), shadows);
+    glUniform3fv(U(p, "uFogColor"), 1, glm::value_ptr(sp.fogColor));
+    glUniform1f(U(p, "uFogNear"), sp.fogNear);
+    glUniform1f(U(p, "uFogFar"), sp.fogFar);
+    glUniform1f(U(p, "uNight"), sp.terrainTex ? sp.night : 0.f);   // (no texture: the old night, to the fog colour)
+    glUniform1f(U(p, "uNightDesat"), sp.nightDesat);
+    glUniform3fv(U(p, "uMoonTint"), 1, glm::value_ptr(sp.moonTint));
+    glUniform1i(U(p, "uHiDetail"), sp.hiDetail);
+    glowUniforms(p);
+    glUniform1i(U(p, "uMap"), 0);
+    glUniform1i(U(p, "uEmissiveMap"), 1);
+    glUniform1i(U(p, "uNormalMap"), 2);
+    glUniform1i(U(p, "uShadowMap"), 3);
+    glUniform1i(U(p, "uTerrainTex"), 4);
+  };
+  if (terrainProg_) frameUniforms(terrainProg_);
+  frameUniforms(litProg_);
   glActiveTexture(GL_TEXTURE3);
   glBindTexture(GL_TEXTURE_2D, shadowTex_);
+  glActiveTexture(GL_TEXTURE4);
+  glBindTexture(GL_TEXTURE_2D, sp.terrainTex ? sp.terrainTex->id : whiteTex_);
 
+  GLuint cur = litProg_;   // the bound program (0: something else drew since: rebind)
   auto drawCmd = [&](const Cmd& c) {
-    setMaterial(*c.mat, c.receive, shadows);
+    const GLuint p = c.mat->type == MatType::Terrain && terrainProg_ ? terrainProg_ : litProg_;
+    if (p != cur) { glUseProgram(p); cur = p; }
+    setMaterial(p, *c.mat, c.receive, shadows);
     glUniformMatrix4fv(U(p, "uModel"), 1, GL_FALSE, glm::value_ptr(c.model));
     glBindVertexArray(c.mesh->vao);
     bindInstances(c.first);
@@ -842,13 +932,14 @@ void Renderer::render(const SceneParams& sp) {
   for (auto& [z, c] : tr) {
     if (c->custom >= 0) {
       customs_[c->custom].fn(ctx);
+      cur = 0;
       continue;
     }
     if (!c->ps) {
-      glUseProgram(litProg_);
       drawCmd(*c);
       continue;
     }
+    cur = 0;
     pbuf.clear();
     pbuf.reserve(c->ps->p.size() * 9);
     for (const auto& q : c->ps->p) pbuf.insert(pbuf.end(), {q.pos.x, q.pos.y, q.pos.z, q.size, q.col.r, q.col.g, q.col.b, q.alpha, q.rot});

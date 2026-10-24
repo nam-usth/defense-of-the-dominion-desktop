@@ -143,33 +143,55 @@ bool Game::init(GLFWwindow* win) {
 }
 
 void Game::buildScene() {
-  // Ground: large enough that its edge is lost in the fog from the low close-up angle
+  // Ground: large enough that its edge is lost in the fog from the low close-up angle. Drawn
+  // procedurally (render.cpp, LIT_FS with TERRAIN): two grass tones, soft dirt patches, a worn
+  // ring round the bunker, from one tileable noise texture (buildTerrainTex)
   Geometry g = geo::plane(120, 120);
   g.transform(trs({0, 0, 0}, {-PI / 2, 0, 0}));
   groundMesh_ = Mesh::create(g);
-  groundMat_.type = MatType::Phong;
-  groundMat_.color = hexColor(0x2d4a18);
+  groundMat_.type = MatType::Terrain;
+  groundMat_.color = hexColor(0x2d4a18);   // (the plain ground without the terrain shader)
   groundMat_.specular = hexColor(0x080808);
   groundMat_.shininess = 4;
-  // Dirt patches + rocks, merged: one mesh per material
-  Geometry dirt, rocks;
-  for (int i = 0; i < 20; i++) {
-    Geometry p = geo::plane(rnd() * 2 + .4f, rnd() * 1.2f + .3f).nonIndexed();
-    p.transform(trs({(rnd() - .5f) * 36, .01f, (rnd() - .5f) * 22}, {-PI / 2, 0, 0}));
-    dirt.append(p);
+  buildTerrainTex();
+  // Boulders: clusters of faceted rocks (a big one, two or three small ones) out past the Sensor
+  // ring and the Zerg's spawn band (r 17.5-24), sunk a quarter into the ground; three shapes
+  for (int k = 0; k < 3; k++) {
+    Geometry r = geo::icosahedron(1, 1).nonIndexed();
+    for (Vertex& v : r.v) {
+      glm::ivec3 q(glm::round(v.p * 1000.f));   // the faces sharing a corner move it alike
+      uint32_t h = (uint32_t)q.x * 73856093u ^ (uint32_t)q.y * 19349663u ^ (uint32_t)q.z * 83492791u ^ (uint32_t)(k + 1) * 2654435761u;
+      h ^= h >> 13;
+      h *= 0x5bd1e995u;
+      h ^= h >> 15;
+      v.p *= 0.78f + 0.44f * (h & 0xffff) / 65535.f;
+      v.p.y = std::min(v.p.y, 0.55f);   // a flattish top
+      v.p *= glm::vec3(1, 0.68f, 0.85f);
+    }
+    r.computeFlatNormals();
+    rockMesh_[k] = Mesh::create(r);
   }
-  for (int i = 0; i < 16; i++) {
-    float a = i / 16.f * PI * 2, r = 14 + rnd() * 2.5f;
-    Geometry p = geo::dodecahedron(rnd() * .5f + .25f);
-    p.transform(trs({std::cos(a) * r, .3f, std::sin(a) * r}, {rnd(), rnd(), rnd()}));
-    rocks.append(p);
+  static const uint32_t ROCK_COL[3] = {0x4a3f32, 0x423e39, 0x534735};   // dark: in the sun their tops still read pale
+  auto rock = [&](glm::vec2 at, float s) {
+    const int k = std::min(2, (int)(rnd() * 3));
+    Instance in;
+    in.m = trs({at.x, 0.42f * s, at.y}, {(rnd() - .5f) * .5f, rnd() * 2 * PI, (rnd() - .5f) * .5f}, glm::vec3(s));
+    in.c = hexColor(ROCK_COL[k]) * (0.9f + 0.2f * rnd());
+    rockInst_[k].push_back(in);
+  };
+  for (int i = 0; i < 18; i++) {
+    float a = i / 18.f * 2 * PI + (rnd() - .5f) * .25f, r = i % 3 == 2 ? 21 + 3 * rnd() : 17.5f + 3.5f * rnd();
+    glm::vec2 c(std::cos(a) * r, std::sin(a) * r);
+    rock(c, 0.55f + 0.3f * rnd());
+    for (int j = 0, n = 2 + (rnd() < .5f); j < n; j++) {
+      float b = rnd() * 2 * PI, d = 0.5f + 0.5f * rnd();
+      rock(c + glm::vec2(std::cos(b), std::sin(b)) * d, 0.18f + 0.22f * rnd());
+    }
   }
-  dirtMesh_ = Mesh::create(dirt);
-  rockMesh_ = Mesh::create(rocks);
-  dirtMat_ = groundMat_;
-  dirtMat_.color = hexColor(0x4a3a18);
-  rockMat_.type = MatType::Lambert;
-  rockMat_.color = hexColor(0x554433);
+  rockMat_.type = MatType::Phong;   // its facets catch the sun, the moon and the lamps
+  rockMat_.specular = hexColor(0x0a0a0a);
+  rockMat_.shininess = 8;
+  rockMat_.scenery = true;
 
   // Procedural stand-ins (used until / unless an SC2 model loads)
   {
@@ -245,6 +267,72 @@ void Game::buildScene() {
   nukeTargetTex_ = loadTexture(NUKE_TARGET_TEX);
   if (!nukeTargetTex_) logWarn("nuke target texture failed to load — using a plain ring");
   rebuildBunkerTris();
+}
+
+// The ground's noise (render.cpp LIT_FS, TERRAIN, reads it at three rotated scales): 256² of
+// value-noise fbm that tiles. R the macro tone, G the mid tone and the dirt, BA the slope of a
+// fine pebbly height (a quintic fade: no lattice creases under a low light)
+void Game::buildTerrainTex() {
+  const int N = 256;
+  auto latt = [](int x, int y, int P, uint32_t seed) {
+    x = ((x % P) + P) % P;
+    y = ((y % P) + P) % P;
+    uint32_t h = (uint32_t)x * 0x8da6b343u ^ (uint32_t)y * 0xd8163841u ^ seed * 0xcb1ab31fu;
+    h ^= h >> 13;
+    h *= 0x5bd1e995u;
+    h ^= h >> 15;
+    return (h & 0xffffff) / 16777215.f;
+  };
+  auto noise = [&](float u, float v, int P, uint32_t seed) {   // one period over u, v in [0, 1)
+    float x = u * P, y = v * P;
+    int ix = (int)std::floor(x), iy = (int)std::floor(y);
+    float fx = x - ix, fy = y - iy;
+    fx = fx * fx * fx * (fx * (fx * 6 - 15) + 10);
+    fy = fy * fy * fy * (fy * (fy * 6 - 15) + 10);
+    float a = latt(ix, iy, P, seed), b = latt(ix + 1, iy, P, seed), c = latt(ix, iy + 1, P, seed), d = latt(ix + 1, iy + 1, P, seed);
+    return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
+  };
+  auto fbm = [&](float u, float v, int P0, int oct, uint32_t seed) {
+    float s = 0, w = 0, amp = 1;
+    for (int o = 0; o < oct; o++, amp *= .5f) {
+      s += amp * noise(u, v, P0 << o, seed + 101 * o);
+      w += amp;
+    }
+    return s / w;
+  };
+  std::vector<float> R(N * N), G(N * N), H(N * N);
+  for (int y = 0; y < N; y++)
+    for (int x = 0; x < N; x++) {
+      float u = (x + .5f) / N, v = (y + .5f) / N;
+      int i = y * N + x;
+      R[i] = fbm(u, v, 4, 4, 1);
+      G[i] = fbm(u, v, 6, 4, 7);
+      H[i] = fbm(u, v, 16, 3, 13) + 0.35f * (1 - std::abs(2 * fbm(u, v, 24, 2, 29) - 1));
+    }
+  auto stretch = [](std::vector<float>& c) {   // to the full range: the shader's thresholds then hit their coverage
+    auto [lo, hi] = std::minmax_element(c.begin(), c.end());
+    float a = *lo, d = std::max(1e-6f, *hi - *lo);
+    for (float& v : c) v = (v - a) / d;
+  };
+  stretch(R);
+  stretch(G);
+  std::vector<glm::vec2> slope(N * N);
+  float most = 1e-6f;
+  for (int y = 0; y < N; y++)
+    for (int x = 0; x < N; x++) {
+      auto h = [&](int a, int b) { return H[((b + N) % N) * N + (a + N) % N]; };
+      glm::vec2 g(h(x + 1, y) - h(x - 1, y), h(x, y + 1) - h(x, y - 1));
+      slope[y * N + x] = g;
+      most = std::max({most, std::abs(g.x), std::abs(g.y)});
+    }
+  std::vector<uint8_t> px((size_t)N * N * 4);
+  for (int i = 0; i < N * N; i++) {
+    px[i * 4] = (uint8_t)std::lround(255 * R[i]);
+    px[i * 4 + 1] = (uint8_t)std::lround(255 * G[i]);
+    px[i * 4 + 2] = (uint8_t)std::lround(128 + 127 * glm::clamp(slope[i].x / most, -1.f, 1.f));
+    px[i * 4 + 3] = (uint8_t)std::lround(128 + 127 * glm::clamp(slope[i].y / most, -1.f, 1.f));
+  }
+  terrainTex_ = Texture::create(N, N, px.data(), true, 4);
 }
 
 // The night effects' textures (drawn here: no art for them), shapes and materials
@@ -416,6 +504,24 @@ void Game::buildNightFx() {
       }
     blastTex_ = Texture::create(N, N, px.data());
   }
+  {   // a contact shadow: dark in the middle, gone well before the edge
+    const int N = 32;
+    std::vector<uint8_t> px(N * N * 4);
+    for (int j = 0; j < N; j++)
+      for (int i = 0; i < N; i++) {
+        float x = (i + .5f) / N * 2 - 1, y = (j + .5f) / N * 2 - 1, r = std::sqrt(x * x + y * y);
+        uint8_t* p = &px[(j * N + i) * 4];
+        p[0] = p[1] = p[2] = 255;
+        p[3] = (uint8_t)std::lround(255 * std::exp(-3.5f * r * r) * (1 - glm::smoothstep(0.7f, 1.f, r)));
+      }
+    blobTex_ = Texture::create(N, N, px.data());
+  }
+  blobMat_.type = MatType::Basic;
+  blobMat_.color = glm::vec3(0);
+  blobMat_.map = blobTex_;
+  blobMat_.instAlpha = true;
+  blobMat_.transparent = true;
+  blobMat_.depthWrite = false;   // (fogged: in the dark it fades with the ground under it)
   for (Material* m : {&tracerGlowMat_, &tracerPoolMat_, &blipMat_, &sensorRingMat_, &vmFlameGlowMat_, &vmFlameCoreMat_, &blastWashMat_, &mgBlueGlowMat_, &mgBlueCoreMat_}) {
     m->type = MatType::Basic;
     m->transparent = true;
@@ -1953,19 +2059,25 @@ static const GfxLights GFX_HIGH = {0x99aabb, 0.7f, 1.8f, 0.5f}, GFX_LOW = {0xaaa
 void Game::applyDNLights(float f) {
   dnLightF_ = f;
   const GfxLights& b = gfxHigh_ ? GFX_HIGH : GFX_LOW;
-  ambCol_ = lerp3(hexColor(b.ambCol), hexColor(0x112233), f);
-  ambI_ = b.amb * (1 - f) + 0.18f * f;
+  ambCol_ = lerp3(hexColor(b.ambCol), hexColor(0x223459), f);
+  ambI_ = b.amb * (1 - f) + 0.26f * f;
   // sun: day full → night off, through a warm low sun at dusk / dawn
   sunCol_ = f < 0.45f ? lerp3(hexColor(0xfff4cc), hexColor(0xff9a55), f / 0.45f) : lerp3(hexColor(0xff9a55), hexColor(0x001122), (f - 0.45f) / 0.55f);
   sunI_ = b.sun * (1 - f);
-  fillI_ = b.fill * (1 - f);
-  bunkerLightI_ = f * 5.5f;
+  // the day's fill light becomes a cool moon from behind left (no shadows: cheaper, and a shadow
+  // could give a hidden Zerg away)
+  fillCol_ = lerp3(hexColor(0x4488cc), hexColor(0x8fa8e8), f);
+  fillPos_ = glm::mix(glm::vec3(-8, 10, -6), glm::vec3(-9, 16, -12), f);
+  fillI_ = b.fill * (1 - f) + 0.32f * f;
+  bunkerLightI_ = f * 4.4f;
   // Fog: the radius shrinks by the same ratio every second (geometric blend).
   // Blended linearly, it stayed outside the battlefield for the first 60% of
   // dusk, then closed in on the bunker all at once.
   fogNear_ = DN_DAY_FOG_NEAR * std::pow(DN_NIGHT_FOG_NEAR / DN_DAY_FOG_NEAR, f);
   fogFar_ = DN_DAY_FOG_FAR * std::pow(DN_NIGHT_FOG_FAR / DN_DAY_FOG_FAR, f);
-  fogCol_ = lerp3(hexColor(0x2a3a18), hexColor(0x050a12), f);
+  // the sky: violet at dusk against the low orange sun, night blue (the fogged field itself fades
+  // to its own moonlit value: SceneParams::night)
+  fogCol_ = f < 0.5f ? lerp3(hexColor(0x2a3a18), hexColor(0x1d1f33), f / 0.5f) : lerp3(hexColor(0x1d1f33), hexColor(0x070c18), (f - 0.5f) / 0.5f);
 }
 
 // Night factor at time t of the cycle: 0 through the day, eased up through dusk,
@@ -2893,8 +3005,7 @@ static void writeBulletMatrix(glm::mat4& m, const Bullet& b, float L) {
 void Game::render() {
   R.begin();
   R.draw(groundMesh_, &groundMat_, glm::mat4(1), false, true);
-  R.draw(dirtMesh_, &dirtMat_, glm::mat4(1), false, false);
-  R.draw(rockMesh_, &rockMat_, glm::mat4(1), false, false);
+  for (int k = 0; k < 3; k++) R.drawInstanced(rockMesh_[k], &rockMat_, rockInst_[k].data(), (int)rockInst_[k].size(), gfxHigh_, true);
 
   // bunker (+ Neosteel frame from Lv2, Shrike turret from Lv3)
   if (bunkerModel_) {
@@ -2929,6 +3040,25 @@ void Game::render() {
   for (auto& [k, pool] : pools_)
     if (!pool->inst.empty())
       for (const BakedPart& p : pool->parts) R.drawInstanced(p.mesh, p.mat, pool->inst.data(), (int)pool->inst.size(), p.cast, false);
+
+  // contact shadows: a soft dark blob under each Zerg, corpse and unit out of the bunker, what the
+  // shadow map misses (the ground right under a body; by night, with no sun at all). None under a
+  // Zerg the night hides (it is not drawn), fainter as the dark takes it, gone as a body flies
+  blobInst_.clear();
+  auto blob = [&](const glm::vec3& p, float rotY, float w, float l, float k) {
+    k *= (1 - glm::smoothstep(0.1f, 1.6f, p.y)) * (1 - dnLightF_ * nightDark(p.x, p.z)) * (1 - 0.25f * dnLightF_);
+    if (k > 0.02f) blobInst_.push_back({trs({p.x, 0.02f, p.z}, {0, rotY, 0}, {w, 1, l}), glm::vec3(k)});
+  };
+  for (auto* list : {&zerglings_, &roaches_})
+    for (auto& e : *list)
+      if (!e->dead && e->visible && e->pool) {
+        if (e->type == 'r') blob(e->pos, e->rotY, 1.5f, 1.9f, 0.6f);
+        else blob(e->pos, e->rotY, 1.0f, 1.3f, 0.55f);
+      }
+  for (const Corpse& c : corpses_) blob(c.pos, c.rotY, 1.1f, 1.4f, 0.45f * (c.flung ? 1 : std::max(0.f, 1 - c.t * 1.4f)));
+  for (const UnitFig& m : marines_)
+    if (m.visible) blob(m.pos, m.rotY, 0.8f, 0.8f, 0.5f);
+  if (!blobInst_.empty()) R.drawInstanced(blipMesh_, &blobMat_, blobInst_.data(), (int)blobInst_.size(), false, false, -1);
 
   // units out of the bunker
   for (const UnitFig& m : marines_) {
@@ -3188,14 +3318,18 @@ void Game::render() {
   sp.ambientColor = ambCol_ * ambI_ + glm::vec3(1, 0.97f, 0.92f) * (6 * nkFlash);
   sp.ambientIntensity = 1;
   sp.sun = {{10, 28, 8}, sunCol_, sunI_};
-  sp.fill = {{-8, 10, -6}, hexColor(0x4488cc), fillI_};
-  sp.points[0] = {{0, 2.5f, 0}, hexColor(0xff9944), bunkerLightI_, 14, 2};   // night glow
+  sp.fill = {fillPos_, fillCol_, fillI_};
+  sp.points[0] = {{0, 2.6f, 0}, hexColor(0xffd2a0), bunkerLightI_, 15, 2};   // night glow: warm white (on the greyed grass: khaki, not lime)
   sp.points[1] = {muzzlePos_, hexColor(0xffb060), muzzleI_, 4.5f, 2};        // muzzle flash on the hull
   sp.points[2] = {firePos_, hexColor(0xff6a1a), fireI_, 6, 2};              // the bunker burns
   sp.points[3] = {nkPos, nkCol, 30 * nkFlash + 1.3f * nukeLightK() * (1 + 3 * dnFactor_), 24, 1.5f};   // a nuke's fireball (strongest at night)
   sp.spot = lampSpot_;   // a crate runner's chest lamps
   std::copy(glows_, glows_ + glowCount_, sp.glows);   // Marauder grenades and their bursts
   sp.glowCount = glowCount_;
+  sp.night = dnLightF_;
+  sp.nightDesat = 0.55f * dnLightF_;
+  sp.terrainTex = terrainTex_;
+  sp.hiDetail = gfxHigh_ && zoom_ > 0.5f;   // the finest ground detail is sub-pixel from the overview
   sp.fogColor = fogCol_ + glm::vec3(1, 0.95f, 0.85f) * (0.9f * nkFlash) + glm::vec3(1, 0.45f, 0.15f) * (0.12f * nukeLightK() * dnFactor_);
   sp.fogNear = fogNear_;
   sp.fogFar = fogFar_;
