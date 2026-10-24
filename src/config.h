@@ -8,7 +8,8 @@ constexpr int   base_ammo = 30;
 constexpr int   victory_wave = 15;          // campaign: clearing this wave wins and unlocks Endless
 constexpr float airstrike_cd = 20, nuke_cd = 15;
 constexpr int   nuke_wave = 5, roach_wave = 4;
-constexpr float stim_duration = 11, stim_hp = 10;   // SC2 Stimpack: 11 s, 10 HP per Marine (paid by the bunker)
+constexpr float stim_duration = 11, stim_hp = 10, stim_hp_marauder = 20;   // SC2 Stimpack: 11 s, 10 HP per Marine, 20 per Marauder (paid by the bunker)
+constexpr int   stim_marines[4] = {6, 4, 2, 1};     // Marines in the bunker Stimpack needs: base, then per Super Stimpack tier
 constexpr float superstim_heal = 6;                 // Super Stimpack: no HP cost, repairs the bunker 6 HP/s while active
 constexpr int   metabolic_wave = 8;
 constexpr float metabolic_boost = 1.6f;             // Metabolic Boost: from wave 8 Zerglings run 60% faster
@@ -17,9 +18,10 @@ constexpr float repair_rate = 25;                   // Lv3 hull self-repair, HP/
 // Endless: every wave past the campaign's last one reinforces the bunker
 constexpr float endless_dmg = 0.05f, endless_hp = 60, endless_repair = 0.10f;
 constexpr int   endless_ammo = 2;
-// Endless armory: repeatable purchases, each 30% dearer than the last of its kind
-constexpr float armory_growth = 1.3f, armory_hp = 150, armory_dmg = 0.10f;
-constexpr int   armory_ammo = 6;
+// Endless armory: repeatable purchases, each 30% dearer than the last of its kind (ammo: 15%, so more
+// can be bought; each adds half a starting magazine)
+constexpr float armory_growth = 1.3f, armory_ammo_growth = 1.15f, armory_hp = 150, armory_dmg = 0.10f;
+constexpr int   armory_ammo = 15;
 constexpr float armory_cd = 0.9f, armory_cd_min = 0.4f;
 constexpr int dmg_costs[3][2]   = {{100, 20}, {160, 32}, {256, 51}};
 constexpr int armor_costs[3][2] = {{125, 30}, {200, 48}, {320, 77}};

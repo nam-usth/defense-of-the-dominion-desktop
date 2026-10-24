@@ -34,6 +34,34 @@ static float ascent(const Txt& t) {
   ImFont* f = font(t.px, t.mono);
   return f->Ascent * (t.px * sc() / f->FontSize);
 }
+// SC2's autocast mark: two bright dashes with fading tails running round a button's border (the
+// cut-panel outline, corner cut `cut`), one lap every 1.6 s
+static void autocastBorder(ImDrawList* dl, ImVec2 a, ImVec2 b, float cut, float t, ImU32 col) {
+  const float s = sc(), c = std::min({cut, (b.x - a.x) / 2, (b.y - a.y) / 2});
+  const ImVec2 q[7] = {{a.x + c, a.y + 1}, {b.x - 1, a.y + 1}, {b.x - 1, b.y - c}, {b.x - c, b.y - 1}, {a.x + 1, b.y - 1}, {a.x + 1, a.y + c}, {a.x + c, a.y + 1}};
+  float len[6], total = 0;
+  for (int i = 0; i < 6; i++) total += len[i] = std::hypot(q[i + 1].x - q[i].x, q[i + 1].y - q[i].y);
+  auto at = [&](float d) {   // the point d along the outline
+    d = std::fmod(d, total);
+    if (d < 0) d += total;
+    for (int i = 0; i < 6; i++) {
+      if (d <= len[i]) { float k = d / std::max(1e-3f, len[i]); return ImVec2(q[i].x + (q[i + 1].x - q[i].x) * k, q[i].y + (q[i + 1].y - q[i].y) * k); }
+      d -= len[i];
+    }
+    return q[0];
+  };
+  const int STEPS = 12;
+  const float dash = total * 0.18f;
+  for (int n = 0; n < 2; n++) {
+    float head = t / 1.6f * total + n * total / 2;
+    for (int k = 0; k < STEPS; k++) {
+      float w = 1 - (float)k / STEPS;   // brightest at the head
+      ImVec2 p0 = at(head - dash * k / STEPS), p1 = at(head - dash * (k + 1) / STEPS);
+      dl->AddLine(p0, p1, alpha(col, 0.3f * w), 4.5f * s * w + 1);   // its glow
+      dl->AddLine(p0, p1, alpha(col, w), 1.6f * s * w + 0.5f);
+    }
+  }
+}
 // text whose baseline sits at y
 static void textB(ImDrawList* dl, float x, float base, const char* s, const Txt& t) { text(dl, {x, base - ascent(t)}, s, t); }
 static void richB(ImDrawList* dl, float x, float base, const char* s, const Txt& t) { rich(dl, {x, base - ascent(t)}, s, t); }
@@ -406,7 +434,7 @@ void Game::drawConsole(float dt) {
     {"conc", concussiveLvl_, concussiveUnlocked_, ui_icons::concussive, "Concussive Shells"},
     {"snipe", snipeLvl_, snipeUnlocked_, ui_icons::snipe, "Snipe"},
     {"sensor", sensorLvl_, sensorLvl_ >= 1, nullptr, sensorTip.c_str()},   // placeholder glyph, no PNG yet
-    {"superstim", 3, superStimUnlocked_, ui_icons::superstim, "Super Stimpack"},
+    {"superstim", superStimLvl_, superStimUnlocked_, ui_icons::superstim, "Super Stimpack"},
     {"endless", 3, en > 0 || anyArmory, nullptr, endTip.c_str()},
     {"shrike", 3, hpLvl_ >= 3, ui_icons::shrike, od ? "Shrike overdrive \xE2\x80\x94 six Marines inside: rate of fire \xC3\x97" "2.5" : "Shrike turret \xE2\x80\x94 auto-fire, firepower of 2 marines"},
   };
@@ -566,7 +594,7 @@ void Game::drawConsole(float dt) {
     if (isOd) border = lerpCol(rgb(0xa02a20), rgb(0xff5a48), 0.5f + 0.5f * std::sin(uiTime_ * 3.14159f / 0.5f));
     cutPanel(dl, a, b, 5 * s, alpha(rgb(0x0b1726), op), alpha(rgb(0x050b14), op), alpha(border, op));
     if (isOd) dl->AddRectFilled({a.x + 2 * s, a.y + 2 * s}, {b.x - 2 * s, b.y - 2 * s}, rgb(0xff3c28, 0.15f + 0.15f * std::sin(uiTime_ * 6.28f)));
-    bool hasPips = strcmp(c.id, "superstim") && strcmp(c.id, "shrike") && strcmp(c.id, "endless");
+    bool hasPips = strcmp(c.id, "shrike") && strcmp(c.id, "endless");
     ImVec2 ctr((a.x + b.x) / 2, (a.y + b.y) / 2 - (hasPips ? 3 * s : 0));
     if (!strcmp(c.id, "endless")) {
       svgIcon(dl, "endless", {ctr.x, ctr.y - 4 * s}, 16 * s, rgb(GOLD));
@@ -738,7 +766,7 @@ void Game::drawPortrait(float x0, float y0, float w, float h) {
 struct CmdInfo { const char *t, *k, *d; };
 static const std::map<std::string, CmdInfo> CMD_INFO = {
   {"air", {"AIRSTRIKE", "R", "A Viking fires a missile at every enemy cluster and drops an ammo crate by the bunker \xE2\x80\x94 your reload once the magazine is empty."}},
-  {"stim", {"STIMPACK", "T", "Unlocked by a full Marine squad (6/6). For 11 s the Marines fire 50% faster (an extra round every other volley, no extra ammo). Costs 10 HP per Marine, paid by the bunker \xE2\x80\x94 free and repairing with the Super Stimpack research."}},
+  {"stim", {"STIMPACK", "T", "Unlocked by six Marines in the bunker (fewer with Super Stimpack's tiers: 4, 2, 1). For 11 s the Marines and Marauders fire 50% faster (an extra round every other volley, no extra ammo). Costs 10 HP per Marine and 20 per Marauder, paid by the bunker \xE2\x80\x94 free and repairing with the Super Stimpack research, which also lets you right-click it for autocast: it stims whenever you fire (a gold light runs round the button)."}},
   {"nuke", {"NUKE", "N", "Tactical nuke on the centre of the swarm after a 2-second warning. Wipes out everything in a huge radius."}},
   {"roster", {"BUNKER ROSTER", "B", "Hire Marines, Marauders and Ghosts (6 slots) and research their upgrades. In Endless its armory sells more HP, damage, ammo and shorter strike / nuke cooldowns. The game pauses while it is open."}},
   {"view", {"RESET VIEW", "HOME", "Back to the overview. Mouse wheel or + / \xE2\x88\x92 zooms in on the bunker; Insert / Delete rotate the view 90\xC2\xB0."}},
@@ -810,7 +838,7 @@ void Game::drawCommandCard(float x0, float y0, float w, float h) {
   bool stimReady = stimUnlocked() && !stimOn && (!stimCost() || bunkerHp_ > stimCost()) && wavePhase_ == WavePhase::Combat;
   cs.push_back({"stim", "T", "STIM", superStimUnlocked_ ? ui_icons::superstim : nullptr, superStimUnlocked_ ? nullptr : "stim", !stimReady && !stimOn, stimReady,
                 false, stimOn, stimOn ? stimT_ / cfg::stim_duration : !stimUnlocked() ? 1.f : 0.f,
-                stimOn ? std::to_string((int)std::ceil(stimT_)) : !stimUnlocked() ? "6M" : ""});
+                stimOn ? std::to_string((int)std::ceil(stimT_)) : !stimUnlocked() ? fmt("%dM", stimNeed()) : ""});
 
   float pulse = 0.5f - 0.5f * std::cos(uiTime_ * 2 * 3.14159f / 1.4f);
   for (int i = 0; i < (int)cs.size(); i++) {
@@ -891,6 +919,9 @@ void Game::drawCommandCard(float x0, float y0, float w, float h) {
         text(dl, {icx - textW(c.cdText.c_str(), ct) / 2, (a.y + e.y) / 2 - textH(ct) / 2}, c.cdText.c_str(), ct);
       }
     }
+    bool stimBtn = !strcmp(c.id, "stim");
+    if (stimBtn && stimAuto_) autocastBorder(dl, a, e, 7 * s, uiTime_, rgb(0xffd040));
+    if (stimBtn && b.hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) toggleStimAuto();   // SC2: right-click = autocast
     if (b.clicked) {
       std::string id = c.id;
       if (id == "air") doAirstrike();
@@ -966,12 +997,13 @@ void Game::drawTooltip() {
     else { warn = "READY"; ok = true; }
   }
   if (shown == "stim") {
-    if (!stimUnlocked()) warn = fmt("Needs 6 Marines in the bunker (%d/6)", (int)std::count(roster_.begin(), roster_.end(), Unit::Marine));
+    if (!stimUnlocked()) warn = fmt("Needs %d Marines in the bunker (%d/%d)", stimNeed(), (int)std::count(roster_.begin(), roster_.end(), Unit::Marine), stimNeed());
     else if (stimT_ > 0) warn = fmt("Stimmed \xE2\x80\x94 %d s left", (int)std::ceil(stimT_));
     else if (stimCost() && bunkerHp_ <= stimCost()) warn = fmt("Not enough HP (%d needed)", (int)stimCost());
     else if (superStimUnlocked_ && wavePhase_ == WavePhase::Combat) { warn = std::string("READY \xE2\x80\x94 Super Stimpack: no HP cost, repairs the bunker") + (hpLvl_ >= 3 ? " (stacks with self-repair)" : ""); ok = true; }
     else if (wavePhase_ != WavePhase::Combat) warn = "Only during a wave";
     else { warn = "READY"; ok = true; }
+    if (superStimUnlocked_) warn += stimAuto_ ? "\nAutocast ON \xE2\x80\x94 stims as you fire (right-click: off)" : "\nRight-click: autocast";
   }
   if (shown == "nuke") {
     if (wave_ < cfg::nuke_wave) warn = fmt("Unlocks at wave %d", cfg::nuke_wave);
@@ -1228,7 +1260,8 @@ void Game::drawRoster() {
     // Sensor Tower: levels 1-3 bought in turn (the first is the research), no unit needed
     const auto& sk = cfg::sensor_costs;
     R rs[4] = {
-      {"superstim", Unit::Marine, "Super Stimpack", ui_icons::superstim, {250, 150}, superStimUnlocked_, 0, 0, {}, "Nova's Marines: Stimpack costs no HP and repairs the bunker while it lasts (stacks with the hull's self-repair)"},
+      {"superstim", Unit::Marine, "Super Stimpack", ui_icons::superstim, {250, 150}, superStimUnlocked_, superStimLvl_, 3, {{200, 80}, {320, 130}, {500, 200}},
+       "Nova's Marines: Stimpack costs no HP and repairs the bunker while it lasts (stacks with the hull's self-repair). Its tiers lower the Marines Stimpack needs: 6 \xE2\x86\x92 4 \xE2\x86\x92 2 \xE2\x86\x92 1"},
       {"concussive", Unit::Marauder, "Concussive Shell", ui_icons::concussive, {300, 75}, concussiveUnlocked_, concussiveLvl_, 3, {{250, 80}, {400, 130}, {600, 200}}, "Marauder blasts slow harder: to 40% speed (from 70%) for 2.5s (from 1.5s)"},
       {"snipe", Unit::Ghost, "Snipe", ui_icons::snipe, {250, 100}, snipeUnlocked_, snipeLvl_, 3, {{200, 80}, {320, 130}, {500, 200}}, "Ghost auto-snipes highest-threat enemy (8s CD)"},
       {"sensor", Unit::Marine, "Sensor Tower", nullptr, {sk[0][0], sk[0][1]}, sensorLvl_ >= 1, sensorLvl_, 3, {{sk[0][0], sk[0][1]}, {sk[1][0], sk[1][1]}, {sk[2][0], sk[2][1]}},
@@ -1247,7 +1280,7 @@ void Game::drawRoster() {
       if (r.unlocked) {
         if (!strcmp(r.key, "snipe")) status = fmt("CD: %.1fs | tier %d/3", (double)(r.lvl == 0 ? 8 : r.lvl == 1 ? 6 : r.lvl == 2 ? 4 : 2.5), r.lvl);
         if (!strcmp(r.key, "concussive")) status = fmt("Slow 40%% for 2.5s | blast radius %.1f | tier %d/3", (double)MG_RADIUS[r.lvl], r.lvl);
-        if (!strcmp(r.key, "superstim")) status = fmt("Stim: no HP cost, +%d HP/s to the bunker for %d s (stacks with self-repair)", (int)cfg::superstim_heal, (int)cfg::stim_duration);
+        if (!strcmp(r.key, "superstim")) status = fmt("Stim: no HP cost, +%d HP/s to the bunker | needs %d Marine%s | tier %d/3", (int)cfg::superstim_heal, cfg::stim_marines[r.lvl], cfg::stim_marines[r.lvl] > 1 ? "s" : "", r.lvl);
         if (sensor) status = fmt("Blips out to %g | tier %d/3", (double)cfg::sensor_range[r.lvl], r.lvl);
       }
       if (locked) status += std::string(" \xE2\x80\x94 need ") + unitDef(r.unit).key;
@@ -1297,7 +1330,7 @@ void Game::drawRoster() {
     y += 6 * s - 8 * s;
     Txt ah = T(13, GOLD, true, 2.5f);
     text(dl, {x0, y}, "ENDLESS ARMORY", ah);
-    text(dl, {x0 + textW("ENDLESS ARMORY", ah) + 8 * s, y + 2 * s}, "spend the surplus \xE2\x80\x94 each purchase costs 30% more", T(11, DIM, true, 0.5f));
+    text(dl, {x0 + textW("ENDLESS ARMORY", ah) + 8 * s, y + 2 * s}, "spend the surplus \xE2\x80\x94 each purchase costs 30% more (ammo 15%)", T(11, DIM, true, 0.5f));
     y += 21 * s;
     static const char* NAMES[4] = {"Hull plating", "Weapon tuning", "Magazine", "Fleet logistics"};
     const char* ICONS[4] = {ui_icons::neosteel, ui_icons::weapons3, ui_icons::enhanced, ui_icons::fleet};
@@ -1681,7 +1714,7 @@ void Game::drawMenu() {
     case 3: {   // CONTROLS: key → action
       static const char* keys[][2] = {
         {"CLICK", "Fire a volley (every unit in the bunker shoots)"}, {"HOLD", "Full auto (empties the magazine fast)"},
-        {"R", "Airstrike + resupply \xE2\x80\x94 when out of ammo"}, {"N", "Nuke (wave 5+)"}, {"T", "Stimpack (six Marines in the bunker)"},
+        {"R", "Airstrike + resupply \xE2\x80\x94 when out of ammo"}, {"N", "Nuke (wave 5+)"}, {"T", "Stimpack (six Marines in the bunker; fewer with Super Stimpack's tiers)"},
         {"B", "Roster: hire units, research (pauses)"}, {"1 2 3 4", "Upgrade damage \xC2\xB7 armor \xC2\xB7 bunker \xC2\xB7 ammo"},
         {"WHEEL  + \xE2\x88\x92", "Zoom in on the bunker / out"}, {"INSERT  DELETE", "Rotate the view 90\xC2\xB0 left / right"},
         {"HOME", "Reset the view"}, {"Q \xC2\xB7 Y \xC2\xB7 K", "Graphics \xC2\xB7 day/night \xC2\xB7 sound"}, {"F3", "Frame times"},
@@ -1944,7 +1977,7 @@ void Game::drawHowTo() {
     {"AMMO", "After each wave a Marine fetches a supply crate that refills the magazine. Out of ammo mid-wave? <kbd>R</kbd> calls a Viking: it fires missiles into the swarm and drops an ammo crate \xE2\x80\x94 one crate covers the wave."},
     {"MONEY", "Kills and cleared waves pay minerals and gas. Spend them on upgrades <kbd>1</kbd>\xE2\x80\x93<kbd>4</kbd> (damage, armor, hull, ammo) and on units in the roster <kbd>B</kbd>, which pauses the game."},
     {"UNITS", "The bunker has 6 slots. Marine (1 slot): all-round. Marauder (2): aims itself at the nearest enemies; its grenade blasts an area, slowing all in it, double damage to Armored. Ghost (2): bonus damage to Light, researches auto-Snipe."},
-    {"POWERS", fmt("<kbd>N</kbd> nuke from wave %d. <kbd>T</kbd> Stimpack with six Marines. Bunker hull level 3: Shrike auto-turret and self-repair.", cfg::nuke_wave)},
+    {"POWERS", fmt("<kbd>N</kbd> nuke from wave %d. <kbd>T</kbd> Stimpack with six Marines (fewer with Super Stimpack's tiers), for Marines and Marauders. Bunker hull level 3: Shrike auto-turret and self-repair.", cfg::nuke_wave)},
     {"ZERG", fmt("Zerglings: fast, Light, bite the hull. Roaches from wave %d: Armored, spit acid from range. From wave %d the Zerglings run faster.", cfg::roach_wave, cfg::metabolic_wave)},
   };
   Txt topic = T(12, 0x9fd2ff, true, 2), rule = T(14, 0xc4d8ee);
@@ -2093,7 +2126,7 @@ static const std::vector<HintDef>& hintDefs() {
     {"hull", nullptr, {"hp"}, "", "BUNKER DAMAGED",
      "Below half HP the bunker burns \xE2\x80\x94 if it falls, the game is lost. Armor reduces the damage; bunker hull level 3 mounts a Shrike turret and repairs itself."},
     {"stim", nullptr, {"cmd-stim"}, "t", "STIMPACK",
-     fmt("Six Marines can stim: press <kbd>T</kbd> or click STIM. For %d s they fire 50%% faster, for %d HP per Marine from the bunker (free with the Super Stimpack research).", (int)cfg::stim_duration, (int)cfg::stim_hp)},
+     fmt("Your squad can stim: press <kbd>T</kbd> or click STIM. For %d s the Marines and Marauders fire 50%% faster, for %d HP per Marine and %d per Marauder from the bunker (free with the Super Stimpack research).", (int)cfg::stim_duration, (int)cfg::stim_hp, (int)cfg::stim_hp_marauder)},
   };
   return h;
 }
@@ -2127,7 +2160,7 @@ static std::string tourText(const std::string& k) {
   if (k == "armor") return "The bunker takes less damage from bites and acid. Three levels.";
   if (k == "hp") return "+250 max HP per level. Level 3 adds a Shrike auto-turret and self-repair.";
   if (k == "ammo") return "+10 rounds in the magazine per level.";
-  if (k == "stim") return fmt("With six Marines in the bunker: %d s of 50%% faster fire, paid with a little bunker HP.", (int)cfg::stim_duration);
+  if (k == "stim") return fmt("With six Marines in the bunker (fewer with Super Stimpack's tiers): %d s of 50%% faster fire for the Marines and Marauders, paid with a little bunker HP.", (int)cfg::stim_duration);
   return "";
 }
 

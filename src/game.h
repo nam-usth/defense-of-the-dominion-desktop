@@ -91,6 +91,7 @@ struct Bullet {
   float len = 1.8f;   // streak length × the tracer mesh, alike for every round (bunker and Shrike: the same brightness)
   float sinY = 0, cosY = 1, sinP = 0, cosP = 1;
   float range = 18;               // flies this far; a Marauder's grenade bursts there (its target point)
+  glm::vec2 aim{0};               // a Marauder grenade's target point (on the ground)
   std::vector<glm::vec4> trail;   // a Marauder grenade's light streak: recent nozzle positions, w = game time
 };
 
@@ -184,8 +185,9 @@ class Game {
   void setUiScale(float s) { uiScale_ = s; }
   // test hooks (command line)
   void autoStart(const std::string& mode) { start(mode == "endless" ? Mode::Endless : Mode::Campaign); }
-  void runCheat(const std::string& code) {   // also the test actions hire:<unit> and research:<key>[:<tier>] (paid for: mng first)
-    if (code.rfind("hire:", 0) == 0) {
+  void runCheat(const std::string& code) {   // also the test actions hire:<unit>, research:<key>[:<tier>] (paid for: mng first)
+    if (code == "autocast:stim") toggleStimAuto();   // and autocast:stim (the STIM button's right-click)
+    else if (code.rfind("hire:", 0) == 0) {
       for (int k = 0; k < 3; k++) if (code.substr(5) == unitDef((Unit)k).key) hireUnit((Unit)k);
     } else if (code.rfind("research:", 0) == 0) {
       std::string r = code.substr(9);
@@ -304,6 +306,7 @@ class Game {
   std::vector<Unit> roster_;
   std::vector<float> snipeReady_;
   bool concussiveUnlocked_ = false, snipeUnlocked_ = false, superStimUnlocked_ = false;
+  int superStimLvl_ = 0;   // Super Stimpack tiers: each lowers the Marines Stimpack needs (cfg::stim_marines)
   int snipeLvl_ = 0, concussiveLvl_ = 0;
   int sensorLvl_ = 0;   // Sensor Tower research: 0 none, 1-3 (radar blips at night out to cfg::sensor_range)
   int armory_[4] = {0, 0, 0, 0};   // hp, dmg, ammo, cd
@@ -416,8 +419,11 @@ class Game {
 
   // stim
   bool stimUnlocked() const;
+  int stimNeed() const;   // Marines in the bunker Stimpack needs
   float stimCost() const;
-  void doStim();
+  void doStim(bool autocast = false);   // autocast: quietly, only if it can
+  bool stimAuto_ = false;               // Super Stimpack autocast (right-click STIM): stims as the bunker fires
+  void toggleStimAuto();
 
   // entities
   void syncMarines();

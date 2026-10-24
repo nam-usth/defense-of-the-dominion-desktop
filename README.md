@@ -79,13 +79,22 @@ The Marauder: its punisher grenade is drawn as the Viking's missile (a little la
 and light streak, burning icy blue once Concussive Shells is researched (as StarCraft II draws it). It is a small
 weak light (reach 2.4, a soft falloff) that lights the ground, the Zerg and the rocks it passes and lifts the night
 around it, so Zerg out in the dark show as it flies by; its burst lights the blast brighter and wider for 0.35 s
-(the renderer's up to 8 small lights, which the sprites honour too). With every volley each Marauder picks its own target — the nearest enemy of any kind in sight (at
-night: lit, or a Sensor Tower blip; none in sight: the click, as everyone else), a volley's Marauders spreading over
-different ones — and the grenade bursts on the first enemy in its path or on its target point: everyone else within
+(the renderer's up to 8 small lights, which the sprites honour too). With every volley each Marauder picks its own target among the enemies in sight (at night: lit, or a
+Sensor Tower blip; none in sight: the click, as everyone else): the nearest one not slowed yet and outside the blasts
+already on their way (the grenades in flight and the volley's), else the nearest not slowed, else the nearest outside
+them, else the nearest — so the slows spread over the swarm — and the grenade bursts on the first enemy in its path or on its target point: everyone else within
 1.5 takes half the round's damage (double vs Armored, as the round), and all of them slow to 70% speed for 1.5 s.
 Concussive Shells slows them to 40% for 2.5 s, and its AOE tiers widen the blast to 2.0 / 2.6 / 3.2. The burst
 is a small ball of light, white-hot in a soft glow, with a few sparks (blue for a concussive shell, else warm),
 over a soft glow on the ground across the blast radius that has no edge and dies away in half a second.
+
+Stimpack (T) stims the Marines and the Marauders (SC2: 10 HP per Marine, 20 per Marauder, paid by the bunker; an
+extra round or grenade every other volley). It needs six Marines in the bunker; after the Super Stimpack research
+(no HP cost, repairs the bunker) its three tiers bring that down to 4, 2 and 1 Marines, so a Marine–Marauder squad
+can stim. With Super Stimpack, right-clicking STIM turns on autocast, as in StarCraft II: the volley that finds it
+ready stims first (quietly, the stim sound only), and two gold dashes run round the button's border while it is on
+(saved with the game; `--cheat autocast:stim` in tests). The Endless armory's Magazine adds 15 rounds (half a starting magazine) and grows dearer by 15% a
+purchase instead of 30%, so the magazine can keep growing.
 
 The nuke: a mushroom cloud of fire as StarCraft II draws it — a cap rolling on a fiery stem, white-yellow inside,
 orange at the edges, cooling to dark red and soot over 7 s — with a grey dust ring surging along the ground and

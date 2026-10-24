@@ -72,6 +72,8 @@ storage::Record Game::snapshot() const {
   r["superStimUnlocked"] = superStimUnlocked_ ? "1" : "0";
   r["concussiveLvl"] = num(concussiveLvl_);
   r["snipeLvl"] = num(snipeLvl_);
+  r["superStimLvl"] = num(superStimLvl_);
+  r["stimAuto"] = stimAuto_ ? "1" : "0";
   r["sensorLvl"] = num(sensorLvl_);
   r["armoryHp"] = num(armory_[0]);
   r["armoryDmg"] = num(armory_[1]);
@@ -176,6 +178,8 @@ void Game::loadGame(bool autoSlot) {
   superStimUnlocked_ = getStr(d, "superStimUnlocked") == "1";
   concussiveLvl_ = (int)getNum(d, "concussiveLvl");
   snipeLvl_ = (int)getNum(d, "snipeLvl");
+  superStimLvl_ = std::clamp((int)getNum(d, "superStimLvl"), 0, 3);   // older saves: none (it indexes the Marines table)
+  stimAuto_ = superStimUnlocked_ && getStr(d, "stimAuto") == "1";
   sensorLvl_ = std::clamp((int)getNum(d, "sensorLvl"), 0, 3);   // older saves: none (it indexes the range table)
   armory_[0] = (int)getNum(d, "armoryHp");   // HP / ammo purchases are already in maxHp / maxAmmo
   armory_[1] = (int)getNum(d, "armoryDmg");
