@@ -137,6 +137,7 @@ struct NukeBlast {
   glm::vec3 p;
   float t = 0;   // seconds since the blast (game time)
   float tHit = 0, seed = 0;
+  float embers = 0;   // embers due but not yet emitted (a fraction of one)
   bool hitDone = false;
 };
 // The scar a nuke leaves on the ground: a burn with glowing cracks that cool, then fade
@@ -382,6 +383,7 @@ class Game {
   Mesh *glowQuadMesh_ = nullptr, *blipMesh_ = nullptr, *vmMesh_ = nullptr;   // vmMesh_: a Viking missile, unit length on +z
   Material vmBodyMat_;
   ParticleSystem mushSmoke_, mushFire_;   // the mushroom clouds' sprites, rebuilt every frame (not simulated)
+  ParticleSystem mushGlow_;               // the blasts' glow cards (nukeGlowCards), likewise
   Material tracerGlowMat_, tracerPoolMat_, blipMat_, sensorRingMat_, sensorRingMats_[4];   // sensorRingMats_: per level (their fades differ)
   float sensorRingA_[4] = {};   // each level's ring opacity (updateSensorRing)
   void updateSensorRing(float dt);
@@ -411,6 +413,7 @@ class Game {
   NukeRenderer nukeFx_;
   bool hdrLast_ = false;           // the last frame went through the HDR post passes (the nuke flash is its exposure)
   void updateNukes(float dt);
+  void nukeEmberFx(const glm::vec3& p, int count, float ms);   // ms: the blast's SC2 sequence time
   ParticleSystem glow_, smoke_;
   void emit(ParticleSystem& s, float x, float y, float z, float vx, float vy, float vz, float life, float s0, float s1,
             float a0, uint32_t c0, uint32_t c1, float grav, float drag, int fade) {

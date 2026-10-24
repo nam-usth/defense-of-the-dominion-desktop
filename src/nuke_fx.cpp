@@ -146,6 +146,20 @@ void main() {
 }
 )";
 
+// The flash star (SC2's Star1_Yellow, drawn here): a white-hot core and six long rays, six
+// faint ones between, on a flat card over the blast
+const char* STAR_FS = R"(
+in vec3 vW; in vec3 vN; in vec2 vUV; out vec4 frag;
+uniform vec3 uCol;
+void main() {
+  vec2 p = vUV * 2. - 1.; float r = length(p);
+  if (r > 1.) discard;
+  float th = atan(p.y, p.x), fall = (1. - r) * (1. - r);
+  float k = exp(-8. * r) + exp(-9. * abs(sin(3. * th))) * fall + .45 * exp(-22. * abs(cos(3. * th))) * fall * (1. - r);
+  frag = vec4(uCol * k, 1.);
+}
+)";
+
 GLuint program(const char* vs, const char* fs, const char* name) {
   std::string v = std::string("#version 330 core\n") + COMMON + vs, f = std::string("#version 330 core\n") + COMMON + fs;
   return compileProgram(v.c_str(), f.c_str(), name);
@@ -202,7 +216,8 @@ bool NukeRenderer::init() {
   progScar_ = program(MESH_VS, SCAR_FS, "nuke scar");
   progFront_ = program(MESH_VS, FRONT_FS, "nuke front");
   progDome_ = program(MESH_VS, DOME_FS, "nuke dome");
-  ok_ = progScar_ && progFront_ && progDome_;
+  progStar_ = program(MESH_VS, STAR_FS, "nuke star");
+  ok_ = progScar_ && progFront_ && progDome_ && progStar_;
   if (!ok_) { logWarn("nuke effect shaders unavailable: the sprite cloud alone shows the blast"); return false; }
   const glm::mat4 flat = glm::rotate(glm::mat4(1), -PI_F / 2, {1, 0, 0});   // XY → XZ, facing up
   quad_ = build(geo::plane(1, 1).transform(flat));
@@ -281,6 +296,22 @@ void NukeRenderer::draw(Renderer& R, const Blast& b) const {
       glBlendFunc(GL_ONE, GL_ONE);
       glDepthMask(GL_FALSE);
       drawMesh(dome_.vao, dome_.ibo, dome_.count);
+    });
+  }
+
+  // the flash star (SC2's): a six-rayed star opening flat over the blast, gone by 0.44 s
+  const float ms = seqMs(t);
+  if (ms >= 133 && ms < 566) {
+    const float side = key({{133, 1.27f}, {300, 7.3f}, {400, 13.5f}, {566, 19.6f}}, ms), K = key({{133, 1}, {366, 0.8f}, {566, 0}}, ms);
+    R.drawCustom(4, c, [=, this](const FrameCtx& f) {
+      GLuint g = progStar_;
+      use(g, f, glm::scale(glm::rotate(glm::translate(glm::mat4(1), c + glm::vec3(0, 0.87f, 0)), 0.532f, {0, 1, 0}), {side, 1, side}));   // turned 30.5 deg
+      u3(g, "uCol", glm::vec3(1, 0.96f, 0.85f) * (f.hdr ? 6 * K : K));   // (it shows through the flash's white-out)
+      glDisable(GL_CULL_FACE);
+      glEnable(GL_BLEND);
+      glBlendFunc(GL_ONE, GL_ONE);
+      glDepthMask(GL_FALSE);
+      drawMesh(quad_.vao, quad_.ibo, quad_.count);
     });
   }
 

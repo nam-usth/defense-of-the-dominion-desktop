@@ -60,10 +60,10 @@ static const float NUKE_RADIUS = 16, WARN_DUR = 2.0f;
 // and lands at WARN_DUR; its trail fades over NUKE_TRAIL_FADE s after the blast
 static const float NUKE_SKY_Y = 30, NUKE_FALL_AT = 0.4f, NUKE_TRAIL_FADE = 0.5f;
 static const float NUKE_SLANT = 0.55f;   // the dive path's lean: horizontal per vertical (29° off vertical)
-// The fireball's light: flashes up, holds NUKE_LIGHT_HOLD s, then cools (gone after NUKE_LIGHT_DUR s);
-// at full strength it lifts a night to NUKE_LIGHT_F (fog far ≈ 40: past the spawn ring)
-static const float NUKE_LIGHT_DUR = 8, NUKE_LIGHT_HOLD = 0.6f, NUKE_LIGHT_F = 0.32f;
-static const float MUSH_DUR = 9;   // the mushroom cloud rises, spreads, cools and thins out over this many seconds
+// The fireball's light (SC2's): up with its detonation frame, held while the fire burns, gone after
+// NUKE_LIGHT_DUR s; at full strength it lifts a night to NUKE_LIGHT_F (fog far ≈ 40: past the spawn ring)
+static const float NUKE_LIGHT_DUR = 4, NUKE_LIGHT_F = 0.32f;
+static const float MUSH_DUR = 6.5f;   // the cloud's last smoke (low on the stem, the surge) has thinned out (its fire: by 5.4 s)
 static const float NUKE_VAPOR_R = 3.5f;   // the Zerg this close to ground zero vanish in the fireball; the rest are flung
 // Viking missiles: VM_FLIGHT s from the wing to the target, running VM_RUN ahead before the dive
 static const float VM_FLIGHT = 0.6f, VM_RUN = 4;
@@ -299,6 +299,8 @@ void Game::buildNightFx() {
     puffTex_ = Texture::create(W, W, px.data());
     mushSmoke_.tex = mushFire_.tex = puffTex_;   // the fire's glows are plain discs: on them it only turns on the ground and lens fades
     mushFire_.cover = 0.5f;   // the fire's light also hides half of what is behind it: it warms the grass, not tints it lime
+    mushGlow_.tex = puffTex_;
+    mushGlow_.cover = 0.85f;  // the glow cards are big and pale: added over the grass, their rims would read lime
   }
   // soft round glow: white, its alpha falling to 0 at the rim (the quads stretch it into streaks)
   {
@@ -988,6 +990,24 @@ void Game::explosionFx(const glm::vec3& p, uint32_t col, float k) {
   gpuFx_.burst(plume);
 }
 
+// A nuke's embers (SC2's): small sparks rising slowly off the crater, a disc 2.8 across the
+// ground, 0.7-2.7 u/s up, orange cooling to red; the later ones live longer (2.5-7 s)
+void Game::nukeEmberFx(const glm::vec3& p, int count, float ms) {
+  const float late = nk::ss(866, 9100, ms), life0 = 2.5f + 2 * late, life1 = 5.1f + 2 * late;
+  if (!gpuFx()) {
+    for (int i = 0; i < count; i++) {
+      float a = rnd() * 2 * PI, r = 2.8f * std::sqrt(rnd());
+      emit(glow_, p.x + std::cos(a) * r, 0.2f, p.z + std::sin(a) * r, 0, 0.7f + 2 * rnd(), 0, life0 + (life1 - life0) * rnd(), .12f, .04f, 1, 0xf0941d, 0xd11d1d, 0, 0, 0);
+    }
+    return;
+  }
+  GpuParticles::Burst b;
+  b.pos = {p.x, 0.2f, p.z}; b.count = count; b.shape = GpuParticles::Column; b.radius = 2.8f; b.speed = 2.7f;
+  b.c0 = 0xf0941d; b.c1 = 0xd11d1d; b.a0 = 1; b.life0 = life0; b.life1 = life1;
+  b.s0 = .12f; b.s1 = .04f;
+  gpuFx_.burst(b);
+}
+
 // A Zerg dying: a low splash of its blood that lands on the ground, and a little smoke.
 // (220-450 glowing drops flung 3 units up, plus a burst of sparks, read as fireworks —
 // a field of them after a nuke.)
@@ -1611,7 +1631,8 @@ void Game::doNuke(bool force) {
     nukeLightPos_ = {tx, 3, tz};
     if (!hdrLast_) flash(0);   // in the HDR target the white-out is the exposure (render): the HUD stays clear
     // (no sparks, embers or debris flung across the field: hard to read, and ~30 000 GPU
-    // particles a blast; the cloud, the surge and the shock front carry it)
+    // particles a blast; the cloud, the surge and the shock front carry it. Only SC2's few
+    // embers rise slowly off the crater: updateNukes)
     int killed = 0;   // the bunker is hardened: only enemies die (burnt: no blood)
     for (auto& e : allEnemies()) {
       if (e->dead) continue;
@@ -2017,11 +2038,12 @@ float Game::flareK() const {
   if (flareT_ < 0) return 0;
   return std::min(1.f, flareT_ / 0.4f) * std::min(1.f, (FLARE_DUR - flareT_) / 1.5f);
 }
-// Nuke fireball light: up in 0.05 s, full for NUKE_LIGHT_HOLD s, then cooling; 0 when none
+// Nuke fireball light, SC2's curve: dark until its detonation frame, full by 0.5 s, held to
+// 1.8 s, then out by 3.9 s (the flash before it is its own spike: render); 0 when none
 float Game::nukeLightK() const {
   if (nukeLightT_ < 0) return 0;
-  float t = nukeLightT_;
-  return std::min(1.f, t / 0.05f) * (t < NUKE_LIGHT_HOLD ? 1 : std::exp(-(t - NUKE_LIGHT_HOLD) / 1.8f)) * std::min(1.f, NUKE_LIGHT_DUR - t);
+  const float ms = nk::seqMs(nukeLightT_);
+  return nk::ss(333, 666, ms) * nk::key({{1966, 1}, {2066, 0.99f}, {2466, 0.84f}, {2900, 0.57f}, {3466, 0.19f}, {3766, 0.054f}, {4000, 0}}, ms);
 }
 // The factor the lights and fog use: a flare lifts the night toward FLARE_F, a nuke's
 // fireball toward NUKE_LIGHT_F. The top-bar label and the "is it night" tests keep the
@@ -2599,13 +2621,20 @@ void Game::update(float dt) {
 void Game::updateNukes(float dt) {
   for (NukeBlast& n : nukes_) {
     n.t += dt;
+    // embers rising off the crater, at SC2's rate: 44 a second from 1.1 s, none after 9 s
+    const float ms = nk::seqMs(n.t);
+    n.embers += nk::key({{866, 0}, {1266, 44}, {2866, 44}, {9100, 0}}, ms) * dt;
+    if (n.embers >= 1) {
+      nukeEmberFx(n.p, (int)n.embers, ms);
+      n.embers -= (int)n.embers;
+    }
     if (!n.hitDone && n.t >= n.tHit) {   // the shock front reaches the bunker: the boom, then a long rumble
       n.hitDone = true;
       audio::play("nukeShock");
       after(0.3f, [] { audio::play("nukeRumble"); });
     }
   }
-  nukes_.erase(std::remove_if(nukes_.begin(), nukes_.end(), [](const NukeBlast& n) { return n.t >= MUSH_DUR; }), nukes_.end());
+  nukes_.erase(std::remove_if(nukes_.begin(), nukes_.end(), [](const NukeBlast& n) { return n.t >= nk::EMBERS_END; }), nukes_.end());
   for (Scar& s : scars_) s.age += dt;
   scars_.erase(std::remove_if(scars_.begin(), scars_.end(), [](const Scar& s) { return s.age >= nk::SCAR_END; }), scars_.end());
 }
@@ -2638,20 +2667,23 @@ static float puffRot(int i, int salt, float turn) {
 }
 
 // The blast's fire and smoke at its age, as soft sprites, as StarCraft II draws them. First
-// the fireball (nuke_fx.h's curves): a ball of overlapping soft fire round a white-hot heart
-// that rises, flattens and burns out as the mushroom cloud rolls in: a cap of fire (a rolling
-// torus under a dome) on a fiery stem, burning white-yellow inside and orange at the edges,
-// cooling to dark red and soot, round a heart of flame. `lit` dims what has cooled to smoke
-// with the scene's light (at night it goes dark once the fire fades); the fire is self-lit,
-// and in the HDR target (`hdr`) its hottest parts burn past 1 and bloom.
+// the fireball (nuke_fx.h's curves): a ball of overlapping soft fire that rises, flattens and
+// burns out as the mushroom cloud rolls in: a cap of fire (a rolling torus under a dome) on a
+// fiery stem, burning white-yellow inside and orange at the edges, round a heart of flame. As
+// in SC2 the fire aloft never turns to a grey cloud: cooling, it dims to dark red and is gone
+// by 5.4 s; only the smoke low on the stem goes grey-brown, lit by the scene (`lit`: at night
+// it goes dark). The fire is self-lit, and in the HDR target (`hdr`) its hottest parts burn
+// past 1 and bloom. (The ball of light round it is the glow cards: nukeGlowCards.)
 static void mushroomSprites(const NukeBlast& mc, float lit, bool hdr, std::vector<ParticleSystem::P>& smoke,
                             std::vector<ParticleSystem::P>& fire) {
+  if (mc.t >= MUSH_DUR) return;   // (the blast lives on for its embers)
   const float t = mc.t, g = 1 - std::exp(-t / 0.9f);
   const float heat = std::exp(-t / 3.6f);   // the cloud's temperature, 1 → 0
   const float fr = nk::fireR(t), gF = nk::ss(0.6f, 2.6f, t), sxz = 1 + 0.22f * gF;
   const float capH = nk::fireY(t) + 0.25f * std::max(0.f, t - 2), capR = 0.8f * fr * sxz + 0.1f * t, tube = 0.42f * fr, puff = 1.3f + 1.6f * g;
   const float fade = std::min(1.f, t / 0.15f) * (1 - glm::smoothstep(MUSH_DUR - 2.5f, MUSH_DUR, t));
-  const float capIn = nk::ss(1.5f, 3.0f, t), stemIn = nk::ss(0.4f, 1.4f, t);   // they roll in as the fireball burns out
+  const float burn = 1 - nk::ss(nk::FIRE_OUT0, nk::FIRE_OUT1, t);   // the fire's own end
+  const float capIn = nk::ss(1.5f, 3.0f, t) * burn, stemIn = nk::ss(0.4f, 1.4f, t) * burn;   // they roll in as the fireball burns out
   int n = 0;
   // inner: how hot this puff burns for the cloud's temperature (1 = its core)
   auto add = [&](glm::vec3 p, float size, float a, float inner) {
@@ -2661,8 +2693,11 @@ static void mushroomSprites(const NukeBlast& mc, float lit, bool hdr, std::vecto
     q.pos = mc.p + p;
     q.size = size * (0.85f + 0.3f * puffHash(i, 2));
     q.col = fireRamp(T) * (hdr ? 1 + 2 * std::max(0.f, T - 0.5f) : 1.f);   // the hottest smoke glows a little past 1
-    if (T < 0.3f) q.col = lerp3(hexColor(0x6a5a4c) * lit, fireRamp(0.3f), T / 0.3f);   // cooled to grey-brown smoke, lit by the scene
     q.alpha = a * fade * (0.6f + 0.4f * std::min(1.f, T * 2));
+    if (T < 0.3f) {
+      if (q.pos.y > 2) q.alpha *= nk::ss(0.15f, 0.35f, T);   // aloft, cooling fire dims away
+      else q.col = lerp3(hexColor(0x6a5a4c) * lit, fireRamp(0.3f), T / 0.3f);   // low on the stem: grey-brown smoke, lit by the scene
+    }
     q.rot = puffRot(i, 40, t * (puffHash(i, 42) - 0.5f) * 0.8f);
     smoke.push_back(q);
     if (T < 0.45f) return;   // the hottest parts glow
@@ -2689,7 +2724,7 @@ static void mushroomSprites(const NukeBlast& mc, float lit, bool hdr, std::vecto
   // the cap's heart: a knot of flame glowing through the smoke, white-hot while young, then
   // widening into a soft ember glow as it cools (and a faint glow up the stem while it is
   // hot, seen from the side; from above it would read as a stick)
-  const float hk = fade * glm::smoothstep(0.08f, 0.3f, heat), widen = 1.6f - 0.6f * heat;
+  const float hk = fade * burn * glm::smoothstep(0.08f, 0.3f, heat), widen = 1.6f - 0.6f * heat;
   if (hk > 0) {
     ParticleSystem::P q{};
     q.rot = -1;
@@ -2712,8 +2747,8 @@ static void mushroomSprites(const NukeBlast& mc, float lit, bool hdr, std::vecto
     }
   }
   // the fireball: soft fire packed in a ball, flattening as it rises, its reach stopping short
-  // of the bunker. The body is blended over (yellow inside, orange to red at the rim), hot
-  // glows are added over it, and its heart is a white-hot light that blooms
+  // of the bunker. The body is blended over (yellow inside, orange to red at the rim), and hot
+  // glows are added over it
   if (t < nk::FIRE_END) {
     const float db = std::hypot(mc.p.x, mc.p.z), rx = std::min(fr * sxz, std::max(2.4f, db - 0.5f)), ry = fr * (1 - 0.38f * gF);
     const glm::vec3 C = mc.p + glm::vec3(0, nk::fireY(t), 0);
@@ -2737,16 +2772,6 @@ static void mushroomSprites(const NukeBlast& mc, float lit, bool hdr, std::vecto
       q.col = fireRamp(std::min(1.f, T + 0.2f)) * (hdr ? 1 + 5 * T * T : 1.f);
       q.alpha = 0.7f * out * std::min(1.f, (T - 0.45f) / 0.4f);
       q.rot = -1;
-      fire.push_back(q);
-    }
-    ParticleSystem::P q{};
-    q.rot = -1;
-    for (int i = 0; i < 4; i++) {   // the heart: white-hot, yellowing as it cools
-      float a = PI2 * puffHash(i, 74), r = 0.2f * rx * puffHash(i, 75);
-      q.pos = C + glm::vec3(std::cos(a) * r, 0.15f * ry * (puffHash(i, 76) - 0.3f), std::sin(a) * r);
-      q.size = rx * (0.8f + 0.25f * puffHash(i, 77));
-      q.col = fireRamp(std::min(1.f, hot + 0.15f)) * (hdr ? 1 + 3 * hot * hot : 1.f);
-      q.alpha = 0.55f * out;
       fire.push_back(q);
     }
   }
@@ -2783,6 +2808,32 @@ static void mushroomSprites(const NukeBlast& mc, float lit, bool hdr, std::vecto
       smoke.push_back(q);
     }
   }
+}
+
+// SC2's glow cards: the soft ball of light round the fire for its first 3 s (a white haze, a
+// yellow core, a burst cut short at 1 s), and the flare of the flash, on SC2's own size and
+// brightness tracks. SC2's cards lie flat; from above they read as these soft discs. In the
+// HDR target (`hdr`) their light blooms; without it, it would clip, so it is dimmer.
+static void nukeGlowCards(const NukeBlast& mc, bool hdr, std::vector<ParticleSystem::P>& fire) {
+  const float ms = nk::seqMs(mc.t), k = hdr ? 1 : 0.45f;
+  if (ms >= 3233) return;
+  auto card = [&](float y, float size, glm::vec3 col, float a) {
+    if (size <= 0 || a <= 0.005f) return;
+    ParticleSystem::P q{};
+    q.pos = mc.p + glm::vec3(0, y, 0);
+    q.size = size;
+    q.col = col;
+    q.alpha = a;
+    q.rot = -1;
+    fire.push_back(q);
+  };
+  const float cool = nk::key({{633, 1}, {5033, 0}}, ms);   // their brightness: full, then fading for 4.4 s
+  if (ms < 433) card(0.9f, nk::key({{0, 2.9f}, {113, 10.5f}, {433, 3.9f}}, ms), glm::vec3(1, 0.97f, 0.9f) * (4 * k), nk::key({{181, 1}, {433, 0}}, ms));   // flare
+  if (ms >= 333) card(2.6f, nk::key({{333, 1.4f}, {433, 3.1f}, {700, 16.9f}, {933, 24.8f}, {1166, 24.4f}, {2000, 17.4f}, {3166, 3}}, ms),
+                      glm::vec3(1, 0.95f, 0.88f) * (1.5f * k), 0.6f * nk::key({{333, 0}, {633, 1}, {5033, 0}}, ms));   // haze
+  if (ms >= 300) card(2.8f, nk::key({{0, 1}, {500, 4.1f}, {766, 14.4f}, {1066, 17.4f}, {1800, 13.9f}, {2400, 8.7f}, {3100, 2.6f}}, ms),
+                      glm::vec3(1, 0.78f, 0.35f) * (2.5f * k), 0.7f * cool);   // core
+  if (ms >= 333 && ms < 966) card(3.3f, nk::key({{333, 0.7f}, {433, 1.4f}, {766, 9.5f}, {933, 11.5f}}, ms), glm::vec3(1, 0.85f, 0.5f) * (3 * k), 0.7f * cool);   // burst
 }
 
 // At night a unit out of the bunker (on a crate run) wears a twin white LED pod on its
@@ -3041,7 +3092,7 @@ void Game::render() {
       b.t = n.t;
       b.seed = n.seed;
       nukeFx_.draw(R, b);
-      const float k = nk::heat(n.t) * (1 - nk::ss(4, 7, n.t)), wr = 2.8f * nk::fireR(n.t);
+      const float k = nk::heat(n.t) * (1 - nk::ss(1.5f, 3.5f, n.t)), wr = 2.8f * nk::fireR(n.t);   // (short: SC2 lights the ground with its light)
       if (k <= 0.01f) continue;
       Instance w;
       w.m = trs({n.p.x, 0.045f, n.p.z}, glm::vec3(0), {wr, 1, wr});
@@ -3052,6 +3103,7 @@ void Game::render() {
   }
   mushSmoke_.p.clear();
   mushFire_.p.clear();
+  mushGlow_.p.clear();
   for (const NukeBlast& n : nukes_) mushroomSprites(n, 1 - 0.75f * dnLightF_, hdrLast_, mushSmoke_.p, mushFire_.p);
   {   // the cloud thins where it hangs between the camera and the bunker: the fight there stays readable
     glm::vec4 b = proj_ * view_ * glm::vec4(0, 1, 0, 1);
@@ -3065,6 +3117,8 @@ void Game::render() {
         q.alpha *= 0.35f + 0.65f * nk::ss(0.12f, 0.4f, glm::length(d));
       }
   }
+  for (const NukeBlast& n : nukes_) nukeGlowCards(n, hdrLast_, mushGlow_.p);   // (after the thinning: light, not cloud)
+  R.drawParticles(&mushGlow_, Blend::Additive, 3);
   if (!mushSmoke_.p.empty()) {
     auto viewZ = [this](const glm::vec3& p) { return view_[0][2] * p.x + view_[1][2] * p.y + view_[2][2] * p.z; };
     std::sort(mushSmoke_.p.begin(), mushSmoke_.p.end(), [&](const ParticleSystem::P& a, const ParticleSystem::P& b) { return viewZ(a.pos) < viewZ(b.pos); });
@@ -3133,7 +3187,7 @@ void Game::render() {
   sp.points[0] = {{0, 2.5f, 0}, hexColor(0xff9944), bunkerLightI_, 14, 2};   // night glow
   sp.points[1] = {muzzlePos_, hexColor(0xffb060), muzzleI_, 4.5f, 2};        // muzzle flash on the hull
   sp.points[2] = {firePos_, hexColor(0xff6a1a), fireI_, 6, 2};              // the bunker burns
-  sp.points[3] = {nkPos, nkCol, 30 * nkFlash + 1.3f * nukeLightK() * (1 + 3 * dnFactor_), 34, 1.5f};   // a nuke's fireball (strongest at night)
+  sp.points[3] = {nkPos, nkCol, 30 * nkFlash + 1.3f * nukeLightK() * (1 + 3 * dnFactor_), 24, 1.5f};   // a nuke's fireball (strongest at night)
   sp.spot = lampSpot_;   // a crate runner's chest lamps
   std::copy(glows_, glows_ + glowCount_, sp.glows);   // Marauder grenades and their bursts
   sp.glowCount = glowCount_;

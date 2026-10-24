@@ -9,6 +9,8 @@
 #include <glm/glm.hpp>
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
+#include <utility>
 
 class Renderer;
 struct Geometry;
@@ -40,6 +42,20 @@ constexpr float FIRE_END = 4.2f;    // the fireball has burnt out into the cloud
 constexpr float FRONT_END = 2.0f;   // the front ring has faded out past the screen
 constexpr float SURGE_END = 6.5f;   // the surge (the cloud's sprites: game.cpp) has settled
 constexpr float SCAR_END = 16;      // the scar has faded
+// StarCraft II's own nuke (Nuke.m3, its Death sequence) keys its parts in ms; a blast t s old
+// reads them at seqMs(t): its flash star opens as ours goes off, and SC2's detonation frame (its
+// light, its smoke burst) follows 0.24 s later
+inline float seqMs(float t) { return t * 1000 + 130; }
+// a piecewise-linear key track {ms, value}, held at both ends
+inline float key(std::initializer_list<std::pair<float, float>> tr, float ms) {
+  const std::pair<float, float>* k = tr.begin();
+  if (ms <= k->first) return k->second;
+  for (size_t i = 1; i < tr.size(); i++)
+    if (ms <= k[i].first) return k[i - 1].second + (k[i].second - k[i - 1].second) * (ms - k[i - 1].first) / (k[i].first - k[i - 1].first);
+  return k[tr.size() - 1].second;
+}
+constexpr float FIRE_OUT0 = 3.6f, FIRE_OUT1 = 5.4f;   // the fire burns out (SC2's cap by 4.7 s, its top by 5.5 s)
+constexpr float EMBERS_END = 9;                      // the last embers rise off the crater (SC2: 9.1 s)
 }
 
 // The GPU side: programs and meshes (one set for every blast)
@@ -50,13 +66,13 @@ class NukeRenderer {
     glm::vec3 p{0};      // ground zero
     float t = 0, seed = 0;
   };
-  void draw(Renderer& R, const Blast& b) const;   // queues the front and the dome
+  void draw(Renderer& R, const Blast& b) const;   // queues the front, the dome and the flash star
   void drawScar(Renderer& R, glm::vec2 p, float age, float seed, float front) const;   // front: the shock front's radius (cracks open behind it)
 
  private:
   struct FxMesh { GLuint vao = 0, vbo = 0, ibo = 0; GLsizei count = 0; };
   bool ok_ = false;
-  GLuint progScar_ = 0, progFront_ = 0, progDome_ = 0;
+  GLuint progScar_ = 0, progFront_ = 0, progDome_ = 0, progStar_ = 0;
   FxMesh quad_, ring_, dome_;
   static FxMesh build(const Geometry& g);
 };
