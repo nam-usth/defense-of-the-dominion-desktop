@@ -1,8 +1,8 @@
-// The nuke's blast, drawn with its own shaders as the renderer's custom draws: a white-hot
-// fireball that rises, flattens and burns out into the mushroom cloud's sprites; the shock
-// front (a ragged ring of light racing over the ground under a fading shock dome); and the
+// The nuke's blast. Drawn with its own shaders as the renderer's custom draws: the shock
+// front (a ragged ring of light racing over the ground under a fading shock dome) and the
 // scar it leaves (a small pit of scorched earth, its cracks glowing red, then fading). The
-// base surge (a ring of dust with a burning leading edge) is the cloud's sprites (game.cpp).
+// white-hot fireball that rises, flattens and burns out into the mushroom cloud, the cloud
+// and the base surge (a ring of dust with a burning leading edge) are soft sprites (game.cpp).
 // The timeline is closed-form curves (nk::), so every view and every frame reads the same blast.
 #pragma once
 #include <glad/gl.h>
@@ -45,20 +45,18 @@ constexpr float SCAR_END = 16;      // the scar has faded
 // The GPU side: programs and meshes (one set for every blast)
 class NukeRenderer {
  public:
-  bool init();   // false: no effect programs (the sprite cloud still shows the blast)
-  bool ok() const { return ok_; }
+  bool init();   // false: no effect programs (the sprites still show the blast)
   struct Blast {
     glm::vec3 p{0};      // ground zero
     float t = 0, seed = 0;
-    bool low = false;    // GFX LOW: fewer noise octaves
   };
-  void draw(Renderer& R, const Blast& b) const;   // queues the fireball, the front and the dome
+  void draw(Renderer& R, const Blast& b) const;   // queues the front and the dome
   void drawScar(Renderer& R, glm::vec2 p, float age, float seed, float front) const;   // front: the shock front's radius (cracks open behind it)
 
  private:
   struct FxMesh { GLuint vao = 0, vbo = 0, ibo = 0; GLsizei count = 0; };
   bool ok_ = false;
-  GLuint progScar_ = 0, progFront_ = 0, progDome_ = 0, progFire_ = 0;
-  FxMesh quad_, ring_, dome_, ball_;
+  GLuint progScar_ = 0, progFront_ = 0, progDome_ = 0;
+  FxMesh quad_, ring_, dome_;
   static FxMesh build(const Geometry& g);
 };

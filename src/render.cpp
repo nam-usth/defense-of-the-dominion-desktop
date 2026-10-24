@@ -484,12 +484,12 @@ layout(location=3) in vec3 iColor;
 layout(location=4) in float iAlpha;
 layout(location=5) in float iRot;
 uniform mat4 uView, uProj;
-out vec2 vCoord; out vec3 vColor; out float vAlpha; out vec3 vPos; flat out float vRot; out float vWy, vDepth;
+out vec2 vCoord; out vec3 vColor; out float vAlpha; out vec3 vPos; flat out float vRot; out float vWy, vNear;
 void main() {
   vec4 mv = uView * vec4(iPos, 1.0);
   mv.xy += aCorner * iSize;   // world-space diameter = size (the web version's size attenuation)
   vWy = iPos.y + iSize * (aCorner.x * uView[1][0] + aCorner.y * uView[1][1]);   // this corner's height in the world
-  vDepth = -mv.z;
+  vNear = smoothstep(1.0 + 0.5 * iSize, 2.0 + 1.6 * iSize, -mv.z);   // fades out as the lens comes within about its size
   vCoord = aCorner + 0.5;
   vColor = iColor; vAlpha = iAlpha;
   vPos = iPos; vRot = iRot;
@@ -497,28 +497,26 @@ void main() {
 }
 )";
 static const char* PART_FS = R"(#version 330 core
-in vec2 vCoord; in vec3 vColor; in float vAlpha; in vec3 vPos; flat in float vRot; in float vWy, vDepth;
+in vec2 vCoord; in vec3 vColor; in float vAlpha; in vec3 vPos; flat in float vRot; in float vWy, vNear;
 uniform float uFogNear, uFogFar;
 uniform vec4 uGlPos[8], uGlColor[8]; uniform int uGlCount;   // small lights (the lit shader's)
-uniform bool uPuffs, uAdd; uniform sampler2D uPuff; uniform vec3 uLightV;   // textured puffs: the atlas, the sun in view space
+uniform bool uPuffs; uniform sampler2D uPuff; uniform vec3 uLightV;   // textured puffs: the atlas, the sun in view space
 out vec4 fragColor;
 void main() {
   float d = length(vCoord - 0.5) * 2.0;
   float a;
   vec3 col = vColor;
-  if (uPuffs && vRot >= 0.0) {   // a billowing puff: a turned atlas cell, lit by the sun (smoke) or flickering (fire)
+  if (uPuffs && vRot >= 0.0) {   // a soft billow: a turned atlas cell, gently lit by the sun
     if (d > 1.0) discard;
     float cell = floor(vRot / 8.0), ang = vRot - cell * 8.0, s = sin(ang), co = cos(ang);
     vec2 c = mat2(co, s, -s, co) * (vCoord - 0.5);
     vec4 t = texture(uPuff, (vec2(mod(cell, 2.0), floor(cell / 2.0)) + c + 0.5) * 0.5);
-    a = vAlpha * t.r * smoothstep(-0.05, 0.6, vWy) * smoothstep(1.0, 3.5, vDepth);   // no hard cut where it meets the ground or the lens
-    if (uAdd) col *= 0.45 + 0.9 * t.a;
-    else {
-      vec2 n = mat2(co, -s, s, co) * (t.gb * 2.0 - 1.0);   // the cell's normal, turned back to the screen
-      vec3 N = vec3(n, sqrt(max(0.0, 1.0 - dot(n, n))));
-      col *= 0.5 + 0.75 * max(dot(N, uLightV), 0.0) + 0.15 * t.a;
-    }
+    a = vAlpha * t.r;
+    vec2 n = mat2(co, -s, s, co) * (t.gb * 2.0 - 1.0);   // the cell's normal, turned back to the screen
+    vec3 N = vec3(n, sqrt(max(0.0, 1.0 - dot(n, n))));
+    col *= 0.8 + 0.3 * max(dot(N, uLightV), 0.0) + 0.1 * (t.a - 0.5);
   } else a = vAlpha * (1.0 - smoothstep(0.15, 1.0, d));   // soft round sprite
+  if (uPuffs) a *= smoothstep(-0.05, 0.6, vWy) * vNear;   // the nuke's: no hard cut where they meet the ground, none filling the view
   float lift = 0.0;   // fade out in the night fog, except near a small light
   for (int i = 0; i < uGlCount; i++)
     lift = max(lift, uGlColor[i].a * (1.0 - smoothstep(0.35 * uGlPos[i].w, uGlPos[i].w, length(uGlPos[i].xyz - vPos))));
@@ -836,14 +834,10 @@ void Renderer::render(const SceneParams& sp) {
   ctx.view = sp.view;
   ctx.proj = sp.proj;
   ctx.camPos = sp.camPos;
-  ctx.sunDir = sunDir;
-  ctx.sunCol = sp.sun.color * sp.sun.intensity;
-  ctx.ambient = amb + sp.fill.color * (sp.fill.intensity * 0.5f);   // the fill light, half-wrapped, as ambient
   ctx.fogColor = sp.fogColor;
   ctx.fogNear = sp.fogNear;
   ctx.fogFar = sp.fogFar;
   ctx.hdr = postActive_;
-  ctx.msaa = sp.msaa;
   for (auto& [z, c] : tr) {
     if (c->custom >= 0) {
       customs_[c->custom].fn(ctx);
@@ -866,7 +860,6 @@ void Renderer::render(const SceneParams& sp) {
     if (c->ps->tex) {
       glm::vec3 lv = glm::normalize(glm::mat3(sp.view) * sunDir);
       glUniform3fv(U(partProg_, "uLightV"), 1, glm::value_ptr(lv));
-      glUniform1i(U(partProg_, "uAdd"), c->psBlend == Blend::Additive);
       glUniform1i(U(partProg_, "uPuff"), 0);
       glActiveTexture(GL_TEXTURE0);
       glBindTexture(GL_TEXTURE_2D, c->ps->tex->id);

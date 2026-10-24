@@ -141,7 +141,7 @@ struct ParticleSystem {
     float rot = 0;   // textured puffs (tex): the atlas cell x 8 + the sprite's turn in radians; < 0: a plain soft disc
   };
   int cap = 0;
-  const Texture* tex = nullptr;   // a 2x2 puff atlas (R density, GB normal, A detail): billowing smoke, lit by the sun
+  const Texture* tex = nullptr;   // a 2x2 puff atlas (R density, GB normal, A detail): soft billows, gently lit by the sun
   std::vector<P> p;
   void init(int capacity) { cap = capacity; p.reserve(capacity); }
   // fade: 0 = linear fade-out, 1 = fade in then out (smoke)
@@ -154,9 +154,9 @@ struct ParticleSystem {
 // What a custom draw (an effect with its own shaders: nuke_fx.cpp) gets of the frame
 struct FrameCtx {
   glm::mat4 view{1}, proj{1};
-  glm::vec3 camPos{0}, sunDir{0, 1, 0}, sunCol{0}, ambient{0}, fogColor{0};
+  glm::vec3 camPos{0}, fogColor{0};
   float fogNear = 1, fogFar = 100;
-  bool hdr = false, msaa = false;   // hdr: the scene goes to the HDR target (emitters may exceed 1)
+  bool hdr = false;   // the scene goes to the HDR target (emitters may exceed 1)
 };
 using CustomDraw = std::function<void(const FrameCtx&)>;
 

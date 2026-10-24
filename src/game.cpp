@@ -245,8 +245,8 @@ void Game::buildScene() {
 
 // The night effects' textures (drawn here: no art for them), shapes and materials
 void Game::buildNightFx() {
-  // the nuke's smoke: a 2x2 atlas of cauliflower puffs, 128² each. R density (lumpy, with a
-  // ragged rim), GB the billows' normal (x, y; 0.5 = flat), A fine detail (fire flicker)
+  // the nuke's smoke: a 2x2 atlas of soft billows, 128² each. R density (a blurred, gently
+  // lumpy puff: no rim to read), GB its normal (x, y; 0.5 = flat), A slow detail
   {
     const int N = 128, W = 2 * N;
     auto hash = [](int x, int y, int s) {
@@ -275,25 +275,25 @@ void Game::buildNightFx() {
       for (int j = 0; j < N; j++)
         for (int i = 0; i < N; i++) {
           float x = (i + .5f) / N * 2 - 1, y = (j + .5f) / N * 2 - 1;
-          float r = std::sqrt(x * x + y * y) * (1 + .45f * (fbm(x * 1.7f + cell * 3.1f, y * 1.7f, cell * 7, 3) - .45f));
-          float base = std::clamp(1 - r * r, 0.f, 1.f), cauli = fbm(x * 4.5f + cell * 5.3f, y * 4.5f, 100 + cell * 7, 4);
-          float d = r > .97f ? 0 : std::clamp(1.4f * base * (.45f + .75f * cauli) - .1f, 0.f, 1.f);
-          hgt[j * N + i] = std::sqrt(base) * (.55f + .45f * cauli);
+          float r = std::sqrt(x * x + y * y) * (1 + .3f * (fbm(x * 1.4f + cell * 3.1f, y * 1.4f, cell * 7, 2) - .45f));
+          float lump = fbm(x * 2.4f + cell * 5.3f, y * 2.4f, 100 + cell * 7, 3);
+          float d = std::clamp((1 - glm::smoothstep(.05f, .92f, r)) * (.7f + .5f * lump), 0.f, 1.f);   // fades out well inside the quad
+          hgt[j * N + i] = std::sqrt(std::clamp(1 - r * r, 0.f, 1.f)) * (.85f + .15f * lump);
           uint8_t* p = &px[((oy + j) * W + ox + i) * 4];
           p[0] = (uint8_t)std::lround(255 * d);
-          p[3] = (uint8_t)std::lround(255 * std::clamp(fbm(x * 9 + cell, y * 9, 300 + cell, 2) * 1.3f, 0.f, 1.f));
+          p[3] = (uint8_t)std::lround(255 * std::clamp(fbm(x * 3 + cell, y * 3, 300 + cell, 2) * 1.3f, 0.f, 1.f));
         }
       for (int j = 0; j < N; j++)
         for (int i = 0; i < N; i++) {
           auto H = [&](int a, int b) { return hgt[std::clamp(b, 0, N - 1) * N + std::clamp(a, 0, N - 1)]; };
-          glm::vec3 n = glm::normalize(glm::vec3((H(i - 1, j) - H(i + 1, j)) * 22, (H(i, j - 1) - H(i, j + 1)) * 22, 1));
+          glm::vec3 n = glm::normalize(glm::vec3((H(i - 1, j) - H(i + 1, j)) * 10, (H(i, j - 1) - H(i, j + 1)) * 10, 1));
           uint8_t* p = &px[((oy + j) * W + ox + i) * 4];
           p[1] = (uint8_t)std::lround(255 * (n.x * .5f + .5f));
           p[2] = (uint8_t)std::lround(255 * (n.y * .5f + .5f));
         }
     }
     puffTex_ = Texture::create(W, W, px.data());
-    mushSmoke_.tex = mushFire_.tex = puffTex_;
+    mushSmoke_.tex = mushFire_.tex = puffTex_;   // the fire's glows are plain discs: on them it only turns on the ground and lens fades
   }
   // soft round glow: white, its alpha falling to 0 at the rim (the quads stretch it into streaks)
   {
@@ -2599,21 +2599,21 @@ static float puffRot(int i, int salt, float turn) {
   return std::floor(puffHash(i, salt + 1) * 3.999f) * 8 + a;
 }
 
-// The mushroom cloud at its age, as soft sprites, as StarCraft II draws it: a cap of fire
-// (a rolling torus under a dome) on a fiery stem, burning white-yellow inside and orange
-// at the edges, cooling to dark red and soot, around a white-hot heart. It follows the
-// fireball (nuke_fx.h's curves) and takes over as that burns away (`shell`: the fireball is
-// drawn; without it the sprites are the whole blast). `lit` dims what has cooled to smoke
-// with the scene's light (at night it goes dark once the fireball fades); the fire is
-// self-lit, and in the HDR target (`hdr`) its hottest parts burn past 1 and bloom.
-static void mushroomSprites(const NukeBlast& mc, float lit, bool hdr, bool shell, std::vector<ParticleSystem::P>& smoke,
+// The blast's fire and smoke at its age, as soft sprites, as StarCraft II draws them. First
+// the fireball (nuke_fx.h's curves): a ball of overlapping soft fire round a white-hot heart
+// that rises, flattens and burns out as the mushroom cloud rolls in: a cap of fire (a rolling
+// torus under a dome) on a fiery stem, burning white-yellow inside and orange at the edges,
+// cooling to dark red and soot, round a heart of flame. `lit` dims what has cooled to smoke
+// with the scene's light (at night it goes dark once the fire fades); the fire is self-lit,
+// and in the HDR target (`hdr`) its hottest parts burn past 1 and bloom.
+static void mushroomSprites(const NukeBlast& mc, float lit, bool hdr, std::vector<ParticleSystem::P>& smoke,
                             std::vector<ParticleSystem::P>& fire) {
   const float t = mc.t, g = 1 - std::exp(-t / 0.9f);
   const float heat = std::exp(-t / 3.6f);   // the cloud's temperature, 1 → 0
-  const float fr = nk::fireR(t), sxz = 1 + 0.22f * nk::ss(0.6f, 2.6f, t);
+  const float fr = nk::fireR(t), gF = nk::ss(0.6f, 2.6f, t), sxz = 1 + 0.22f * gF;
   const float capH = nk::fireY(t) + 0.25f * std::max(0.f, t - 2), capR = 0.8f * fr * sxz + 0.1f * t, tube = 0.42f * fr, puff = 1.3f + 1.6f * g;
   const float fade = std::min(1.f, t / 0.15f) * (1 - glm::smoothstep(MUSH_DUR - 2.5f, MUSH_DUR, t));
-  const float capIn = shell ? nk::ss(1.5f, 3.0f, t) : 1, stemIn = shell ? nk::ss(0.4f, 1.4f, t) : 1;
+  const float capIn = nk::ss(1.5f, 3.0f, t), stemIn = nk::ss(0.4f, 1.4f, t);   // they roll in as the fireball burns out
   int n = 0;
   // inner: how hot this puff burns for the cloud's temperature (1 = its core)
   auto add = [&](glm::vec3 p, float size, float a, float inner) {
@@ -2631,6 +2631,7 @@ static void mushroomSprites(const NukeBlast& mc, float lit, bool hdr, bool shell
     q.size *= 0.5f;
     q.col = fireRamp(std::min(1.f, T + 0.2f)) * (hdr ? 1 + 5 * T * T : 1.f);
     q.alpha = 0.9f * a * fade * std::min(1.f, (T - 0.45f) / 0.55f);
+    q.rot = -1;
     fire.push_back(q);
   };
   const float PI2 = 2 * PI_F, stemTop = std::max(0.5f, capH - tube * 0.6f);
@@ -2647,21 +2648,20 @@ static void mushroomSprites(const NukeBlast& mc, float lit, bool hdr, bool shell
     float a = PI2 * puffHash(k, 6), r = capR * 0.7f * std::sqrt(puffHash(k, 7));
     add({std::cos(a) * r, capH + tube * (0.2f + 0.6f * puffHash(k, 8)), std::sin(a) * r}, puff * 1.1f, 0.75f * capIn, 1.1f - 0.3f * r / std::max(capR, 0.1f));
   }
-  // the cap's white-hot heart: a knot of flame puffs glowing through the smoke (and a faint
-  // glow up the stem, seen from the side; from above it would read as a stick)
+  // the cap's heart: a knot of flame glowing through the smoke (and a faint glow up the
+  // stem, seen from the side; from above it would read as a stick)
   const float hk = fade * glm::smoothstep(0.08f, 0.3f, heat);
   if (hk > 0) {
     ParticleSystem::P q{};
+    q.rot = -1;
     for (int i = 0; i < 7; i++) {
-      float a = PI2 * puffHash(i, 60), r = capR * 0.35f * std::sqrt(puffHash(i, 61));
+      float a = PI2 * puffHash(i, 60), r = capR * 0.25f * std::sqrt(puffHash(i, 61));
       q.pos = mc.p + glm::vec3(std::cos(a) * r, capH + tube * (0.1f + 0.4f * puffHash(i, 62)), std::sin(a) * r);
-      q.size = capR * (0.45f + 0.25f * puffHash(i, 63));
+      q.size = capR * (0.6f + 0.3f * puffHash(i, 63));
       q.col = fireRamp(std::min(1.f, heat * (1.6f + 0.4f * puffHash(i, 64)))) * (hdr ? 1.5f + 5 * heat : 1.f);
-      q.alpha = 0.8f * hk * capIn;
-      q.rot = puffRot(i, 65, t * (puffHash(i, 66) - 0.5f) * 1.5f);
+      q.alpha = 0.55f * hk * capIn;
       fire.push_back(q);
     }
-    q.rot = -1;   // smooth glows, not puffs
     for (int i = 0; i < 6; i++) {
       float f = (i + 0.5f) / 6;
       q.pos = mc.p + glm::vec3(0, 0.4f + f * (stemTop - 0.4f), 0);
@@ -2671,14 +2671,44 @@ static void mushroomSprites(const NukeBlast& mc, float lit, bool hdr, bool shell
       fire.push_back(q);
     }
   }
-  if (!shell && heat > 0.45f) {   // the white flash at the heart of the young fireball (the shell is that, when drawn)
+  // the fireball: soft fire packed in a ball, flattening as it rises, its reach stopping short
+  // of the bunker. The body is blended over (yellow inside, orange to red at the rim), hot
+  // glows are added over it, and its heart is a white-hot light that blooms
+  if (t < nk::FIRE_END) {
+    const float db = std::hypot(mc.p.x, mc.p.z), rx = std::min(fr * sxz, std::max(2.4f, db - 0.5f)), ry = fr * (1 - 0.38f * gF);
+    const glm::vec3 C = mc.p + glm::vec3(0, nk::fireY(t), 0);
+    const float hot = std::min(1.2f, 1.7f * std::exp(-t / 2.8f)), out = fade * (1 - nk::ss(2.0f, nk::FIRE_END, t));
+    const int NB = 44;
+    for (int k = 0; k < NB; k++) {   // a golden-angle spiral over the ball, each puff at its own depth
+      float h1 = puffHash(k, 70), h2 = puffHash(k, 71), h3 = puffHash(k, 72);
+      float y = 1 - 2 * (k + 0.5f) / NB, ring = std::sqrt(1 - y * y), a = k * 2.39996f + t * (h2 - 0.5f) * 0.8f;
+      float u = 0.3f + 0.55f * std::sqrt(h1);
+      float T = hot * (1.05f - 0.6f * u * (0.3f + 0.7f * ring)) * (0.9f + 0.2f * h3);   // hotter inside (as seen from above)
+      ParticleSystem::P q{};
+      q.size = fr * (0.75f + 0.35f * h2);
+      q.pos = C + glm::vec3(std::cos(a) * ring * rx, y * ry, std::sin(a) * ring * rx) * u;
+      q.pos.y = std::max(q.pos.y, 0.35f * q.size);   // the young ball squats on the ground
+      q.col = fireRamp(T) * (hdr ? 1 + 3 * T * T : 1.f);
+      q.alpha = 0.85f * out;
+      q.rot = puffRot(k, 73, t * (h2 - 0.5f));
+      smoke.push_back(q);
+      if (T < 0.45f) continue;
+      q.size *= 0.55f;
+      q.col = fireRamp(std::min(1.f, T + 0.2f)) * (hdr ? 1 + 5 * T * T : 1.f);
+      q.alpha = 0.7f * out * std::min(1.f, (T - 0.45f) / 0.4f);
+      q.rot = -1;
+      fire.push_back(q);
+    }
     ParticleSystem::P q{};
-    q.pos = mc.p + glm::vec3(0, capH * 0.8f, 0);
-    q.size = capR * 2.6f;
-    q.col = hexColor(0xfff0c0);
-    q.alpha = 0.55f * (heat - 0.45f) / 0.55f;
     q.rot = -1;
-    fire.push_back(q);
+    for (int i = 0; i < 4; i++) {   // the heart: white-hot, yellowing as it cools
+      float a = PI2 * puffHash(i, 74), r = 0.2f * rx * puffHash(i, 75);
+      q.pos = C + glm::vec3(std::cos(a) * r, 0.15f * ry * (puffHash(i, 76) - 0.3f), std::sin(a) * r);
+      q.size = rx * (1.1f + 0.3f * puffHash(i, 77));
+      q.col = fireRamp(std::min(1.f, hot + 0.15f)) * (hdr ? 1 + 3 * hot * hot : 1.f);
+      q.alpha = 0.55f * out;
+      fire.push_back(q);
+    }
   }
   // the base surge: a ring of dust rolling out past the kill radius with a burning leading edge
   // (shock-heated dust), the most of it at its front, breaking up and settling as it slows
@@ -2694,8 +2724,8 @@ static void mushroomSprites(const NukeBlast& mc, float lit, bool hdr, bool shell
       ParticleSystem::P q{};
       q.pos = mc.p + glm::vec3(std::cos(a) * r, 0.5f + 0.55f * H * (0.3f + 0.7f * h3) * (1 - 0.5f * h2), std::sin(a) * r);
       q.size = (1.6f + 0.13f * Rd) * (0.75f + 0.5f * h4) * grow;
-      q.col = lerp3(hexColor(0x3c3026), hexColor(0x8a7660), h3) * lit;   // dust: lit by the scene
-      q.alpha = 0.9f * sa * keep(q.pos);
+      q.col = lerp3(hexColor(0x5a4e42), hexColor(0x9a8a76), h3) * lit;   // dust: lit by the scene
+      q.alpha = 0.8f * sa * keep(q.pos);
       q.rot = puffRot(k, 34, t * (h1 - 0.5f) * 0.8f);
       if (q.alpha > 0.01f) smoke.push_back(q);
     }
@@ -2970,7 +3000,6 @@ void Game::render() {
       b.p = n.p;
       b.t = n.t;
       b.seed = n.seed;
-      b.low = !gfxHigh_;
       nukeFx_.draw(R, b);
       const float k = nk::heat(n.t) * (1 - nk::ss(4, 7, n.t)), wr = 3.4f * nk::fireR(n.t);
       if (k <= 0.01f) continue;
@@ -2983,7 +3012,7 @@ void Game::render() {
   }
   mushSmoke_.p.clear();
   mushFire_.p.clear();
-  for (const NukeBlast& n : nukes_) mushroomSprites(n, 1 - 0.75f * dnLightF_, hdrLast_, nukeFx_.ok(), mushSmoke_.p, mushFire_.p);
+  for (const NukeBlast& n : nukes_) mushroomSprites(n, 1 - 0.75f * dnLightF_, hdrLast_, mushSmoke_.p, mushFire_.p);
   {   // the cloud thins where it hangs between the camera and the bunker: the fight there stays readable
     glm::vec4 b = proj_ * view_ * glm::vec4(0, 1, 0, 1);
     const glm::vec2 bs = glm::vec2(b) / std::max(b.w, 1e-3f);

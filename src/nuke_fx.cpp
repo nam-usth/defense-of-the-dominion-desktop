@@ -27,7 +27,6 @@ float n3(vec3 x) {
              mix(mix(h13(i + vec3(0, 0, 1)), h13(i + vec3(1, 0, 1)), f.x), mix(h13(i + vec3(0, 1, 1)), h13(i + vec3(1, 1, 1)), f.x), f.y), f.z);
 }
 float fbm2(vec2 p, int o) { float s = 0., a = .5; for (int i = 0; i < 4; i++) { if (i >= o) break; s += a * n2(p); p = p * 2.03 + vec2(5.1, 1.3); a *= .5; } return s; }
-float fbm3(vec3 p, int o) { float s = 0., a = .5; for (int i = 0; i < 4; i++) { if (i >= o) break; s += a * n3(p); p = p * 2.02 + vec3(5.1, 1.3, 7.7); a *= .5; } return s; }
 // fire by temperature: soot, deep red, orange, yellow, white-hot; in HDR the hot end burns past 1 (it blooms)
 vec3 fireCol(float T, bool hdr) {
   T = clamp(T, 0., 1.15);
@@ -145,40 +144,6 @@ void main() {
 }
 )";
 
-// The fireball: a noise-displaced ball of boiling fire, white-hot at its thick centre, sooty
-// as it cools, burning away (glowing edges) into the mushroom cloud's sprites
-const char* FIRE_VS = R"(
-layout(location=0) in vec3 aPos;
-uniform mat4 uView, uProj; uniform vec3 uC, uS; uniform float uTime, uDisp, uSeed; uniform int uOct;
-out vec3 vW; out vec3 vObj; out float vH;
-void main() {
-  vec3 n = normalize(aPos);
-  vec3 q = n * 1.7 + vec3(uSeed, uSeed * .7 - .9 * uTime, 0.);   // the cells boil upward
-  float h = fbm3(q + 1.2 * fbm3(q * .6 + vec3(.2 * uTime), 2), uOct);
-  vH = h; vObj = n;
-  vW = uC + n * (1. + uDisp * (h - .45) * 2.) * uS;
-  gl_Position = uProj * uView * vec4(vW, 1.);
-}
-)";
-const char* FIRE_FS = R"(
-in vec3 vW; in vec3 vObj; in float vH; out vec4 frag;
-uniform vec3 uCamPos, uS, uSunDir, uSunCol, uAmb; uniform float uTime, uHeat, uSoot, uDissolve, uSeed; uniform bool uHdr;
-void main() {
-  vec3 N = normalize(vObj / uS), V = normalize(uCamPos - vW);
-  float fac = max(dot(N, V), 0.);
-  float d = fbm3(vObj * 3.1 + vec3(uSeed, -1.4 * uTime, 0.), 3);
-  float lanes = smoothstep(0., .3, abs(2. * n3(vObj * 4. + vec3(uSeed, -2.2 * uTime, 0.)) - 1.));   // darker lanes between the boiling cells
-  float T = uHeat * (.4 + .6 * pow(fac, 1.5)) * (.55 + .9 * d) * (.85 + .15 * lanes) * (1. - .3 * smoothstep(.1, -.7, vObj.y));   // the thick centre is hottest
-  float soot = smoothstep(uSoot, uSoot + .2, .6 * vH + .6 * d + .35 * (1. - fac));   // cooling from the limb in
-  vec3 smoke = vec3(.17, .14, .12) * (uAmb + uSunCol * max(dot(N, uSunDir), 0.)) + fireCol(.45 * T, uHdr) * .12;
-  vec3 col = mix(fireCol(T, uHdr), smoke, soot);
-  float e = .7 * vH + .3 * d - uDissolve;
-  if (e < 0.) discard;
-  col += fireCol(min(1.1, uHeat + .35), uHdr) * .5 * (1. - smoothstep(0., .05, e)) * (1. - soot);   // burning rims
-  frag = vec4(col, uDissolve > 0. ? smoothstep(0., .05, e) : 1.);
-}
-)";
-
 GLuint program(const char* vs, const char* fs, const char* name) {
   std::string v = std::string("#version 330 core\n") + COMMON + vs, f = std::string("#version 330 core\n") + COMMON + fs;
   return compileProgram(v.c_str(), f.c_str(), name);
@@ -235,14 +200,12 @@ bool NukeRenderer::init() {
   progScar_ = program(MESH_VS, SCAR_FS, "nuke scar");
   progFront_ = program(MESH_VS, FRONT_FS, "nuke front");
   progDome_ = program(MESH_VS, DOME_FS, "nuke dome");
-  progFire_ = program(FIRE_VS, FIRE_FS, "nuke fireball");
-  ok_ = progScar_ && progFront_ && progDome_ && progFire_;
+  ok_ = progScar_ && progFront_ && progDome_;
   if (!ok_) { logWarn("nuke effect shaders unavailable: the sprite cloud alone shows the blast"); return false; }
   const glm::mat4 flat = glm::rotate(glm::mat4(1), -PI_F / 2, {1, 0, 0});   // XY → XZ, facing up
   quad_ = build(geo::plane(1, 1).transform(flat));
   ring_ = build(geo::ring(0.5f, 1.12f, 192).transform(flat));
   dome_ = build(geo::sphere(1, 48, 24));
-  ball_ = build(geo::icosahedron(1, 14));
   return true;
 }
 
@@ -276,44 +239,6 @@ void NukeRenderer::draw(Renderer& R, const Blast& b) const {
   using namespace nk;
   const float t = b.t;
   const glm::vec3 c = b.p;
-
-  // fireball: drawn first of the transparent pass (it writes depth: the cloud's sprites behind it hide)
-  if (t < FIRE_END) {
-    const float fr = fireR(t), g = ss(0.6f, 2.6f, t), sy = 1 - 0.38f * g, sxz = 1 + 0.22f * g;
-    // never swallowing the bunker: the ball's horizontal reach stops short of it
-    const float db = glm::length(glm::vec2(c.x, c.z)), rx = std::min(fr * sxz, std::max(2.4f, db - 0.5f));
-    const glm::vec3 S(rx, fr * sy * glm::clamp(fr * sxz / rx, 1.f, 1.3f), rx), C(c.x, fireY(t), c.z);
-    const float heatU = std::min(1.2f, 1.7f * std::exp(-t / 2.8f)), soot = 1.3f - 0.95f * ss(0.4f, 2.8f, t), dis = ss(2.0f, FIRE_END, t);
-    const int oct = b.low ? 2 : 4;
-    R.drawCustom(-100, C, [=, this](const FrameCtx& f) {
-      // the camera inside the ball sees nothing of it (the close-up near ground zero)
-      glm::vec3 q = (f.camPos - C) / (S * 1.3f);
-      if (glm::dot(q, q) < 1) return;
-      GLuint g = progFire_;
-      use(g, f, glm::mat4(1));
-      u3(g, "uC", C);
-      u3(g, "uS", S);
-      u1(g, "uTime", t);
-      u1(g, "uDisp", 0.22f);
-      u1(g, "uSeed", b.seed);
-      glUniform1i(U(g, "uOct"), oct);
-      u3(g, "uCamPos", f.camPos);
-      u3(g, "uSunDir", f.sunDir);
-      u3(g, "uSunCol", f.sunCol);
-      u3(g, "uAmb", f.ambient);
-      u1(g, "uHeat", heatU);
-      u1(g, "uSoot", soot);
-      u1(g, "uDissolve", dis);
-      glUniform1i(U(g, "uHdr"), f.hdr);
-      glDisable(GL_BLEND);
-      glDepthMask(GL_TRUE);
-      glEnable(GL_CULL_FACE);
-      glCullFace(GL_BACK);
-      if (f.msaa && dis > 0) glEnable(GL_SAMPLE_ALPHA_TO_COVERAGE);
-      drawMesh(ball_.vao, ball_.ibo, ball_.count);
-      glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
-    });
-  }
 
   // shock front ring on the ground
   if (t < FRONT_END) {
