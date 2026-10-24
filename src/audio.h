@@ -16,4 +16,5 @@ void music(const char* scene);
 void setMusicOn(bool on);
 bool musicOn();
 void setSuspended(bool s);            // window minimised: the music pauses
+void setRain(float level);            // the rain's sound, 0 (none) .. 1 (a downpour); it eases to a new level
 }

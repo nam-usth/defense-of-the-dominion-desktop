@@ -1645,11 +1645,14 @@ void Game::drawMenu() {
       note("[K] mutes during play.");
       section("EXPERIMENTAL");
       {
-        bool dn = dnEnabled_;
-        if (check("##dn", bx0, dn, "\xE2\x98\x80 / \xE2\x98\xBD DAY/NIGHT CYCLE")) toggleDayNight();
+        bool dn = dnEnabled_, we = weatherOn_;
+        const char* dnLabel = "\xE2\x98\x80 / \xE2\x98\xBD DAY/NIGHT CYCLE";
+        if (check("##dn", bx0, dn, dnLabel)) toggleDayNight();
+        if (check("##weather", bx0 + checkW(dnLabel) + 24 * s, we, "WEATHER")) setWeatherOn(we);
         y += 18 * s;
       }
-      note("At night only the area around the bunker is visible \xE2\x80\x94 enemies appear when they come close. [Y] toggles.");
+      note("At night only the area around the bunker is visible \xE2\x80\x94 enemies appear when they come close. [Y] toggles. "
+           "Weather: clear skies, clouds and now and then rain, which leaves puddles and spoils the aim (5% of rounds miss in a drizzle, 10% in a downpour).");
       break;
     }
     case 2: {   // DISPLAY (desktop only)

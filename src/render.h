@@ -138,6 +138,11 @@ struct SceneParams {
   glm::vec3 moonTint{0.20f, 0.27f, 0.42f};
   const Texture* terrainTex = nullptr;
   bool hiDetail = false;
+  // the weather (weather.h): how wet the ground is, how full its puddles are, the rain on them now and
+  // its clock (their rings); the sky the water mirrors (overhead, at the horizon), its cloud cover and drift
+  float wet = 0, puddle = 0, rain = 0, weatherT = 0, cloud = 0;
+  glm::vec3 skyZenith{0.36f, 0.5f, 0.68f}, skyHorizon{0.62f, 0.7f, 0.77f};
+  glm::vec2 cloudDrift{0};
 };
 
 // Soft round sprites with per-particle size / colour / alpha (the web version's
@@ -168,6 +173,7 @@ struct FrameCtx {
   glm::vec3 camPos{0}, fogColor{0};
   float fogNear = 1, fogFar = 100;
   bool hdr = false;   // the scene goes to the HDR target (emitters may exceed 1)
+  int vpH = 1;        // the canvas height in pixels (no glGet mid-frame: it stalls some drivers)
 };
 using CustomDraw = std::function<void(const FrameCtx&)>;
 

@@ -18,6 +18,7 @@
 #include "nuke_fx.h"
 #include "render.h"
 #include "storage.h"
+#include "weather.h"
 
 struct GLFWwindow;
 struct ImFont;
@@ -106,7 +107,12 @@ struct Bullet {
   float range = 18;               // flies this far; a Marauder's grenade bursts there (its target point)
   glm::vec2 aim{0};               // a Marauder grenade's target point (on the ground)
   std::vector<glm::vec4> trail;   // a Marauder grenade's light streak: recent nozzle positions, w = game time
+  const Enemy* passed = nullptr;  // in the rain: the Zerg this round missed and flies past (not rolled for again)
 };
+
+// In the rain the bunker's rounds (and the Shrike's) miss now and then: in a drizzle, in a downpour
+// (between the two as the rain grows). Grenades still burst, snipes and missiles still strike
+inline constexpr float RAIN_MISS[2] = {0.05f, 0.10f};
 
 // A Marauder grenade's blast radius: base, then per Concussive Shell AOE tier
 inline constexpr float MG_RADIUS[4] = {1.5f, 2.0f, 2.6f, 3.2f};
@@ -241,6 +247,7 @@ class Game {
     }
   }
   void setDayNightTime(float t);                    // test: the cycle on, t seconds into it
+  void weatherForRun(const std::string& s);         // test: clear | overcast | rain | drizzle | after (a shower just over), held
   void tutorialForRun(bool on) { tutRun_ = on; }    // test: no tour / hints this run (the stored setting is kept)
   void postForRun(bool on) { postRun_ = on; }       // HDR post-processing (main sets the window's samples to match)
   void testPress(bool down) { onMouseButton(0, down ? 1 : 0); }   // test: the left button (GLFW_MOUSE_BUTTON_LEFT, PRESS / RELEASE)
@@ -283,6 +290,14 @@ class Game {
   void startFlare();
   void updateFlare(float dt);
   void endFlare();
+  // weather (weather.h): clear, overcast, now and then rain; the ground wets, puddles fill and dry
+  Weather weather_;
+  WeatherRenderer weatherFx_;
+  bool weatherOn_ = true;               // Menu → Settings (stored)
+  glm::vec3 skyZen_{0}, skyHor_{0};     // the sky the puddles mirror (applyDNLights)
+  void setWeatherOn(bool on);
+  void rainCheat();                     // the "rain" code, in turn: a downpour now, a drizzle, the sky clears
+  float rainMiss() const;               // the chance a round misses in the rain now (RAIN_MISS)
   // nuke fireball light: lights the field (and lifts a night) for NUKE_LIGHT_DUR s of game time
   float nukeLightT_ = -1;   // seconds since the blast, -1 = none
   glm::vec3 nukeLightPos_{0};
