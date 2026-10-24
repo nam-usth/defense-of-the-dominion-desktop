@@ -5,7 +5,8 @@
 //   --size 1600x900        window size
 //   --start campaign       start a game once every asset has loaded (or "endless")
 //   --cheat CODE[@S]       run a cheat code right after --start, or S seconds after it (repeatable);
-//                          also hire:marine|marauder|ghost and research:KEY[:TIER] (paid for: --cheat mng first)
+//                          also hire:marine|marauder|ghost and research:KEY[:TIER] (paid for: --cheat mng first, or
+//                          grant:M,G — test money, not a cheat under --data; without --data it turns achievements off)
 //   --key K@S              press key K (a letter, a digit, enter, space, esc, left, right, up, down) S seconds after --start (repeatable)
 //   --open roster|menu|cheat   open a panel after --start
 //   --zoom-in N            press "+" N times after --start
@@ -14,13 +15,14 @@
 //   --perf                 show the performance overlay (F3) and log its last reading on exit
 //   --no-vsync             uncapped frame rate (to measure)
 //   --threads N            worker threads (default: min(4, hardware threads − 1); 0 = single-threaded)
-//   --bench-fire           test load: fire every volley at the nearest enemy (magazine refilled)
+//   --bench-fire           test load: fire every volley at the nearest enemy (magazine refilled; without --data: no achievements)
 //   --cpu-particles        this run without the GPU particles (the stored setting is kept)
 //   --ui-scale S           override the monitor's UI scale
 //   --gpu dedicated|integrated   graphics card for this run (the menu stores the choice; Windows only)
 //   --platform x11|wayland  Linux: the windowing system (default: X11 when $DISPLAY is set, else Wayland)
 //   --resize WxH           change the window size after --start (tests the HUD rescale)
-//   --open menu:TAB|tour|howto   a menu tab (game, settings, display, controls, tutorial, cheats), the HUD tour, HOW TO PLAY
+//   --open menu:TAB|tour|howto|achievements[:N]   a menu tab (game, settings, display, controls, tutorial, achievements, cheats),
+//                          the HUD tour, HOW TO PLAY, the title's achievement list (N: its category tab, 0-4)
 //   --data DIR             settings and saves in DIR instead of %APPDATA% / ~/.local/share (a new player; the real ones untouched)
 //   --no-tutorial          this run without the HUD tour and hints (the stored setting is kept)
 //   --dn SECONDS           day/night cycle on, SECONDS into it (78 dusk, 102 night, 156 dawn)
@@ -258,6 +260,7 @@ int main(int argc, char** argv) {
   if (!ok) { fatal("The renderer could not start (see dotd_desktop.log)."); return 1; }
   game.showPerf(perf);
   game.benchFire(benchFire);
+  game.testData(!dataDir.empty());
   if (noTutorial) game.tutorialForRun(false);
   game.postForRun(postOn);
   if (dnAt >= 0) game.setDayNightTime(dnAt);

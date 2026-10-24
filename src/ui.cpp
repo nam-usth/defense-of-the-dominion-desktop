@@ -459,6 +459,7 @@ std::map<std::string, Icon>& icons() {
   def("keys", {"M2.5 6.5h19v11h-19z", "M6 10h1.5M10 10h1.5M14 10h1.5M17.5 10h.5M7 14h10"});
   def("help", {circle(12, 12, 9), "M9.3 9.4a2.8 2.8 0 1 1 3.9 2.6c-.8.4-1.2 1-1.2 1.9v.4M12 17.2v.3"});
   def("display", {"M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"});   // the window / fullscreen corners
+  def("trophy", {"M7.5 4h9v5.5a4.5 4.5 0 0 1-9 0z", "M7.5 6H4.5v1.5A3.5 3.5 0 0 0 8 11M16.5 6h3v1.5A3.5 3.5 0 0 1 16 11", "M12 14v3.5M8.5 20.5h7M9.5 20.5v-3h5v3"});   // achievements: a cup
   // Sensor Tower radar, the web sprite's #i-sensor: two quarter arcs from a base point, a sweep line
   // and a blip (its filled dot drawn as a tiny stroked circle). PLACEHOLDER: replace with
   // btn-building-terran-sensortower.png once it is exported

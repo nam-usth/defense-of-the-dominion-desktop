@@ -81,7 +81,8 @@ screen, SETTINGS (beside HOW TO PLAY) opens it on the Settings tab, and M / Esc 
   rebuilt). The graphics card on hybrid laptops, dedicated (e.g. NVIDIA) or integrated (Intel): the driver picks it
   when the game starts, so a change offers *Restart now* (default: dedicated; on Linux the menu says how to pick
   the card instead). The frame-time overlay.
-- **Controls** — the key list. **Tutorial** — hints on / off, HUD TOUR, START OVER. **Cheats** — the console.
+- **Controls** — the key list. **Tutorial** — hints on / off, HUD TOUR, START OVER. **Achievements** — the totals and
+  every achievement as an icon; the one under the cursor is shown as its full row. **Cheats** — the console.
 
 ## Tutorial
 
@@ -90,6 +91,36 @@ gas, the command card and each of its ten buttons (BACK / NEXT, OK, LET'S ROLL; 
 ends it). After it, a hint pauses the game the first time a mechanic matters (out of ammo, wave cleared, upgrades,
 roster, Roaches, nuke, hull, Stimpack); Enter / Space / Esc, the key it names, or a click elsewhere (after 0.8 s)
 closes it. HOW TO PLAY on the title has the rules on one card. What has been seen is stored with the settings.
+
+## Achievements
+
+27 achievements worth 600 points (StarCraft II's 10 / 20 / 30 / 50), in five categories:
+
+| Category | Achievements |
+|---|---|
+| Campaign | Boot Camp (finish the HUD tour) · First Blood · Hold the Line (wave 5) · Dig In (wave 10) · The Dominion Stands (win the campaign) |
+| Endless | No End in Sight (wave 20) · The Swarm Grows (25) · Legend of Korhal (30) |
+| Combat | Exterminator (100 kills in a game) · Four Stars (GENERAL in a game) · Veteran (1,000 kills in all) · Hive Breaker (5,000 in all) · Nuclear Option (20 with one nuke) · Air Superiority (10 with one airstrike) · Shrapnel (5 with one Marauder grenade) · One Shot, One Kill (50 snipes in all) |
+| Command | Fully Upgraded (damage, armor, hull, ammo maxed) · Shrike Online · Overdrive · Combined Arms (a Marine, a Marauder and a Ghost at once) · Super Soldiers (every Super Stimpack tier) · Eyes in the Dark (Sensor Tower 3) |
+| Feats | Untouchable (a wave from 5 on without the Zerg damaging the bunker) · Last Stand (hidden) · Night Watch (a wave at night) · Band of Brothers (win without a Marauder or a Ghost) · No Air Support (win without an airstrike or a nuke) |
+
+A pop-up below the top bar announces each one as it is earned (with a chime, over the roster and the menu too):
+one box: the icon, the name, what it was for, and the points large with the date. The title's ACHIEVEMENTS button opens
+the full list, a tab per category, each achievement drawn as StarCraft II does: the icon, a blue panel with the
+name and what to do, and a box with the points and the date it was earned (`24 OCT 2026`) — or LOCKED, or the
+progress (`412/1,000`) for those that count across games. The results screen shows the (up to three) best the
+game earned.
+
+**A cheat code turns achievements off for the rest of that game** (any code but `help`, before it takes effect):
+the top bar shows a red CHEATS chip, the results screen says so, and the game counts toward nothing — not even
+the lifetime kills (BOOT CAMP too: a tour finished in that game does not count). What was earned before the
+cheat stays earned. The flag is saved with the game, so loading does not wash it out; a save made before
+achievements existed has no flag, so its game earns none either (the chip reads OLD SAVE). The test hooks
+`--bench-fire` and `grant:` count as cheats unless the run uses `--data`, so a test never earns on the real profile.
+The rules live in `src/achievements.cpp`; what has been earned and the lifetime stats (kills, snipes) are stored
+in `achievements.txt` beside the settings. `powershell -ExecutionPolicy Bypass -File build.ps1 -Test` builds and runs
+their unit test (35 checks: every rule and its cheat gate, the toasts, storage round trips), which needs no window;
+on Linux: `cmake --build build/linux --target ach_test && build/linux/ach_test`.
 
 ## Day / night and resupply
 
@@ -245,10 +276,12 @@ options below; the web version was not benchmarked side by side.
 `build/dotd.exe --size 1600x900 --ui-scale 1 --no-tutorial --start campaign --cheat zergrush --cheat fu --bench-fire --no-vsync --perf --after 8 --shot out.png`
 
 `--start campaign|endless` starts once assets are loaded · `--cheat CODE[@S]` (repeatable; `@S`: S seconds after
-the start; also `hire:marine|marauder|ghost` and `research:KEY[:TIER]`, paid for: `--cheat mng` first) · `--key K@S` presses a key (a letter, a digit, enter, space, esc, left, right, up, down) ·
-`--open roster|menu|cheat|menu:TAB|tour|tour:N|howto` (TAB: game, settings, display, controls, tutorial, cheats) ·
+the start; also `hire:marine|marauder|ghost` and `research:KEY[:TIER]`, paid for: `--cheat mng` first, or
+`grant:M,G`, test money that is not a cheat under `--data`) · `--key K@S` presses a key (a letter, a digit, enter, space, esc, left, right, up, down) ·
+`--open roster|menu|cheat|menu:TAB|tour|tour:N|howto|achievements[:N]` (TAB: game, settings, display, controls, tutorial,
+achievements, cheats; N: the achievement list's category tab, 0-4) ·
 `--zoom-in N` · `--shot FILE --after S` saves a screenshot and exits · `--perf` overlay + log line ·
-`--no-vsync` · `--threads N` (0 = no workers) · `--bench-fire` fires every volley automatically · `--ui-scale S` ·
+`--no-vsync` · `--threads N` (0 = no workers) · `--bench-fire` fires every volley automatically (without `--data`: no achievements) · `--ui-scale S` ·
 `--gpu dedicated|integrated` (Windows) · `--platform x11|wayland` (Linux) · `--resize WxH` (after --start) ·
 `--data DIR` settings and saves in DIR (a new player; the real ones untouched) · `--no-tutorial` this run without
 the tour and hints · `--dn S` day/night on,
@@ -263,6 +296,7 @@ and logs the volleys fired · `--post on|off` the HDR post-processing. Each clea
 - The ground (grass tones, dirt, boulders, contact shadows) and the moonlit night are desktop-only so far; the
   web field is still flat green with dirt quads and fades to the near-black fog colour at night.
 - `help` in the cheat console lists the codes in the console itself (the web printed them to the browser console).
+- Achievements (desktop only so far; a cheat code turns them off for that game).
 - Saves are `key=value` files in `%APPDATA%` (Linux: `~/.local/share`) instead of `localStorage`, so web saves
   do not carry over.
 - Windows and Linux. Music decoding uses Media Foundation on Windows and FFmpeg on Linux (see Build and run
@@ -273,7 +307,7 @@ and logs the volleys fired · `--post on|off` the HDR post-processing. Each clea
 ```
 src/main.cpp        window, GL context, ImGui, frame loop, test options
 src/game.*          simulation and 3D scene (port of js/game.js)
-src/game_ui.cpp     HUD, command card, roster, menu, tutorial, title / HOW TO PLAY / results (index.html + css/hud.css)
+src/game_ui.cpp     HUD, command card, roster, menu, tutorial, title / HOW TO PLAY / results, achievements list and pop-ups (index.html + css/hud.css)
 src/game_save.cpp   save / load, cheat codes
 src/render.*        geometry, materials, shadows, instancing, particles
 src/assets.*        DDS / PNG / JPG, OBJ / GLB loading on workers, feature edges
@@ -282,6 +316,8 @@ src/jobs.*          worker pool
 src/display.*       graphics cards (DXGI), resolutions, fullscreen, HUD scale, restart
 src/ui.*            fonts, text, cut-corner panels, SVG icons
 src/storage.*       %APPDATA% / XDG persistence
+src/achievements.*  achievements: the list, the rules, lifetime stats, achievements.txt
+tests/ach_test.cpp  their unit test (build.ps1 -Test)
 third_party/        GLFW 3.4 (+ its glad loader and Wayland protocol XML), Dear ImGui 1.91.9, cgltf 1.14, stb,
                     miniaudio 0.11.21, glm 1.0.1
 assets/             SC2 models, textures, icons and music

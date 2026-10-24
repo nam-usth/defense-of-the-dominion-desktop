@@ -136,6 +136,7 @@ bool Game::init(GLFWwindow* win) {
   R.setGpuParticles(gpuFx() ? &gpuFx_ : nullptr);
   applyDNLights(0);
   tutLoad();
+  ach_.load();
   roster_ = {Unit::Marine, Unit::Marine};
   syncMarines();
   showTitle();
@@ -839,6 +840,7 @@ void Game::updateAcids(float dt) {
       emit(glow_, a.p.x, a.p.y, a.p.z, (rnd() - .5f) * .6f, (rnd() - .5f) * .6f, (rnd() - .5f) * .6f, .3f, .26f, .05f, .85f, 0xb8ff40, 0x2c8a10, 2, 0, 0);
     if (a.t < roach_acid::flight) { i++; continue; }
     bunkerHp_ = std::max(0.f, bunkerHp_ - a.dmg * arm);
+    waveHurt_ = true;
     for (int k = 0; k < 9; k++)   // splash + a puff of corrosive smoke
       emit(glow_, a.p.x, a.p.y, a.p.z, (rnd() - .5f) * 5, rnd() * 4 + 1, (rnd() - .5f) * 5, .45f + rnd() * .25f, .24f, .06f, 1, 0xc8ff50, 0x3a9a12, 18, .8f, 0);
     emit(smoke_, a.p.x, a.p.y, a.p.z, 0, .8f, 0, 1.0f, .5f, 1.3f, .45f, 0x6a8a3a, 0x3a4a2a, -.2f, .5f, 1);
@@ -933,6 +935,7 @@ void Game::updateShrike(float dt) {
   bool od = shrikeOverdrive();
   if (od != shrikeOD_) {
     shrikeOD_ = od;
+    if (od) achState();
     if (od) setStatus("Six Marines \xE2\x80\x94 Shrike overdrive: rate of fire \xC3\x97" "2.5!");
   }
   if (hpLvl_ < 3) { shrikeTgt_.reset(); return; }
@@ -1195,6 +1198,7 @@ void Game::marauderBlast(const glm::vec3& at, const EnemyP& struck, float dmg0, 
   }
   audio::play("mblast");
   for (const EnemyP& o : killed) killEnemy(o, true);
+  ach_.multiKill(run_, "grenade", (int)killed.size() + (struck && !struck->dead && struck->hp <= 0 ? 1 : 0));   // + the one it hit
 }
 
 // This frame's small lights: the bursts of the last MG_BURST_LIGHT s first (brighter, wider: the
@@ -1446,11 +1450,13 @@ void Game::strikeAt(float tx, float tz, uint32_t col, float r) {
   audio::play("boom");
   spawnParts({tx, .5f, tz}, col, 22);
   explosionFx({tx, .5f, tz}, col, 1);
+  int n = 0;
   for (auto& e : allEnemies()) {
     if (e->dead) continue;
     float dx = e->pos.x - tx, dz = e->pos.z - tz;
-    if (std::sqrt(dx * dx + dz * dz) < r) killEnemy(e, true);
+    if (std::sqrt(dx * dx + dz * dz) < r) { killEnemy(e, true); n++; }
   }
+  if (n) ach_.multiKill(run_, "strike", airRunKills_ += n);   // the airstrike's missiles so far
 }
 
 void Game::randPos(float& x, float& z) {
@@ -1465,6 +1471,8 @@ void Game::doAirstrike() {
   if (vikingActive_) { setStatus("Viking already inbound!"); return; }
   airCD_ = strikeCooldown();
   waveAirs_++;
+  run_.usedSupport = true;
+  airRunKills_ = 0;   // its missiles' kills add up (AIR SUPERIORITY)
   std::vector<EnemyP> alive;
   for (auto& e : allEnemies()) if (!e->dead) alive.push_back(e);
   // one missile per enemy cluster (enemies within 3 of each other)
@@ -1584,6 +1592,7 @@ void Game::doNuke(bool force) {
     }
     if (nukeInFlight_) { setStatus("Nuclear launch already in progress!"); return; }
     nukeCD_ = nukeCooldown();
+    run_.usedSupport = true;
   }
   waveNukes_++;
   nukeInFlight_ = true;
@@ -1757,6 +1766,7 @@ void Game::doNuke(bool force) {
       f.spin = (rnd() < .5f ? -1 : 1) * (6 + 6 * rnd());
       killEnemy(e, true, false, &f);
     }
+    ach_.multiKill(run_, "nuke", killed);
     setStatus("Nuclear detonation \xE2\x80\x94 " + std::to_string(killed) + " unit" + (killed != 1 ? "s" : "") + " annihilated. Bunker intact.");
     return false;
   }, [=, this]() {
@@ -1790,6 +1800,7 @@ void Game::killEnemy(const EnemyP& e, bool reward, bool splash, const Fling* fli
     waveKills_++;
     minerals_ += e->rMin;
     gas_ += e->rGas;
+    ach_.kill(run_, kills_);
   }
 }
 
@@ -1951,6 +1962,7 @@ void Game::ghostSnipeTick(float) {
     beam->m = m;
     beams_.push_back({beam, .3f, .3f, 0, tp * 0.5f});
     killEnemy(target, true);
+    ach_.snipe(run_);
     spawnParts(tp, 0xcc44ff, 18);
     setStatus(std::string("Ghost snipe \xE2\x80\x94 ") + (target->type == 'r' ? "Roach" : "Zergling") + " eliminated!");
     audio::play("snipe");
@@ -2255,6 +2267,7 @@ void Game::startWave() {
   spawnTimer_ = 0;
   wavePhase_ = WavePhase::Combat;
   waveKills_ = waveNukes_ = waveAirs_ = waveCrates_ = 0;
+  waveHurt_ = false;
   std::string roachMsg = rc > 0 ? " + " + std::to_string(rc) + " Roach" + (rc > 1 ? "es" : "") : "";
   std::string boostMsg = wave_ == cfg::metabolic_wave ? " \xE2\x80\x94 Metabolic Boost: Zerglings run faster!"
                          : endlessWaves() ? " \xE2\x80\x94 bunker reinforced \xC3\x97" + std::to_string(endlessWaves()) : "";
@@ -2265,6 +2278,7 @@ void Game::startWave() {
 
 void Game::waveCleared() {
   wavePhase_ = WavePhase::Cleared;
+  ach_.waveCleared(run_, mode_ == Mode::Endless, wave_, waveHurt_, maxHp_ > 0 ? bunkerHp_ / maxHp_ : 0, dnEnabled_ && dnFactor_ >= 0.5f);
   int bm = 40 + wave_ * 15, bg = 10 + wave_ * 5;
   minerals_ += bm;
   gas_ += bg;
@@ -2384,6 +2398,7 @@ void Game::buy(const std::string& type) {
   } else s = "Unknown";
   setStatus(s);
   audio::play(minerals_ + gas_ < spent0 ? "buy" : "deny");
+  achState();
 }
 
 void Game::buyArmory(int k) {
@@ -2419,9 +2434,11 @@ std::string Game::hireUnit(Unit u) {
   minerals_ -= d.cost[0];
   gas_ -= d.cost[1];
   roster_.push_back(u);
+  if (u != Unit::Marine) run_.hiredOther = true;   // BAND OF BROTHERS: Marines only
   if (u == Unit::Ghost) snipeReady_.push_back(0);   // a new ghost may snipe at once
   if (u == Unit::Marauder) marauderReady_.push_back(0);   // ... and a new Marauder fire
   syncMarines();
+  achState();
   return std::string(d.name) + " hired! (" + std::to_string(slotsUsed()) + "/6 slots)";
 }
 
@@ -2476,6 +2493,7 @@ void Game::researchUpgrade(const std::string& key, int tier) {
     char r[16];
     snprintf(r, sizeof r, "%g", (double)cfg::sensor_range[sensorLvl_]);
     setStatus("Sensor Tower lv." + std::to_string(sensorLvl_) + " \xE2\x80\x94 blips out to " + r);
+    achState();
     return;
   }
   const UD* d = nullptr;
@@ -2504,6 +2522,17 @@ void Game::researchUpgrade(const std::string& key, int tier) {
     if (key == "superstim") superStimLvl_ = tier + 1;
     setStatus(t.desc);
   }
+  achState();
+}
+
+void Game::achState() {
+  ach::State s;
+  s.dmg = dmgLvl_; s.armor = armorLvl_; s.hull = hpLvl_; s.ammo = ammoLvl_;
+  for (Unit u : roster_) (u == Unit::Marine ? s.marines : u == Unit::Marauder ? s.marauders : s.ghosts)++;
+  s.overdrive = shrikeOverdrive();
+  s.superStim = superStimLvl_;
+  s.sensor = sensorLvl_;
+  ach_.state(run_, s);
 }
 
 void Game::resetRoster() {
@@ -2591,6 +2620,7 @@ void Game::update(float dt) {
       if (e.type == 'r') roachAttack(e, dt, ex, ez);   // ranged: acid, damage on impact
       else {                                          // melee: bites the hull
         bunkerHp_ = std::max(0.f, bunkerHp_ - e.dmg * dt * arm);
+        waveHurt_ = true;
         bool bite;
         if (!e.attack.empty()) {   // SC2 Attack animation on a loop; bites as the jaws close
           float t0 = e.atkT;
@@ -3444,8 +3474,14 @@ void Game::start(Mode m) {
   if (m == Mode::Endless && mode_ != Mode::Endless && !endlessUnlocked()) return;   // replaying Endless never needs the flag
   mode_ = m;
   audio::music("battle");
+  ach_.flush();   // the last game's lifetime stats
   clearEntities();
   newGameState();
+  run_ = {};   // a new game (loadGame restores a saved one's after this)
+  run_.cheated = benchFire_ && !testData_;   // --bench-fire plays for you: not on the real profile
+  runAch_.clear();
+  waveHurt_ = false;
+  airRunKills_ = 0;
   tutDismiss();   // a box left open (Restart / Load from the menu) goes with the old game
   tutNext_ = 0;
   overlay_ = Overlay::None;
@@ -3475,6 +3511,7 @@ void Game::newGameState() {
 }
 
 void Game::gameOver() {
+  ach_.flush();
   if (phase_ != Phase::Playing) return;   // several biters can drop the hull to 0 in one frame
   phase_ = Phase::GameOver;
   bool record = false;
@@ -3494,6 +3531,7 @@ void Game::campaignVictory() {
   if (victoryAchieved_ || phase_ != Phase::Playing) return;
   victoryAchieved_ = true;
   score_ += 5000;   // victory bonus
+  ach_.victory(run_);
   bool newly = !endlessUnlocked();
   storage::set("endless_unlocked", "1");
   // checkpoint = "Continue · Endless": CONTINUE on the title resumes in Endless
@@ -3546,6 +3584,7 @@ bool Game::bestEndless(int& wave, int& score) const {
 }
 
 void Game::shutdown() {
+  ach_.flush();
   const Perf& p = perfShown_;
   if (p.frames)
     logInfo("perf (last 0.5 s): %.0f FPS, frame %.2f ms, worst %.1f ms; CPU update %.2f, render %.2f, UI %.2f ms; %d draws, %d particles",

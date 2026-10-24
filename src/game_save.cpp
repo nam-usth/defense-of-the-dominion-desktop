@@ -93,6 +93,11 @@ storage::Record Game::snapshot() const {
   r["nukeCD"] = num(nukeInFlight_ ? 0 : nukeCD_);
   r["stimT"] = num(stimT_);   // the bunker HP already paid for this stim
   r["stimVolley"] = num(stimVolley_);
+  // this game's achievement facts: loading must not wash out a cheat (older saves: none)
+  r["cheated"] = run_.cheated ? "1" : "0";
+  r["legacy"] = run_.legacy ? "1" : "0";
+  r["usedSupport"] = run_.usedSupport ? "1" : "0";
+  r["hiredOther"] = run_.hiredOther ? "1" : "0";
   r["ts"] = num((double)nowSec());
   return r;
 }
@@ -199,6 +204,11 @@ void Game::loadGame(bool autoSlot) {
   nukeCD_ = (float)getNum(d, "nukeCD");
   stimT_ = (float)getNum(d, "stimT");   // a stim paid for keeps running
   stimVolley_ = (int)getNum(d, "stimVolley");
+  // a save from before achievements has no flags: what happened in that game is unknown, so it earns none
+  run_.legacy = !d.count("cheated") || getStr(d, "legacy") == "1";
+  run_.cheated = run_.legacy || getStr(d, "cheated") == "1";
+  run_.usedSupport = getStr(d, "usedSupport") == "1";
+  run_.hiredOther = getStr(d, "hiredOther") == "1";
   syncMarines();
   std::string gq = getStr(d, "gfxQuality");
   if (!gq.empty()) setGfx(gq == "HIGH");
@@ -211,6 +221,7 @@ void Game::loadGame(bool autoSlot) {
   reinforce();
   startWave();
   shrikeOD_ = shrikeOverdrive();   // a restored overdrive is not news: keep the "Loaded" message
+  achState();
   setStatus(std::string("Loaded \xE2\x80\x94 ") + (mode_ == Mode::Endless ? "Endless" : "Campaign") + " wave " + std::to_string(wave_) + " (saved " + ago(getNum(d, "ts")) + ")");
   closeMenu();
 }
@@ -266,6 +277,13 @@ void Game::submitCheat(const std::string& raw) {
     cheatMsgCol_ = 0xff4444;
     cheatMsg_ = key.empty() ? "Enter a code!" : "Unknown: \"" + key + "\" \xE2\x80\x94 try 'help'";
     return;
+  }
+  // Any code but help turns achievements off for the rest of this game — before it acts:
+  // endv wins the campaign and terran hires, and both would earn achievements first
+  bool firstCheat = key != "help" && !run_.cheated;
+  if (firstCheat) {
+    run_.cheated = true;
+    logInfo("cheat \"%s\": achievements off for this game", key.c_str());
   }
   if (key == "mng") { minerals_ = 7500; gas_ = 7500; }
   else if (key == "fu") {
@@ -343,4 +361,8 @@ void Game::submitCheat(const std::string& raw) {
   cheatMsgCol_ = 0x44ff88;
   cheatMsg_ = c->desc;
   cheatCloseT_ = 1.4f;
+  if (firstCheat) {
+    cheatMsg_ += "\nAchievements are off for the rest of this game.";
+    cheatCloseT_ = 2.6f;   // time to read it
+  }
 }

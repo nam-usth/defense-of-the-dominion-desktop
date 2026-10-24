@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdarg>
 #include <cstring>
+#include <ctime>
 #include <functional>
 #include <sstream>
 
@@ -280,6 +281,15 @@ void Game::drawTopBar() {
     dl->AddRectFilled({x, y}, {x + w, y + h}, camp ? rgb(0x285a96, 0.18f) : rgb(0xa06e0a, 0.16f));
     dl->AddRect({x, y}, {x + w, y + h}, camp ? rgb(EDGE) : rgb(0x8a6a10));
     textC(dl, x + 8 * s, H / 2, ms, m);
+    x += w + gapX;
+  }
+  if (run_.cheated && phase_ != Phase::Menu) {   // achievements are off for this game: a cheat, or a save from before them
+    const char* chip = run_.legacy ? "OLD SAVE" : "CHEATS";
+    Txt m = T(11, DANGER, true, 2);
+    float w = textW(chip, m) + 16 * s, h = 16 * s, y = (H - h) / 2;
+    dl->AddRectFilled({x, y}, {x + w, y + h}, rgb(DANGER, 0.12f));
+    dl->AddRect({x, y}, {x + w, y + h}, rgb(0x8a3a32));
+    textC(dl, x + 8 * s, H / 2, chip, m);
     x += w + gapX;
   }
   // right side, laid out from the right edge
@@ -1480,8 +1490,12 @@ static void hgradCut(ImDrawList* dl, ImVec2 a, ImVec2 b, float c, ImU32 left, Im
 // Left: the tabs, then RESUME / RESTART / MAIN MENU. Right: the chosen tab's page,
 // the same height on every tab. Every setting applies at once (the graphics card
 // at the next start). ↑ ↓ switch tabs; the last tab chosen opens again.
-static const char* MENU_TAB_LABEL[] = {"GAME", "SETTINGS", "DISPLAY", "CONTROLS", "TUTORIAL", "CHEATS"};
-static const char* MENU_TAB_ICON[] = {"save", "gfx", "display", "keys", "help", "cheat"};
+// achievement drawing helpers (defined with the achievements list, below)
+static void achIcon(ImDrawList* dl, const ach::Def& d, ImVec2 a, float size, bool earned);
+static void achRow(ImDrawList* dl, const ach::Def& d, ImVec2 a, float w, float h, bool got, long long when, long long progress);
+
+static const char* MENU_TAB_LABEL[] = {"GAME", "SETTINGS", "DISPLAY", "CONTROLS", "TUTORIAL", "ACHIEVEMENTS", "CHEATS"};
+static const char* MENU_TAB_ICON[] = {"save", "gfx", "display", "keys", "help", "trophy", "cheat"};
 
 void Game::drawMenu() {
   if (!menuOpen_) return;
@@ -1518,7 +1532,10 @@ void Game::drawMenu() {
     unsigned col = on ? 0xffffff : b.hovered ? 0xe2f1ff : 0x9fb8d3;
     float cy = (b.a.y + b.b.y) / 2;
     svgIcon(dl, MENU_TAB_ICON[i], {b.a.x + 12 * s + 8.5f * s, cy}, 17 * s, rgb(col));
-    textC(dl, b.a.x + 12 * s + 17 * s + 10 * s, cy, MENU_TAB_LABEL[i], T(15, col, true, 2));
+    Txt lt = T(15, col, true, 2);
+    float room = b.b.x - 8 * s - (b.a.x + 12 * s + 17 * s + 10 * s);
+    if (textW(MENU_TAB_LABEL[i], lt) > room) lt.spacing = 0.5f;   // ACHIEVEMENTS: tighter, inside the tab
+    textC(dl, b.a.x + 12 * s + 17 * s + 10 * s, cy, MENU_TAB_LABEL[i], lt);
     if (b.clicked) menuTab_ = i;
   }
   bool playing = phase_ == Phase::Playing;
@@ -1758,10 +1775,49 @@ void Game::drawMenu() {
       note("HUD TOUR walks through the console and every command-card button now. START OVER shows the tour and every hint again as you play.");
       break;
     }
+    case 5: {   // ACHIEVEMENTS: totals, the icon grid, the one under the cursor
+      const auto& D = ach::defs();
+      int total = (int)D.size(), pts = ach_.points(), allPts = ach::Book::totalPoints();
+      {
+        Txt ht = T(15, GOLD, true, 1);
+        std::string h = fmt("%d / %d earned  \xC2\xB7  %d / %d points", ach_.earnedCount(), total, pts, allPts);
+        text(dl, {bx0, y}, h.c_str(), ht);
+        y += textH(ht) + 6 * s;
+        dl->AddRectFilled({bx0, y}, {bx1, y + 4 * s}, rgb(0x0b1828));
+        if (allPts) hgradRect(dl, {bx0, y}, {bx0 + bw * pts / allPts, y + 4 * s}, rgb(0x8a6a10), rgb(GOLD));
+        y += 4 * s + 10 * s;
+      }
+      if (run_.cheated && phase_ != Phase::Menu) {
+        note(run_.legacy ? "This game was loaded from a save made before achievements: it earns none."
+                         : "A cheat was used in this game: achievements are off for the rest of it.", DANGER);
+        y += 6 * s;
+      }
+      const int cols = 9;
+      const float g = 7 * s, isz = std::min(46 * s, (bw - (cols - 1) * g) / cols);
+      int hover = -1;
+      for (int i = 0; i < total; i++) {
+        float ix = bx0 + (i % cols) * (isz + g), iy = y + (i / cols) * (isz + g);
+        ImGui::SetCursorScreenPos({ix, iy});
+        Btn b = button(fmt("##ach%d", i).c_str(), {isz, isz});
+        achIcon(dl, D[i], {ix, iy}, isz, ach_.has(D[i].id));
+        if (b.hovered) { hover = i; dl->AddRect({ix - 1, iy - 1}, {ix + isz + 1, iy + isz + 1}, rgb(EDGE_HI), 0, 0, 1.5f * s); }
+      }
+      y += ((total + cols - 1) / cols) * (isz + g) + 4 * s;
+      if (hover >= 0) achHover_ = hover;
+      else if (achHover_ < 0 || achHover_ >= total) achHover_ = 0;
+      {   // the achievement under the cursor (else the last one hovered), as the full list shows it
+        const ach::Def& d = D[achHover_];
+        achRow(dl, d, {bx0, y}, bw, 64 * s, ach_.has(d.id), ach_.earnedAt(d.id), d.goal > 0 ? ach_.stat(d.stat) : 0);
+        y += 64 * s;
+      }
+      break;
+    }
     default: {   // CHEATS
       section("CHEAT CODES");
       markup(dl, {bx0, y}, bw, "Type <kbd>dotd</kbd> during play to open the console; there <b>help</b> lists the codes.", T(13, DIM, true), 1.35f);
       y += 26 * s;
+      note("A cheat code turns achievements off for the rest of that game.", WARN);
+      y += 8 * s;
       if (wideButton(dl, "##cheat", {bx0, y}, {(bw - 10 * s) / 2, rowH}, "CHEAT CONSOLE", warnB, playing, 14, "cheat", false, 6, 2)) { closeMenu(); openCheat(); }
       y += rowH;
       break;
@@ -1919,6 +1975,10 @@ void Game::drawTitle() {
   float hw = (iw - 8 * s) / 2;
   if (modeButton(dl, "##howto", {ix0, y}, hw, "help", "HOW TO PLAY", "Rules, controls, units", false, true)) showHowTo();
   if (modeButton(dl, "##settings", {ix0 + hw + 8 * s, y}, hw, "gfx", "SETTINGS", "Graphics, sound, display", false, true)) { menuTab_ = 1; openMenu(); }
+  y += bh + 8 * s;
+  if (modeButton(dl, "##achievements", {ix0, y}, iw, "trophy", "ACHIEVEMENTS",
+                 fmt("%d / %d earned \xC2\xB7 %d / %d points", ach_.earnedCount(), (int)ach::defs().size(), ach_.points(), ach::Book::totalPoints()), true, true))
+    showAchievements();
   y += bh + 8 * s;
   y += 14 * s - 8 * s;
   // loading progress
@@ -2078,6 +2138,31 @@ void Game::drawResults() {
     text(dl, {sx + sw / 2 - textW(stats[i].first.c_str(), lt) / 2, sy + 6 * s + 24 * s}, stats[i].first.c_str(), lt);
   }
   y += 2 * sh + 6 * s + 16 * s;
+  if (!runAch_.empty()) {   // earned this game (before any cheat): the first three as rows (points large), then a count
+    centred(fmt("ACHIEVEMENTS EARNED \xC2\xB7 %d", (int)runAch_.size()), T(11, 0xc8a640, true, 2.5f));
+    y += 18 * s;
+    const float rh = 64 * s, rg = 6 * s;
+    std::vector<const ach::Def*> best;   // most points first, then the latest
+    for (auto it = runAch_.rbegin(); it != runAch_.rend(); ++it) if (const ach::Def* d = ach::find(*it)) best.push_back(d);
+    std::stable_sort(best.begin(), best.end(), [](const ach::Def* a, const ach::Def* b) { return a->points > b->points; });
+    int shown = 0;
+    for (const ach::Def* d : best) {
+      if (shown == 3) break;
+      achRow(dl, *d, {ix0, y}, iw, rh, true, ach_.earnedAt(d->id), 0);
+      y += rh + rg;
+      shown++;
+    }
+    if ((int)runAch_.size() > shown) {
+      centred(fmt("+%d more \xE2\x80\x94 ACHIEVEMENTS on the title screen", (int)runAch_.size() - shown), T(12, 0xc8a640, true));
+      y += 18 * s;
+    }
+    y += 8 * s;
+  }
+  if (run_.cheated) {   // what was earned before it stays earned
+    centred(run_.legacy ? "Loaded from a save made before achievements: none this game." : "A cheat turned achievements off for the rest of this game.",
+            T(13, DANGER, true));
+    y += 18 * s + 12 * s;
+  }
   float bw = (iw - 8 * s) / 2, bh = 44 * s;
   auto rowBtn = [&](const char* id, float x, const char* svg, const char* label, bool gold) {
     ImGui::SetCursorScreenPos({x, y});
@@ -2096,6 +2181,203 @@ void Game::drawResults() {
   if (rowBtn("##main", ix0 + bw + 8 * s, "home", "MAIN MENU", false)) showTitle();
   y += bh + 20 * s;
   ch = y - y0;
+  ImGui::End();
+}
+
+// ─── Achievements: icons, the title's full list, toasts ──────────────────────
+// An achievement's icon: one of the HUD's StarCraft II buttons, else a stroke icon on
+// a dark tile; dimmed and grey until earned
+static void achIcon(ImDrawList* dl, const ach::Def& d, ImVec2 a, float size, bool earned, float al) {
+  const float s = sc();
+  ImVec2 b{a.x + size, a.y + size};
+  cutPanel(dl, a, b, 6 * s, alpha(earned ? rgb(0x2a2208) : rgb(0x0c1624), al), alpha(earned ? rgb(0x141005) : rgb(0x070d16), al),
+           alpha(earned ? rgb(0x8a6a10) : rgb(0x1d3a5a), al));
+  std::string ic = d.icon;
+  float pad = 3 * s;
+  if (ic.rfind("svg:", 0) == 0) svgIcon(dl, ic.c_str() + 4, {a.x + size / 2, a.y + size / 2}, size * 0.55f, alpha(earned ? rgb(GOLD) : rgb(0x3d5672), al));
+  else if (ImTextureID t = icon("assets/ui/" + ic))
+    image(dl, t, {a.x + pad, a.y + pad}, {b.x - pad, b.y - pad}, earned ? IM_COL32(255, 255, 255, (int)(255 * al)) : IM_COL32(95, 110, 130, (int)(110 * al)));
+  if (!earned && d.hidden) {
+    Txt q = TA(size * 0.45f / s, alpha(rgb(0x6a86a6), al), true);
+    textC(dl, a.x + size / 2 - textW("?", q) / 2, a.y + size / 2, "?", q);
+  }
+}
+static void achIcon(ImDrawList* dl, const ach::Def& d, ImVec2 a, float size, bool earned) { achIcon(dl, d, a, size, earned, 1); }
+static std::string thousands(long long v) {
+  std::string n = std::to_string(v);
+  for (int i = (int)n.size() - 3; i > 0; i -= 3) n.insert(i, ",");
+  return n;
+}
+static std::string shortDate(long long t) {   // under the points: 24 OCT 2026 (day and month cannot be swapped)
+  static const char* MON[12] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+  if (t <= 1) return "";
+  std::time_t tt = (std::time_t)t;
+  const std::tm* tm = std::localtime(&tt);
+  return tm ? fmt("%d %s %d", tm->tm_mday, MON[tm->tm_mon], tm->tm_year + 1900) : "";
+}
+
+// One achievement as StarCraft II lists it: the icon in its frame, a blue panel with the
+// name and what to do, and a box of its own with the points, large, and the date it was
+// earned (or the progress toward it). Locked: darker, the points dim.
+static void achRow(ImDrawList* dl, const ach::Def& d, ImVec2 a, float w, float h, bool got, long long when, long long progress) {
+  const float s = sc(), g = 6 * s, pw = 96 * s;
+  const bool secret = d.hidden && !got;
+  // icon
+  float isz = h;
+  achIcon(dl, d, a, isz, got);
+  // main panel
+  ImVec2 m0{a.x + isz + g, a.y}, m1{a.x + w - pw - g, a.y + h};
+  if (got) glowRect(dl, m0, m1, rgb(0x2e7cff, 0.25f), 10 * s);
+  cutPanel(dl, m0, m1, 8 * s, got ? rgb(0x1f4f96) : rgb(0x10233f), got ? rgb(0x0d2552) : rgb(0x08142a), got ? rgb(0x4d8ee0) : rgb(0x23436a));
+  gradRect(dl, {m0.x + 8 * s, m0.y + 1}, {m1.x - 1, m0.y + h * 0.42f}, IM_COL32(150, 205, 255, got ? 34 : 14), IM_COL32(150, 205, 255, 0));
+  float tx = m0.x + 14 * s, tw = m1.x - 12 * s - tx, ty = a.y + 9 * s;
+  Txt nt = T(18, got ? 0xffffff : 0x9fb8d3, true, 0.5f);
+  text(dl, {tx, ty}, ellipsize(secret ? "???" : d.name, tw, nt).c_str(), nt);
+  ty += textH(nt) + 3 * s;
+  std::string desc = secret ? "Hidden \xE2\x80\x94 keep playing to find it." : d.desc;
+  wrapped(dl, {tx, ty}, tw, desc.c_str(), T(13, got ? 0x8fc4ff : 0x5f7fa6), 1.25f);
+  if (d.goal > 0 && !got) {   // a lifetime stat: its bar along the panel's foot
+    float by = m1.y - 9 * s, f = std::min(1.f, (float)progress / (float)d.goal);
+    dl->AddRectFilled({tx, by}, {tx + tw, by + 4 * s}, rgb(0x061022));
+    if (f > 0) hgradRect(dl, {tx, by}, {tx + tw * f, by + 4 * s}, rgb(0x2f6dff), rgb(0x7fc0ff));
+  }
+  // points box
+  ImVec2 p0{a.x + w - pw, a.y}, p1{a.x + w, a.y + h};
+  cutPanel(dl, p0, p1, 8 * s, got ? rgb(0x0f2a55) : rgb(0x0a1729), got ? rgb(0x071733) : rgb(0x050d18), got ? rgb(0x4d8ee0) : rgb(0x23436a));
+  std::string pts = std::to_string(d.points);
+  Txt bt = T(h >= 60 * s ? 38 : 30, got ? 0xeaf4ff : 0x3e5a7c, true, 1);
+  if (got) bt.glow = rgb(0x5aa0ff, 0.55f);
+  std::string under = got ? shortDate(when) : d.goal > 0 ? thousands(std::min(progress, d.goal)) + "/" + thousands(d.goal) : "LOCKED";
+  Txt ut = T(11, got ? 0x9fc4f0 : 0x4c6683, true, got ? 0.5f : 1.5f);
+  float cx = (p0.x + p1.x) / 2, bh = textH(bt), uh = under.empty() ? 0 : textH(ut) + 2 * s, by = a.y + (h - bh - uh) / 2;
+  text(dl, {cx - textW(pts.c_str(), bt) / 2, by}, pts.c_str(), bt);
+  if (!under.empty()) text(dl, {cx - textW(under.c_str(), ut) / 2, by + bh + 2 * s}, under.c_str(), ut);
+}
+
+// Title → ACHIEVEMENTS: the totals, a tab per category (with how many are earned), and
+// the category's achievements as StarCraft II lists them
+void Game::drawAchievements() {
+  const float s = sc(), W = (float)winW_, H = (float)winH_;
+  if (!layer("##achievements", {0, 0}, {W, H}, true)) { ImGui::End(); return; }
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  overlayBg(dl, W, H);
+  float cw = std::min(840 * s, W - 24 * s), pad = 26 * s;
+  static float ch = 800;
+  float x0 = (W - cw) / 2, y0 = std::max(12 * s, (H - ch) / 2);
+  glowRect(dl, {x0, y0}, {x0 + cw, y0 + ch}, rgb(0x2878dc, 0.3f), 30 * s);
+  cutPanel(dl, {x0, y0}, {x0 + cw, y0 + ch}, 18 * s, rgb(0x0e1e34, 0.96f), rgb(0x050c16, 0.97f), rgb(EDGE_HI));
+  float ix0 = x0 + pad, iw = cw - 2 * pad, cx = x0 + cw / 2, y = y0 + 20 * s;
+  auto centred = [&](const std::string& t, const Txt& tt) { text(dl, {cx - textW(t.c_str(), tt) / 2, y}, t.c_str(), tt); };
+  centred("SERVICE RECORD", T(12, MUTED, true, 4));
+  y += 16 * s + 2 * s;
+  Txt tt = T(30, 0xe8f4ff, true, 5);
+  tt.glow = rgb(0x50aaff, 0.55f);
+  centred("ACHIEVEMENTS", tt);
+  y += 34 * s + 6 * s;
+  const auto& D = ach::defs();
+  int total = (int)D.size(), pts = ach_.points(), allPts = ach::Book::totalPoints();
+  centred(fmt("%d / %d earned  \xC2\xB7  %d / %d points", ach_.earnedCount(), total, pts, allPts), T(15, GOLD, true, 1));
+  y += 22 * s;
+  {   // overall progress
+    float bw = std::min(420 * s, iw), bx = cx - bw / 2;
+    dl->AddRectFilled({bx, y}, {bx + bw, y + 5 * s}, rgb(0x0b1828));
+    if (allPts) hgradRect(dl, {bx, y}, {bx + bw * pts / allPts, y + 5 * s}, rgb(0x8a6a10), rgb(GOLD));
+    dl->AddRect({bx, y}, {bx + bw, y + 5 * s}, rgb(0x1d3a5a));
+    y += 5 * s + 14 * s;
+  }
+  // category tabs
+  const ach::Cat cats[5] = {ach::Cat::Campaign, ach::Cat::Endless, ach::Cat::Combat, ach::Cat::Command, ach::Cat::Feats};
+  {
+    const float tg = 6 * s, tw = (iw - 4 * tg) / 5, th = 32 * s;
+    for (int c = 0; c < 5; c++) {
+      int n = 0, got = 0;
+      for (const ach::Def& d : D) if (d.cat == cats[c]) { n++; got += ach_.has(d.id); }
+      ImGui::SetCursorScreenPos({ix0 + c * (tw + tg), y});
+      Btn b = button(fmt("##achtab%d", c).c_str(), {tw, th});
+      bool on = achTab_ == c;
+      if (on) { hgradCut(dl, b.a, b.b, 6 * s, rgb(0x2e6fc0, 0.6f), rgb(0x18427a, 0.25f)); cutPanel(dl, b.a, b.b, 6 * s, 0, 0, rgb(EDGE_HI)); }
+      else cutPanel(dl, b.a, b.b, 6 * s, b.hovered ? rgb(0x2e6fc0, 0.2f) : rgb(0x0c1a2c), b.hovered ? rgb(0x2e6fc0, 0.2f) : rgb(0x08121f), rgb(0x1d3a5a));
+      Txt lt = T(13, on ? 0xffffff : b.hovered ? 0xe2f1ff : 0x9fb8d3, true, 1.5f);
+      std::string cnt = fmt("%d/%d", got, n);
+      Txt ct = T(12, got == n ? GOLD : MUTED, true, 0, true);
+      float w = textW(ach::catName(cats[c]), lt) + 8 * s + textW(cnt.c_str(), ct), lx = (b.a.x + b.b.x) / 2 - w / 2, cy = (b.a.y + b.b.y) / 2;
+      textC(dl, lx, cy, ach::catName(cats[c]), lt);
+      textC(dl, lx + w - textW(cnt.c_str(), ct), cy, cnt.c_str(), ct);
+      if (b.clicked) achTab_ = c;
+    }
+    y += th + 12 * s;
+  }
+  // the category's rows, in an area sized for the largest category: the card keeps its height and
+  // place whichever tab is open
+  const float rh = 66 * s, rg = 6 * s;
+  int most = 0;
+  for (ach::Cat c : cats) most = std::max(most, (int)std::count_if(D.begin(), D.end(), [c](const ach::Def& d) { return d.cat == c; }));
+  float rowsY = y;
+  for (const ach::Def& d : D) {
+    if (d.cat != cats[std::clamp(achTab_, 0, 4)]) continue;
+    achRow(dl, d, {ix0, y}, iw, rh, ach_.has(d.id), ach_.earnedAt(d.id), d.goal > 0 ? ach_.stat(d.stat) : 0);
+    y += rh + rg;
+  }
+  y = rowsY + most * (rh + rg) + 12 * s;
+  // BACK
+  float bw = std::min(260 * s, iw), bh = 44 * s, bx = cx - bw / 2;
+  ImGui::SetCursorScreenPos({bx, y});
+  Btn b = button("##achBack", {bw, bh});
+  bool hov = b.hovered;
+  if (hov) glowRect(dl, b.a, b.b, rgb(0x46a0ff, 0.45f), 16 * s);
+  cutPanel(dl, b.a, b.b, 10 * s, hov ? rgb(0x2a5a92) : rgb(0x1d3d63), hov ? rgb(0x173562) : rgb(0x0f2240), hov ? rgb(EDGE_HI) : rgb(EDGE));
+  {
+    Txt lt = T(17, TEXT, true, 2);
+    float w = 26 * s + 14 * s + textW("BACK", lt), tx = cx - w / 2, cy = (b.a.y + b.b.y) / 2;
+    svgIcon(dl, "home", {tx + 13 * s, cy}, 26 * s, rgb(0x9fd2ff));
+    textC(dl, tx + 40 * s, cy, "BACK", lt);
+  }
+  y += bh + 20 * s;
+  ch = y - y0;
+  ImGui::End();
+  if (b.clicked) overlay_ = Overlay::Title;
+}
+
+// A toast as each achievement is earned: the StarCraft II row below the top bar, one
+// at a time, 4.6 s each (real time: it shows over the roster, the menu and the results)
+void Game::drawToasts() {
+  if (toasts_.empty()) return;
+  const float s = sc(), W = (float)winW_, DUR = 4.6f, IN = 0.25f, OUT = 0.45f;
+  Toast& t = toasts_.front();
+  if (t.t0 < 0) { t.t0 = uiTime_; audio::play("achieve"); }
+  float age = uiTime_ - t.t0;
+  if (age > DUR) { toasts_.erase(toasts_.begin()); return; }
+  const ach::Def* d = ach::find(t.id);
+  if (!d) { toasts_.erase(toasts_.begin()); return; }
+  float k = std::min(1.f, age / IN), al = age > DUR - OUT ? (DUR - age) / OUT : k;
+  float e = 1 - (1 - k) * (1 - k);   // ease out
+  const float w = std::min(560 * s, W - 24 * s), h = 72 * s, x0 = std::round((W - w) / 2), y0 = std::round(42 * s - (1 - e) * 18 * s);
+  if (!layer("##achToast", {x0 - 20 * s, y0 - 20 * s}, {w + 40 * s, h + 44 * s}, false)) { ImGui::End(); return; }
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  auto A = [&](ImU32 c) { return alpha(c, al); };
+  // one box (the list's rows are three: icon, panel, points)
+  glowRect(dl, {x0, y0}, {x0 + w, y0 + h}, A(rgb(0xffc83c, 0.3f)), 18 * s);
+  cutPanel(dl, {x0, y0}, {x0 + w, y0 + h}, 10 * s, A(rgb(0x1f4f96, 0.97f)), A(rgb(0x0d2552, 0.97f)), A(rgb(GOLD)));
+  gradRect(dl, {x0 + 10 * s, y0 + 1}, {x0 + w - 1, y0 + h * 0.42f}, A(IM_COL32(150, 205, 255, 34)), IM_COL32(150, 205, 255, 0));
+  const float isz = h - 16 * s, pw = 92 * s, dx = x0 + w - pw;
+  achIcon(dl, *d, {x0 + 8 * s, y0 + 8 * s}, isz, true, al);
+  dl->AddLine({dx, y0 + 10 * s}, {dx, y0 + h - 10 * s}, A(rgb(0x4d8ee0, 0.8f)), 1.5f * s);
+  float tx = x0 + 8 * s + isz + 12 * s, tw = dx - 12 * s - tx;
+  std::string kick = "ACHIEVEMENT EARNED";
+  if (toasts_.size() > 1) kick += fmt("  \xC2\xB7  %d MORE", (int)toasts_.size() - 1);
+  text(dl, {tx, y0 + 8 * s}, kick.c_str(), TA(11, A(rgb(GOLD)), true, 2.5f));
+  Txt nt = TA(19, A(rgb(0xffffff)), true, 0.5f);
+  text(dl, {tx, y0 + 23 * s}, ellipsize(d->name, tw, nt).c_str(), nt);
+  Txt dt = TA(13, A(rgb(0x8fc4ff)));
+  text(dl, {tx, y0 + 23 * s + textH(nt) + 3 * s}, ellipsize(d->desc, tw, dt).c_str(), dt);
+  // the points, large, and today's date under them
+  std::string pts = std::to_string(d->points), date = shortDate(ach_.earnedAt(d->id));
+  Txt bt = TA(38, A(rgb(0xeaf4ff)), true, 1);
+  bt.glow = A(rgb(0x5aa0ff, 0.55f));
+  Txt ut = TA(11, A(rgb(0x9fc4f0)), true, 0.5f);
+  float pcx = dx + pw / 2, bh = textH(bt), uh = textH(ut) + 2 * s, by = y0 + (h - bh - uh) / 2;
+  text(dl, {pcx - textW(pts.c_str(), bt) / 2, by}, pts.c_str(), bt);
+  text(dl, {pcx - textW(date.c_str(), ut) / 2, by + bh + 2 * s}, date.c_str(), ut);
   ImGui::End();
 }
 
@@ -2281,6 +2563,7 @@ bool Game::tourShown(int i) const {
   return i == 0 || i == (int)tourDefs().size() - 1 || focusRect(tourDefs()[i].focus, a, b, c, d);
 }
 void Game::tutNextPage() {   // GOT IT / NEXT / OK, LET'S ROLL
+  if (tourI_ == (int)tourDefs().size() - 1 && (phase_ != Phase::Playing || !run_.cheated)) ach_.tourDone();   // OK, LET'S ROLL: BOOT CAMP
   if (tourI_ < 0 || tourI_ == (int)tourDefs().size() - 1) { tutDismiss(); return; }
   int i = tourI_ + 1;
   while (!tourShown(i)) i++;
@@ -2545,6 +2828,7 @@ void Game::drawUI(float dt) {
   uiTime_ += dt;
   uiFrame_++;
   statusFlash_ = std::max(0.f, statusFlash_ - dt);
+  for (std::string& id : ach_.takeNew()) { toasts_.push_back({id, -1}); runAch_.push_back(id); }
   drawOverlayCanvas();
   drawSlotOverlay();
   drawTopBar();
@@ -2555,9 +2839,11 @@ void Game::drawUI(float dt) {
   if (overlay_ == Overlay::Title) drawTitle();
   else if (overlay_ == Overlay::Results) drawResults();
   else if (overlay_ == Overlay::HowTo) drawHowTo();
+  else if (overlay_ == Overlay::Achievements) drawAchievements();
   drawTutorial();   // above the HUD (spotlight); the cheat console and the menu stay above it
   drawCheat();
   drawMenu();
+  drawToasts();   // over everything: earned in the roster or the menu, they still show
   drawPerf();
 }
 

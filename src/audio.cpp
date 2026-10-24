@@ -236,6 +236,12 @@ bool build(const std::string& n, int64_t t, std::vector<Voice>& o) {
   else if (n == "buy") { add(o, tone(t, .07, 660, 660, .12, W::Sine)); add(o, tone(t + S(.07), .09, 990, 990, .12, W::Sine)); }
   else if (n == "deny") add(o, tone(t, .14, 190, 150, .09, W::Square));
   else if (n == "crate") add(o, tone(t, .16, 440, 880, .12, W::Sine));
+  else if (n == "achieve") {   // an achievement earned: a rising G major arpeggio over a soft shimmer
+    const double fq[4] = {784, 988, 1175, 1568};
+    for (int i = 0; i < 4; i++) add(o, tone(t + S(i * .07), .32 - i * .04, fq[i], fq[i], .1, W::Sine));
+    add(o, tone(t + S(.21), .5, 1568 * 2, 1568 * 2, .025, W::Triangle));
+    add(o, noise(t + S(.18), .35, 6000, 9000, .05, F::Highpass));
+  }
   else if (n == "snipe") { add(o, tone(t, .25, 1600, 300, .16, W::Sine)); add(o, noise(t, .08, 3500, 3000, .16, F::Highpass)); }
   else if (n == "rocket") { add(o, noise(t, .45, 900, 2600, .2, F::Bandpass, 1.5)); add(o, tone(t, .1, 160, 70, .12, W::Sine)); }   // Viking missile off the rail
   else if (n == "mblast") { add(o, noise(t, .26, 1400, 110, .32, F::Lowpass, .8)); add(o, tone(t, .22, 90, 38, .3, W::Sine)); }   // a punisher grenade bursts
