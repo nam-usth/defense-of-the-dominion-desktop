@@ -877,7 +877,7 @@ void Renderer::render(const SceneParams& sp) {
     glDepthMask(GL_FALSE);
     glDrawArraysInstanced(GL_TRIANGLES, 0, 6, (GLsizei)c->ps->p.size());
   }
-  if (gpuParticles_) gpuParticles_->draw(sp.view, sp.proj, sp.fogNear, sp.fogFar);
+  if (gpuParticles_) gpuParticles_->draw(sp.view, sp.proj, sp.fogNear, sp.fogFar, glP, glC, glN);
   glBindVertexArray(0);
   glDepthMask(GL_TRUE);
   glDisable(GL_BLEND);

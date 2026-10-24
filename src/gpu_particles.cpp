@@ -101,16 +101,16 @@ layout(location = 0) in vec2 aCorner;
 layout(std430, binding = 0) readonly buffer Parts { P parts[]; };
 uniform mat4 uView, uProj;
 uniform uint uBase, uCap;
-out vec2 vCoord; out vec3 vColor; out float vAlpha; out float vFogD;
+out vec2 vCoord; out vec3 vColor; out float vAlpha; out vec3 vPos;
 void main() {
   P p = parts[(uBase + uint(gl_InstanceID)) % uCap];
   vCoord = aCorner + 0.5;
-  if (p.pos.w <= 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vAlpha = 0.0; vColor = vec3(0.0); vFogD = 0.0; return; }   // dead: clipped
+  if (p.pos.w <= 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vAlpha = 0.0; vColor = vec3(0.0); vPos = vec3(0.0); return; }   // dead: clipped
   float t = 1.0 - p.pos.w / p.vel.w;
   float size = mix(p.c1.w, p.m.x, t);
   vAlpha = p.c0.a * (p.m.w > 0.5 ? sin(3.14159265 * min(1.0, t * 1.15)) : 1.0 - t);
   vColor = mix(p.c0.rgb, p.c1.rgb, t);
-  vFogD = length(p.pos.xz);
+  vPos = p.pos.xyz;
   vec4 mv = uView * vec4(p.pos.xyz, 1.0);
   mv.xy += aCorner * size;
   gl_Position = uProj * mv;
@@ -118,13 +118,17 @@ void main() {
 )";
 
 static const char* DRAW_FS = R"(#version 430
-in vec2 vCoord; in vec3 vColor; in float vAlpha; in float vFogD;
+in vec2 vCoord; in vec3 vColor; in float vAlpha; in vec3 vPos;
 uniform float uFogNear, uFogFar;
+uniform vec4 uGlPos[8], uGlColor[8]; uniform int uGlCount;   // small lights (the lit shader's)
 out vec4 fragColor;
 void main() {
   float d = length(vCoord - 0.5) * 2.0;
   float a = vAlpha * (1.0 - smoothstep(0.15, 1.0, d));   // soft round sprite, as the CPU particles
-  a *= 1.0 - smoothstep(uFogNear, uFogFar, vFogD);
+  float lift = 0.0;   // fade out in the night fog, except near a small light (as the CPU particles)
+  for (int i = 0; i < uGlCount; i++)
+    lift = max(lift, uGlColor[i].a * (1.0 - smoothstep(0.35 * uGlPos[i].w, uGlPos[i].w, length(uGlPos[i].xyz - vPos))));
+  a *= 1.0 - smoothstep(uFogNear, uFogFar, length(vPos.xz)) * (1.0 - lift);
   if (a < 0.004) discard;
   fragColor = vec4(vColor, a);
 }
@@ -272,7 +276,8 @@ int GpuParticles::live() const {
   return (int)((glow_.head - glow_.oldestLive(simT_)) + (smoke_.head - smoke_.oldestLive(simT_)));
 }
 
-void GpuParticles::drawSys(const Sys& s, const glm::mat4& view, const glm::mat4& proj, float fogNear, float fogFar, bool additive) {
+void GpuParticles::drawSys(const Sys& s, const glm::mat4& view, const glm::mat4& proj, float fogNear, float fogFar, const glm::vec4* glPos,
+                           const glm::vec4* glCol, int glN, bool additive) {
   uint64_t from = s.oldestLive(simT_);
   int count = (int)std::min<uint64_t>(s.head - from, (uint64_t)s.cap);
   if (count <= 0) return;
@@ -281,6 +286,11 @@ void GpuParticles::drawSys(const Sys& s, const glm::mat4& view, const glm::mat4&
   glUniformMatrix4fv(glGetUniformLocation(drawProg_, "uProj"), 1, GL_FALSE, glm::value_ptr(proj));
   glUniform1f(glGetUniformLocation(drawProg_, "uFogNear"), fogNear);
   glUniform1f(glGetUniformLocation(drawProg_, "uFogFar"), fogFar);
+  glUniform1i(glGetUniformLocation(drawProg_, "uGlCount"), glN);
+  if (glN > 0) {
+    glUniform4fv(glGetUniformLocation(drawProg_, "uGlPos"), glN, &glPos[0].x);
+    glUniform4fv(glGetUniformLocation(drawProg_, "uGlColor"), glN, &glCol[0].x);
+  }
   glUniform1ui(glGetUniformLocation(drawProg_, "uBase"), (GLuint)(from % (uint64_t)s.cap));
   glUniform1ui(glGetUniformLocation(drawProg_, "uCap"), (GLuint)s.cap);
   glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, s.buf);
@@ -293,10 +303,11 @@ void GpuParticles::drawSys(const Sys& s, const glm::mat4& view, const glm::mat4&
   glDrawArraysInstanced(GL_TRIANGLES, 0, 6, count);
 }
 
-void GpuParticles::draw(const glm::mat4& view, const glm::mat4& proj, float fogNear, float fogFar) {
+void GpuParticles::draw(const glm::mat4& view, const glm::mat4& proj, float fogNear, float fogFar, const glm::vec4* glPos, const glm::vec4* glCol,
+                        int glN) {
   if (!ok_) return;
-  drawSys(smoke_, view, proj, fogNear, fogFar, false);   // glow over smoke
-  drawSys(glow_, view, proj, fogNear, fogFar, true);
+  drawSys(smoke_, view, proj, fogNear, fogFar, glPos, glCol, glN, false);   // glow over smoke
+  drawSys(glow_, view, proj, fogNear, fogFar, glPos, glCol, glN, true);
   glBindVertexArray(0);
 }
 

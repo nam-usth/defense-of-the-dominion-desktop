@@ -33,7 +33,8 @@ class GpuParticles {
   bool ok() const { return ok_; }
   void burst(const Burst& b);
   void update(float dt);   // spawn this frame's bursts, then move every particle (dt 0 = paused: spawn only)
-  void draw(const glm::mat4& view, const glm::mat4& proj, float fogNear, float fogFar);   // inside the scene's transparent pass
+  // inside the scene's transparent pass; glPos / glCol: the small lights (SceneParams::glows) that lift the night fog
+  void draw(const glm::mat4& view, const glm::mat4& proj, float fogNear, float fogFar, const glm::vec4* glPos, const glm::vec4* glCol, int glN);
   void clear();
   int live() const;        // upper bound: particles spawned within the longest lifetime
 
@@ -53,5 +54,6 @@ class GpuParticles {
   double simT_ = 0;
   GLuint spawnProg_ = 0, updateProg_ = 0, drawProg_ = 0, burstBuf_ = 0, vao_ = 0, quad_ = 0;
   void spawn(Sys& s);
-  void drawSys(const Sys& s, const glm::mat4& view, const glm::mat4& proj, float fogNear, float fogFar, bool additive);
+  void drawSys(const Sys& s, const glm::mat4& view, const glm::mat4& proj, float fogNear, float fogFar, const glm::vec4* glPos, const glm::vec4* glCol,
+               int glN, bool additive);
 };

@@ -60,7 +60,7 @@ build/linux/dotd
   `DRI_PRIME=1 build/linux/dotd` (Mesa: AMD, Intel, nouveau) or `prime-run build/linux/dotd` (NVIDIA's driver).
 
 Tested on Ubuntu 22.04 under WSLg: GCC 11.4, FFmpeg 4.4, X11 through XWayland and native Wayland, sound
-through PulseAudio. WSLg's Mesa D3D12 driver stops at OpenGL 4.1, so the game falls back to 3.3 with CPU
+through PulseAudio, the HDR post-processing and the new nuke included. WSLg's Mesa D3D12 driver stops at OpenGL 4.1, so the game falls back to 3.3 with CPU
 particles there (about 40 FPS at 1600×900). With Mesa's llvmpipe (`LIBGL_ALWAYS_SOFTWARE=1`, OpenGL 4.5), the GPU
 particles' compute shaders compile and run. Not tested: a native Linux desktop, AMD / Intel / NVIDIA drivers on
 Linux, PipeWire, and FFmpeg 5.1+. The code handles 5.1's channel-layout API but was compiled only against 4.4.

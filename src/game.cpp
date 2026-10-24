@@ -1079,7 +1079,9 @@ void Game::marauderBlast(const glm::vec3& at, const EnemyP& struck, float dmg0, 
   // the burst: a small ball of light, white-hot at the heart in a wider soft glow, shrinking as it
   // fades, and a few sparks — icy blue for a concussive shell (as StarCraft II draws it), else warm
   const uint32_t heart[2] = {0xfff0c0, 0xe8f6ff}, glow[2] = {0xffa040, 0x5cb0ff}, deep[2] = {0xc03000, 0x1a50e0};
+  const size_t n0 = glow_.p.size();
   emit(glow_, at.x, 0.4f, at.z, 0, .3f, 0, .26f, .85f, .3f, 1, heart[sl], glow[sl], 0, 0, 0);
+  if (hdrLast_ && glow_.p.size() > n0) { glow_.p.back().c0 *= 3.f; glow_.p.back().c1 *= 2.f; }   // the heart burns past 1: it blooms (HDR)
   emit(glow_, at.x, 0.4f, at.z, 0, .2f, 0, .34f, 1.7f, .7f, .45f, glow[sl], deep[sl], 0, 0, 0);
   for (int i = 0; i < 6; i++) {
     float a = rnd() * 2 * PI, v = 1.4f + rnd() * 1.4f;
@@ -3040,6 +3042,9 @@ void Game::render() {
     }
     for (const VMissile& v : vMissiles_) missile(v.p, v.dir, VM_LEN, v.trail, VM_STREAK, false);
     R.drawInstanced(vmMesh_, &vmBodyMat_, vm.data(), (int)vm.size(), true, false);
+    // the flames' cores burn white-hot: past 1 in the HDR target, so they bloom (clipped without it)
+    vmFlameCoreMat_.color = hexColor(0xfff2d0) * (hdrLast_ ? 2.5f : 1.f);
+    mgBlueCoreMat_.color = hexColor(0xdff2ff) * (hdrLast_ ? 2.5f : 1.f);
     for (int k = 0; k < 2; k++) {
       Material *glow = k ? &mgBlueGlowMat_ : &vmFlameGlowMat_, *core = k ? &mgBlueCoreMat_ : &vmFlameCoreMat_;
       R.drawInstanced(trailMesh_, glow, fire[k].flameGlow.data(), (int)fire[k].flameGlow.size(), false, false, 2);
@@ -3062,7 +3067,7 @@ void Game::render() {
       float k = bl.t / MG_BLAST_DUR, r = bl.r * (0.5f + 0.5f * glm::smoothstep(0.f, 0.2f, k)), fade = (1 - k) * (1 - k);
       Instance w;
       w.m = trs({bl.p.x, 0.04f, bl.p.z}, glm::vec3(0), {2.3f * r, 1, 2.3f * r});
-      w.c = hexColor(bl.blue ? 0x2f7cff : 0xff7a2a) * (0.5f * fade);
+      w.c = hexColor(bl.blue ? 0x2f7cff : 0xff7a2a) * ((hdrLast_ ? 0.9f : 0.5f) * fade);   // (it blooms a little in HDR)
       wash.push_back(w);
     }
     R.drawInstanced(blipMesh_, &blastWashMat_, wash.data(), (int)wash.size(), false, false, 1);
