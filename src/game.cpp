@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <deque>
+#include <thread>
 
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -269,68 +270,108 @@ void Game::buildScene() {
   rebuildBunkerTris();
 }
 
-// The ground's noise (render.cpp LIT_FS, TERRAIN, reads it at three rotated scales): 256² of
-// value-noise fbm that tiles. R the macro tone, G the mid tone and the dirt, BA the slope of a
-// fine pebbly height (a quintic fade: no lattice creases under a low light)
+// The ground's noise (render.cpp LIT_FS, TERRAIN, reads it at three rotated scales): 512² of
+// gradient-noise fbm that tiles. Many cells to the tile (no low harmonic to repeat as bands), each
+// octave's lattice offset (no lattice lines in common) and the broad octaves warped (no straight
+// edges). R and G two unrelated fields (tone, brightness, dirt; the fine clumps close up), BA the
+// slope of a fine pebbly height, creased for the dirt
 void Game::buildTerrainTex() {
-  const int N = 256;
-  auto latt = [](int x, int y, int P, uint32_t seed) {
-    x = ((x % P) + P) % P;
-    y = ((y % P) + P) % P;
+  const int N = 512;
+  auto latt = [](int x, int y, uint32_t seed) {   // a hash of a lattice point
     uint32_t h = (uint32_t)x * 0x8da6b343u ^ (uint32_t)y * 0xd8163841u ^ seed * 0xcb1ab31fu;
     h ^= h >> 13;
     h *= 0x5bd1e995u;
     h ^= h >> 15;
-    return (h & 0xffffff) / 16777215.f;
+    return h & 0xffffff;
   };
-  auto noise = [&](float u, float v, int P, uint32_t seed) {   // one period over u, v in [0, 1)
-    float x = u * P, y = v * P;
-    int ix = (int)std::floor(x), iy = (int)std::floor(y);
-    float fx = x - ix, fy = y - iy;
-    fx = fx * fx * fx * (fx * (fx * 6 - 15) + 10);
-    fy = fy * fy * fy * (fy * (fy * 6 - 15) + 10);
-    float a = latt(ix, iy, P, seed), b = latt(ix + 1, iy, P, seed), c = latt(ix, iy + 1, P, seed), d = latt(ix + 1, iy + 1, P, seed);
-    return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
-  };
-  auto fbm = [&](float u, float v, int P0, int oct, uint32_t seed) {
-    float s = 0, w = 0, amp = 1;
-    for (int o = 0; o < oct; o++, amp *= .5f) {
-      s += amp * noise(u, v, P0 << o, seed + 101 * o);
-      w += amp;
+  glm::vec2 dirs[256];
+  for (int i = 0; i < 256; i++) dirs[i] = {std::cos(i * 6.2831853f / 256), std::sin(i * 6.2831853f / 256)};
+  struct Oct { int P; float ox, oy; std::vector<glm::vec2> g; };   // a P x P lattice of unit gradients, offset
+  auto octaves = [&](int P0, int n, uint32_t seed) {
+    std::vector<Oct> os;
+    for (int o = 0; o < n; o++) {
+      int P = P0 << o;
+      uint32_t s = seed + 101 * o;
+      Oct k{P, (1 + latt(1, 2, s) / 16777215.f) * P, (1 + latt(3, 4, s) / 16777215.f) * P, std::vector<glm::vec2>(P * P)};   // (+P: x stays > 0)
+      for (int y = 0; y < P; y++)
+        for (int x = 0; x < P; x++) k.g[y * P + x] = dirs[latt(x, y, s) >> 16];
+      os.push_back(std::move(k));
     }
-    return s / w;
+    return os;
   };
+  auto noise = [](const Oct& k, float u, float v) {   // one period over u, v in [0, 1) (and a little past): about -0.7..0.7
+    const int P = k.P;
+    float x = u * P + k.ox, y = v * P + k.oy;
+    int i0 = (int)x, j0 = (int)y;
+    float fx = x - i0, fy = y - j0;
+    while (i0 >= P) i0 -= P;
+    while (j0 >= P) j0 -= P;
+    int i1 = i0 + 1 == P ? 0 : i0 + 1, j1 = j0 + 1 == P ? 0 : j0 + 1;
+    const glm::vec2 *r0 = &k.g[j0 * P], *r1 = &k.g[j1 * P];
+    float n00 = r0[i0].x * fx + r0[i0].y * fy, n10 = r0[i1].x * (fx - 1) + r0[i1].y * fy;
+    float n01 = r1[i0].x * fx + r1[i0].y * (fy - 1), n11 = r1[i1].x * (fx - 1) + r1[i1].y * (fy - 1);
+    float sx = fx * fx * fx * (fx * (fx * 6 - 15) + 10), sy = fy * fy * fy * (fy * (fy * 6 - 15) + 10);
+    float a = n00 + (n10 - n00) * sx, b = n01 + (n11 - n01) * sx;
+    return a + (b - a) * sy;
+  };
+  // fbm; the first `warped` octaves read at (u, v) + w
+  auto fbm = [&](const std::vector<Oct>& os, float u, float v, glm::vec2 w = {}, int warped = 0) {
+    float s = 0, sum = 0, amp = 1;
+    for (int o = 0; o < (int)os.size(); o++, amp *= .5f) {
+      s += amp * (o < warped ? noise(os[o], u + w.x, v + w.y) : noise(os[o], u, v));
+      sum += amp;
+    }
+    return s / sum;
+  };
+  const int P0 = 12;
+  auto wx = octaves(4, 2, 3), wy = octaves(4, 2, 5), oR = octaves(P0, 4, 1), oG = octaves(P0, 4, 7);
+  auto oH = octaves(32, 3, 13), oK = octaves(48, 2, 29);
   std::vector<float> R(N * N), G(N * N), H(N * N);
-  for (int y = 0; y < N; y++)
-    for (int x = 0; x < N; x++) {
-      float u = (x + .5f) / N, v = (y + .5f) / N;
-      int i = y * N + x;
-      R[i] = fbm(u, v, 4, 4, 1);
-      G[i] = fbm(u, v, 6, 4, 7);
-      H[i] = fbm(u, v, 16, 3, 13) + 0.35f * (1 - std::abs(2 * fbm(u, v, 24, 2, 29) - 1));
-    }
-  auto stretch = [](std::vector<float>& c) {   // to the full range: the shader's thresholds then hit their coverage
-    auto [lo, hi] = std::minmax_element(c.begin(), c.end());
-    float a = *lo, d = std::max(1e-6f, *hi - *lo);
-    for (float& v : c) v = (v - a) / d;
+  auto rows = [&](int y0, int y1) {
+    for (int y = y0; y < y1; y++)
+      for (int x = 0; x < N; x++) {
+        float u = (x + .5f) / N, v = (y + .5f) / N;
+        int i = y * N + x;
+        glm::vec2 w = glm::vec2(fbm(wx, u, v), fbm(wy, u, v)) * (0.6f / P0);   // the warp: a little over half a cell
+        R[i] = fbm(oR, u, v, w, 2);
+        G[i] = fbm(oG, u, v, glm::vec2(-w.y, w.x), 2);
+        H[i] = fbm(oH, u, v) + 0.35f * (1 - std::abs(2 * fbm(oK, u, v)));
+      }
   };
-  stretch(R);
-  stretch(G);
+  {   // in bands on a few threads (about 50 ms of work on one)
+    int T = std::clamp((int)std::thread::hardware_concurrency(), 1, 8);
+    std::vector<std::thread> ts;
+    for (int t = 1; t < T; t++) ts.emplace_back(rows, N * t / T, N * (t + 1) / T);
+    rows(0, N / T);
+    for (auto& t : ts) t.join();
+  }
+  auto normalise = [](std::vector<float>& c, float sd) {   // mean 0.5 and a set spread: the shader's thresholds then hit their coverage
+    double m = 0, q = 0;
+    for (float v : c) m += v;
+    m /= c.size();
+    for (float v : c) q += (v - m) * (v - m);
+    float k = sd / (float)std::sqrt(std::max(1e-12, q / c.size()));
+    for (float& v : c) v = glm::clamp(0.5f + (v - (float)m) * k, 0.f, 1.f);
+  };
+  normalise(R, 0.2f);
+  normalise(G, 0.165f);
   std::vector<glm::vec2> slope(N * N);
   float most = 1e-6f;
-  for (int y = 0; y < N; y++)
+  for (int y = 0; y < N; y++) {
+    const float *h = &H[y * N], *hu = &H[(y + 1) % N * N], *hd = &H[(y + N - 1) % N * N];
     for (int x = 0; x < N; x++) {
-      auto h = [&](int a, int b) { return H[((b + N) % N) * N + (a + N) % N]; };
-      glm::vec2 g(h(x + 1, y) - h(x - 1, y), h(x, y + 1) - h(x, y - 1));
+      int xl = x ? x - 1 : N - 1, xr = x + 1 < N ? x + 1 : 0;
+      glm::vec2 g(h[xr] - h[xl], hu[x] - hd[x]);
       slope[y * N + x] = g;
-      most = std::max({most, std::abs(g.x), std::abs(g.y)});
+      most = std::max(most, std::max(std::abs(g.x), std::abs(g.y)));
     }
+  }
   std::vector<uint8_t> px((size_t)N * N * 4);
-  for (int i = 0; i < N * N; i++) {
-    px[i * 4] = (uint8_t)std::lround(255 * R[i]);
-    px[i * 4 + 1] = (uint8_t)std::lround(255 * G[i]);
-    px[i * 4 + 2] = (uint8_t)std::lround(128 + 127 * glm::clamp(slope[i].x / most, -1.f, 1.f));
-    px[i * 4 + 3] = (uint8_t)std::lround(128 + 127 * glm::clamp(slope[i].y / most, -1.f, 1.f));
+  for (int i = 0; i < N * N; i++) {   // (+0.5, truncated: rounded, all positive)
+    px[i * 4] = (uint8_t)(255 * R[i] + .5f);
+    px[i * 4 + 1] = (uint8_t)(255 * G[i] + .5f);
+    px[i * 4 + 2] = (uint8_t)(128.5f + 127 * glm::clamp(slope[i].x / most, -1.f, 1.f));
+    px[i * 4 + 3] = (uint8_t)(128.5f + 127 * glm::clamp(slope[i].y / most, -1.f, 1.f));
   }
   terrainTex_ = Texture::create(N, N, px.data(), true, 4);
 }
@@ -3329,7 +3370,6 @@ void Game::render() {
   sp.night = dnLightF_;
   sp.nightDesat = 0.55f * dnLightF_;
   sp.terrainTex = terrainTex_;
-  sp.hiDetail = gfxHigh_ && zoom_ > 0.5f;   // the finest ground detail is sub-pixel from the overview
   sp.fogColor = fogCol_ + glm::vec3(1, 0.95f, 0.85f) * (0.9f * nkFlash) + glm::vec3(1, 0.45f, 0.15f) * (0.12f * nukeLightK() * dnFactor_);
   sp.fogNear = fogNear_;
   sp.fogFar = fogFar_;
