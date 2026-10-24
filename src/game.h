@@ -90,6 +90,18 @@ struct Bullet {
   Unit unit;
   float len = 1.8f;   // streak length × the tracer mesh, alike for every round (bunker and Shrike: the same brightness)
   float sinY = 0, cosY = 1, sinP = 0, cosP = 1;
+  float range = 18;               // flies this far; a Marauder's grenade bursts there (its target point)
+  std::vector<glm::vec4> trail;   // a Marauder grenade's light streak: recent nozzle positions, w = game time
+};
+
+// A Marauder grenade's blast radius: base, then per Concussive Shell AOE tier
+inline constexpr float MG_RADIUS[4] = {1.5f, 2.0f, 2.6f, 3.2f};
+
+// A punisher grenade's blast: a soft glow on the ground over its radius (the burst itself: sprites)
+struct MBlast {
+  glm::vec3 p;
+  float r, t = 0;     // radius; seconds since the burst (game time)
+  bool blue = false;  // a concussive shell's (icy blue), else a plain grenade's (warm)
 };
 
 struct Acid {
@@ -172,7 +184,15 @@ class Game {
   void setUiScale(float s) { uiScale_ = s; }
   // test hooks (command line)
   void autoStart(const std::string& mode) { start(mode == "endless" ? Mode::Endless : Mode::Campaign); }
-  void runCheat(const std::string& code) { submitCheat(code); }
+  void runCheat(const std::string& code) {   // also the test actions hire:<unit> and research:<key>[:<tier>] (paid for: mng first)
+    if (code.rfind("hire:", 0) == 0) {
+      for (int k = 0; k < 3; k++) if (code.substr(5) == unitDef((Unit)k).key) hireUnit((Unit)k);
+    } else if (code.rfind("research:", 0) == 0) {
+      std::string r = code.substr(9);
+      size_t c = r.find(':');
+      researchUpgrade(r.substr(0, c), c == std::string::npos ? -1 : std::atoi(r.c_str() + c + 1));
+    } else submitCheat(code);
+  }
   void openPanel(const std::string& p) {
     if (p == "roster") openRoster();
     else if (p.rfind("menu", 0) == 0) {   // "menu" or "menu:<tab>"
@@ -328,7 +348,7 @@ class Game {
   Pool* poolFor(const std::string& key, const Baked& parts, const glm::mat4& local);
   Pool* framePool(const std::string& skin, const char* anim, int k);
   Pool* modelPool(const std::string& skin);
-  Material bulletMat_, acidMat_, crateMat_, missileBodyMat_, missileGlowMat_;
+  Material bulletMat_, acidMat_, crateMat_;
   Mesh *bulletMesh_ = nullptr, *acidMesh_ = nullptr, *crateMesh_ = nullptr, *beamMesh_ = nullptr,
        *ringMesh_ = nullptr, *laserMesh_ = nullptr, *trailMesh_ = nullptr, *fireballMesh_ = nullptr, *snipeMesh_ = nullptr,
        *dotRingMesh_ = nullptr, *decalMesh_ = nullptr, *unitBoxMesh_ = nullptr;
@@ -343,6 +363,16 @@ class Game {
   void updateSensorRing(float dt);
   Mesh* sensorRingMesh_[4] = {};   // per Sensor Tower level: the range ring with its 12 triangles
   Mesh* glowRingMesh_ = nullptr;   // a soft band along a unit circle (xz plane)
+  Material blastWashMat_;              // grenade blasts' glow on the ground (additive, tinted per instance)
+  const Texture* blastTex_ = nullptr;  // its shape: a soft disk with no edge
+  Material mgBlueGlowMat_, mgBlueCoreMat_;   // concussive shells: their flames and light streaks burn blue
+  std::vector<MBlast> mBlasts_;
+  GlowLight glows_[MAX_GLOWS];   // small lights this frame: Marauder grenades in flight and their bursts
+  int glowCount_ = 0;
+  void updateGlows();
+  bool glowLit(float x, float z) const;   // near enough a small light to show in the dark
+  float nightDark(float x, float z) const;   // how much the night hides a Zerg there (0 in full light, 1 black)
+  void marauderBlast(const glm::vec3& at, const EnemyP& struck, float dmg0, const std::vector<EnemyP>& enemies);
   // a crate runner's chest lamps at night (white LED pod) and their beams on the ground
   const Texture* beamTex_ = nullptr;
   Mesh* lampBeamMesh_ = nullptr;

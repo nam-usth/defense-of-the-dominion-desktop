@@ -339,6 +339,7 @@ uniform vec3 uSpPos, uSpDir, uSpColor; uniform float uSpDist, uSpDecay; uniform 
 uniform bool uReceiveShadow, uShadows;
 uniform sampler2DShadow uShadowMap; uniform float uShadowBias, uShadowTexel;
 uniform vec3 uFogColor; uniform float uFogNear, uFogFar; uniform bool uFog;
+uniform vec4 uGlPos[8], uGlColor[8]; uniform int uGlCount;   // small lights: xyz + radius · rgb + reveal
 const float PI = 3.141592653589793;
 
 float sunShadow() {
@@ -444,11 +445,20 @@ void main() {
       else if (uType == 2) spec += irr * PI * specBlinn(L, V, N, f0, uShininess);
     }
     if (uType == 1) direct *= sh;   // Lambert: the shadow mask darkens all direct light
+    for (int i = 0; i < uGlCount; i++) {   // small lights: soft (half-wrapped), no highlight
+      vec3 lv = uGlPos[i].xyz - vWorld;
+      float d = length(lv);
+      float att = pow(clamp(1.0 - d / uGlPos[i].w, 0.0, 1.0), 2.0);
+      direct += uGlColor[i].rgb * att * (0.5 + 0.5 * dot(N, lv / max(d, 1e-5)));
+    }
     outC = dif * (uAmbient + direct) + spec + uEmissive * (uHasEmissiveMap ? texture(uEmissiveMap, vUV).rgb : vec3(1.0));
   }
   if (uFog) {
     float fogF = smoothstep(uFogNear, uFogFar, length(vWorld.xz));   // radial: distance from the bunker
-    outC = mix(outC, uFogColor, fogF);
+    float lift = 0.0;   // the small lights lift the night around them (full near, none at their reach)
+    for (int i = 0; i < uGlCount; i++)
+      lift = max(lift, uGlColor[i].a * (1.0 - smoothstep(0.35 * uGlPos[i].w, uGlPos[i].w, length(uGlPos[i].xyz - vWorld))));
+    outC = mix(outC, uFogColor, fogF * (1.0 - lift));
   }
   fragColor = vec4(outC, diffuse.a);
 }
@@ -471,24 +481,28 @@ layout(location=2) in float iSize;
 layout(location=3) in vec3 iColor;
 layout(location=4) in float iAlpha;
 uniform mat4 uView, uProj;
-out vec2 vCoord; out vec3 vColor; out float vAlpha; out float vFogD;
+out vec2 vCoord; out vec3 vColor; out float vAlpha; out vec3 vPos;
 void main() {
   vec4 mv = uView * vec4(iPos, 1.0);
   mv.xy += aCorner * iSize;   // world-space diameter = size (the web version's size attenuation)
   vCoord = aCorner + 0.5;
   vColor = iColor; vAlpha = iAlpha;
-  vFogD = length(iPos.xz);
+  vPos = iPos;
   gl_Position = uProj * mv;
 }
 )";
 static const char* PART_FS = R"(#version 330 core
-in vec2 vCoord; in vec3 vColor; in float vAlpha; in float vFogD;
+in vec2 vCoord; in vec3 vColor; in float vAlpha; in vec3 vPos;
 uniform float uFogNear, uFogFar;
+uniform vec4 uGlPos[8], uGlColor[8]; uniform int uGlCount;   // small lights (the lit shader's)
 out vec4 fragColor;
 void main() {
   float d = length(vCoord - 0.5) * 2.0;
   float a = vAlpha * (1.0 - smoothstep(0.15, 1.0, d));   // soft round sprite
-  a *= 1.0 - smoothstep(uFogNear, uFogFar, vFogD);        // fade out in the night fog
+  float lift = 0.0;   // fade out in the night fog, except near a small light
+  for (int i = 0; i < uGlCount; i++)
+    lift = max(lift, uGlColor[i].a * (1.0 - smoothstep(0.35 * uGlPos[i].w, uGlPos[i].w, length(uGlPos[i].xyz - vPos))));
+  a *= 1.0 - smoothstep(uFogNear, uFogFar, length(vPos.xz)) * (1.0 - lift);
   if (a < 0.004) discard;
   fragColor = vec4(vColor, a);
 }
@@ -740,6 +754,19 @@ void Renderer::render(const SceneParams& sp) {
   glUniform3fv(U(p, "uFogColor"), 1, glm::value_ptr(sp.fogColor));
   glUniform1f(U(p, "uFogNear"), sp.fogNear);
   glUniform1f(U(p, "uFogFar"), sp.fogFar);
+  glm::vec4 glP[MAX_GLOWS], glC[MAX_GLOWS];   // the small lights (lit shader and sprites)
+  const int glN = std::clamp(sp.glowCount, 0, MAX_GLOWS);
+  for (int i = 0; i < glN; i++) {
+    glP[i] = glm::vec4(sp.glows[i].pos, sp.glows[i].radius);
+    glC[i] = glm::vec4(sp.glows[i].color, sp.glows[i].reveal);
+  }
+  auto glowUniforms = [&](GLuint prog) {
+    glUniform1i(U(prog, "uGlCount"), glN);
+    if (glN == 0) return;
+    glUniform4fv(U(prog, "uGlPos"), glN, glm::value_ptr(glP[0]));
+    glUniform4fv(U(prog, "uGlColor"), glN, glm::value_ptr(glC[0]));
+  };
+  glowUniforms(p);
   glUniform1i(U(p, "uMap"), 0);
   glUniform1i(U(p, "uEmissiveMap"), 1);
   glUniform1i(U(p, "uNormalMap"), 2);
@@ -785,6 +812,7 @@ void Renderer::render(const SceneParams& sp) {
     glUniformMatrix4fv(U(partProg_, "uProj"), 1, GL_FALSE, glm::value_ptr(sp.proj));
     glUniform1f(U(partProg_, "uFogNear"), sp.fogNear);
     glUniform1f(U(partProg_, "uFogFar"), sp.fogFar);
+    glowUniforms(partProg_);
     glBindVertexArray(partVao_);
     glBindBuffer(GL_ARRAY_BUFFER, partInstVbo_);
     glBufferData(GL_ARRAY_BUFFER, pbuf.size() * sizeof(float), pbuf.data(), GL_STREAM_DRAW);

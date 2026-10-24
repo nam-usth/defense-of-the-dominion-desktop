@@ -83,8 +83,6 @@ inline const AssetDef ASSETS[] = {
    .tex = {TERRAN_DIR "ghost_diffuse.dds"}},
   {.key = "nukeMissile", .glb = TERRAN_DIR "nuke_missile.glb", .unitScale = SC2_SCALE * 0.52f,
    .tex = {TERRAN_DIR "nuke_missile.dds"}},
-  // Marauder punisher grenade (body + fireball): no texture, plain materials. 2× SC2 size.
-  {.key = "marauderMissile", .glb = TERRAN_DIR "marauder_missile.glb", .unitScale = SC2_SCALE * 2},
   {.key = "viking", .obj = TERRAN_DIR "viking.obj", .scale = 2.25f, .rotY = -PI_F / 2,
    .tex = {TERRAN_DIR "viking_diffuse.jpg", TERRAN_DIR "viking_emissive.jpg"}},
   // Zerglings by wave tier: base · Metabolic Boost (wave 8+, winged) · its webby skin (wave 12+)
@@ -113,7 +111,7 @@ inline const char* const LOAD_STAGES[][8] = {
   {"bunker"},
   {"zergling", "marine"},
   {"roach", "viking", "nukeMissile"},
-  {"marauder", "marauderMissile", "ghost", "zergling_upgrade", "roach_ex1a", "shrike", "zergling_webby", "roach_ex3"},
+  {"marauder", "ghost", "zergling_upgrade", "roach_ex1a", "shrike", "zergling_webby", "roach_ex3"},
 };
 constexpr int LOAD_STAGE_COUNT = 4, ESSENTIAL_STAGES = 2;
 

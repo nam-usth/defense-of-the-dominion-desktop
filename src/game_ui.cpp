@@ -99,11 +99,12 @@ void Game::drawOverlayCanvas() {
   dl->PushClipRect({canvasX_, canvasY_}, {canvasX_ + canvasW_, canvasY_ + canvasH_}, true);
   const float s = sc();
   if (phase_ == Phase::Playing) {
-    // night: no bars beyond the fog, and fading with it in front of it, as the fog fades the enemy
+    // night: no bars beyond the fog, and fading with it in front of it, as the fog fades the enemy;
+    // none on a Zerg hidden under its Sensor Tower blip (its bar and badge would tell which kind)
     float fogRange = dnFactor_ > 0.1f ? fogFar_ : INFINITY;
     for (auto* list : {&zerglings_, &roaches_})
       for (auto& e : *list) {
-        if (e->dead) continue;
+        if (e->dead || !e->visible) continue;
         float fa = 1;
         if (fogRange < INFINITY) {
           float d = std::hypot(e->pos.x, e->pos.z);
@@ -1206,7 +1207,8 @@ void Game::drawRoster() {
       text(dl, {ix, yy}, fmt("%d slot%s", d.slots, d.slots > 1 ? "s" : "").c_str(), T(12, MUTED, true));
       yy += 16 * s + 3 * s;
       std::string note = (d.dmgMult != 1 ? fmt("\xC3\x97%g dmg", d.dmgMult) : std::string("balanced")) +
-                         (d.bonusVsArmored ? fmt(", +%d%% vs armored", (int)std::round((d.bonusMult - 1) * 100)) : d.bonusVsLight ? fmt(", +%d%% vs light", (int)std::round((d.bonusMult - 1) * 100)) : std::string(", no bonus"));
+                         (d.bonusVsArmored ? fmt(", +%d%% vs armored", (int)std::round((d.bonusMult - 1) * 100)) : d.bonusVsLight ? fmt(", +%d%% vs light", (int)std::round((d.bonusMult - 1) * 100)) : std::string(", no bonus")) +
+                         (u == Unit::Marauder ? ", blast slows the area" : "");
       wrapped(dl, {ix, yy}, cw - 22 * s, note.c_str(), T(13, 0xb9cfe6), 1.3f);
       yy += 34 * s + 6 * s;
       Txt cmt = T(13, MINERAL, false, 0, true), cgt = T(13, GAS, false, 0, true);
@@ -1227,7 +1229,7 @@ void Game::drawRoster() {
     const auto& sk = cfg::sensor_costs;
     R rs[4] = {
       {"superstim", Unit::Marine, "Super Stimpack", ui_icons::superstim, {250, 150}, superStimUnlocked_, 0, 0, {}, "Nova's Marines: Stimpack costs no HP and repairs the bunker while it lasts (stacks with the hull's self-repair)"},
-      {"concussive", Unit::Marauder, "Concussive Shell", ui_icons::concussive, {300, 75}, concussiveUnlocked_, concussiveLvl_, 3, {{250, 80}, {400, 130}, {600, 200}}, "Marauder hits slow the target to 40% speed for 2.5s \xE2\x80\x94 single target"},
+      {"concussive", Unit::Marauder, "Concussive Shell", ui_icons::concussive, {300, 75}, concussiveUnlocked_, concussiveLvl_, 3, {{250, 80}, {400, 130}, {600, 200}}, "Marauder blasts slow harder: to 40% speed (from 70%) for 2.5s (from 1.5s)"},
       {"snipe", Unit::Ghost, "Snipe", ui_icons::snipe, {250, 100}, snipeUnlocked_, snipeLvl_, 3, {{200, 80}, {320, 130}, {500, 200}}, "Ghost auto-snipes highest-threat enemy (8s CD)"},
       {"sensor", Unit::Marine, "Sensor Tower", nullptr, {sk[0][0], sk[0][1]}, sensorLvl_ >= 1, sensorLvl_, 3, {{sk[0][0], sk[0][1]}, {sk[1][0], sk[1][1]}, {sk[2][0], sk[2][1]}},
        "At night, Zerg in the dark within range show as red ! blips (not which kind). Range 10.75 / 12.5 / 16; the lit area reaches about 9."},
@@ -1244,7 +1246,7 @@ void Game::drawRoster() {
       std::string status = r.desc;
       if (r.unlocked) {
         if (!strcmp(r.key, "snipe")) status = fmt("CD: %.1fs | tier %d/3", (double)(r.lvl == 0 ? 8 : r.lvl == 1 ? 6 : r.lvl == 2 ? 4 : 2.5), r.lvl);
-        if (!strcmp(r.key, "concussive")) status = r.lvl == 0 ? "Single target" : fmt("AOE radius %.1f | tier %d/3", (double)(r.lvl == 1 ? 1.5 : r.lvl == 2 ? 2.2 : 3.0), r.lvl);
+        if (!strcmp(r.key, "concussive")) status = fmt("Slow 40%% for 2.5s | blast radius %.1f | tier %d/3", (double)MG_RADIUS[r.lvl], r.lvl);
         if (!strcmp(r.key, "superstim")) status = fmt("Stim: no HP cost, +%d HP/s to the bunker for %d s (stacks with self-repair)", (int)cfg::superstim_heal, (int)cfg::stim_duration);
         if (sensor) status = fmt("Blips out to %g | tier %d/3", (double)cfg::sensor_range[r.lvl], r.lvl);
       }
@@ -1941,7 +1943,7 @@ void Game::drawHowTo() {
     {"FIRE", "Click the ground: every unit inside the bunker fires one volley at that spot, for one round. Hold the button for full auto \xE2\x80\x94 it empties the magazine fast."},
     {"AMMO", "After each wave a Marine fetches a supply crate that refills the magazine. Out of ammo mid-wave? <kbd>R</kbd> calls a Viking: it fires missiles into the swarm and drops an ammo crate \xE2\x80\x94 one crate covers the wave."},
     {"MONEY", "Kills and cleared waves pay minerals and gas. Spend them on upgrades <kbd>1</kbd>\xE2\x80\x93<kbd>4</kbd> (damage, armor, hull, ammo) and on units in the roster <kbd>B</kbd>, which pauses the game."},
-    {"UNITS", "The bunker has 6 slots. Marine (1 slot): all-round. Marauder (2): locks onto the nearest Armored enemy, double damage to it. Ghost (2): bonus damage to Light, researches auto-Snipe."},
+    {"UNITS", "The bunker has 6 slots. Marine (1 slot): all-round. Marauder (2): aims itself at the nearest enemies; its grenade blasts an area, slowing all in it, double damage to Armored. Ghost (2): bonus damage to Light, researches auto-Snipe."},
     {"POWERS", fmt("<kbd>N</kbd> nuke from wave %d. <kbd>T</kbd> Stimpack with six Marines. Bunker hull level 3: Shrike auto-turret and self-repair.", cfg::nuke_wave)},
     {"ZERG", fmt("Zerglings: fast, Light, bite the hull. Roaches from wave %d: Armored, spit acid from range. From wave %d the Zerglings run faster.", cfg::roach_wave, cfg::metabolic_wave)},
   };
@@ -2085,7 +2087,7 @@ static const std::vector<HintDef>& hintDefs() {
     {"roster", "cleared", {"cmd-roster"}, "b", "BUNKER ROSTER",
      "Between waves is a good moment to press <kbd>B</kbd>: hire more units into the bunker's free slots \xE2\x80\x94 every one of them fires with each volley."},
     {"roach", nullptr, {}, "", "ROACHES",
-     "Roaches are <b>Armored</b> and spit acid from range. Marauders lock onto the nearest Armored enemy and deal it double damage; armor (<kbd>2</kbd>) cuts the damage the bunker takes."},
+     "Roaches are <b>Armored</b> and spit acid from range. Marauders deal Armored enemies double damage; armor (<kbd>2</kbd>) cuts the damage the bunker takes."},
     {"nuke", nullptr, {"cmd-nuke"}, "n", "NUKE READY",
      fmt("From wave %d, press <kbd>N</kbd> or click NUKE: a Ghost marks the middle of the swarm and the warhead wipes out everything in the blast. It recharges after each launch.", cfg::nuke_wave)},
     {"hull", nullptr, {"hp"}, "", "BUNKER DAMAGED",

@@ -62,15 +62,30 @@ warning ring, the Viking's missiles) show through the night too.
 Seeing the Zerg in the dark: the **Sensor Tower** research (roster, no unit needed, three levels) shows enemies
 beyond the lit edge (~9) within 10.75 / 12.5 / 16 of the bunker as pulsing red **!** blips — not which kind —
 lying flat on the ground under them (upright as the camera sees them), inside a glowing ring at its range marked
-with 12 triangles pointing at the bunker (cheat `sensor`; the icon is a placeholder glyph until the SC2 art is
+with 12 small equilateral triangles pointing at the bunker (cheat `sensor`; the icon is a placeholder glyph until the SC2 art is
 exported). The ring fades in when researched, crossfades on an upgrade and follows the night out; a blip fades in
-as its Zerg crosses into range and out as it nears the lit edge. The Shrike turret engages blips as it does Zerg in
+as its Zerg crosses into range and out only as the Zerg comes out of the dark — well inside the lit edge, where the
+fog still leaves it 60% black (or in a Marauder grenade's light). Until then the Zerg itself is not drawn, nor its
+HP bar (its size and ARM / LGT badge would tell which kind); it shows just as its blip has faded out, so there is
+no gap and no Zerg seen under a blip. The Shrike turret engages blips as it does Zerg in
 the light. An airstrike called at night drops a
 parachute flare 0.6 s later that lights the whole spawn ring for 7.5 s of game time.
 
 The airstrike: the Viking fires one air-to-ground missile per enemy cluster from the muzzles of its two launcher
 tubes in turn (the long tubes either side of the nose); each runs ahead, then dives on its target, homing on the
 lead enemy, with an exhaust flame, a light streak and a smoke trail, and strikes as the bombs did (radius 4.5).
+
+The Marauder: its punisher grenade is drawn as the Viking's missile (a little larger), with the same exhaust flame
+and light streak, burning icy blue once Concussive Shells is researched (as StarCraft II draws it). It is a small
+weak light (reach 2.4, a soft falloff) that lights the ground, the Zerg and the rocks it passes and lifts the night
+around it, so Zerg out in the dark show as it flies by; its burst lights the blast brighter and wider for 0.35 s
+(the renderer's up to 8 small lights, which the sprites honour too). With every volley each Marauder picks its own target — the nearest enemy of any kind in sight (at
+night: lit, or a Sensor Tower blip; none in sight: the click, as everyone else), a volley's Marauders spreading over
+different ones — and the grenade bursts on the first enemy in its path or on its target point: everyone else within
+1.5 takes half the round's damage (double vs Armored, as the round), and all of them slow to 70% speed for 1.5 s.
+Concussive Shells slows them to 40% for 2.5 s, and its AOE tiers widen the blast to 2.0 / 2.6 / 3.2. The burst
+is a small ball of light, white-hot in a soft glow, with a few sparks (blue for a concussive shell, else warm),
+over a soft glow on the ground across the blast radius that has no edge and dies away in half a second.
 
 The nuke: a mushroom cloud of fire as StarCraft II draws it — a cap rolling on a fiery stem, white-yellow inside,
 orange at the edges, cooling to dark red and soot over 7 s — with a grey dust ring surging along the ground and
@@ -148,7 +163,7 @@ options below; the web version was not benchmarked side by side.
 `build/dotd.exe --size 1600x900 --ui-scale 1 --no-tutorial --start campaign --cheat zergrush --cheat fu --bench-fire --no-vsync --perf --after 8 --shot out.png`
 
 `--start campaign|endless` starts once assets are loaded · `--cheat CODE[@S]` (repeatable; `@S`: S seconds after
-the start) · `--key K@S` presses a key (a letter, a digit, enter, space, esc, left, right, up, down) ·
+the start; also `hire:marine|marauder|ghost` and `research:KEY[:TIER]`, paid for: `--cheat mng` first) · `--key K@S` presses a key (a letter, a digit, enter, space, esc, left, right, up, down) ·
 `--open roster|menu|cheat|menu:TAB|tour|tour:N|howto` (TAB: game, settings, display, controls, tutorial, cheats) ·
 `--zoom-in N` · `--shot FILE --after S` saves a screenshot and exits · `--perf` overlay + log line ·
 `--no-vsync` · `--threads N` (0 = no workers) · `--bench-fire` fires every volley automatically · `--ui-scale S` ·

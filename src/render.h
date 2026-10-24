@@ -103,6 +103,14 @@ struct SpotLight {
   float intensity = 0, distance = 0, decay = 1, cosOuter = 0.8f, cosInner = 0.9f;
 };
 
+// A small weak light that also lifts the night fog around it (a Marauder grenade in flight, its
+// burst): lights what it falls on and shows it in the dark, out to `radius`
+struct GlowLight {
+  glm::vec3 pos{0}, color{0};
+  float radius = 0, reveal = 0;   // reveal: how much of the night it lifts near it (0..1)
+};
+constexpr int MAX_GLOWS = 8;
+
 struct SceneParams {
   glm::mat4 view{1}, proj{1};
   glm::vec3 camPos{0};
@@ -111,6 +119,8 @@ struct SceneParams {
   DirLight sun, fill;
   PointLight points[4];
   SpotLight spot;   // a crate runner's chest lamps at night
+  GlowLight glows[MAX_GLOWS];
+  int glowCount = 0;
   glm::vec3 fogColor{0};
   float fogNear = 1, fogFar = 100;
   bool shadows = true, msaa = true;

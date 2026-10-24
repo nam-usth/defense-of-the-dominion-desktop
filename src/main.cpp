@@ -4,7 +4,8 @@
 // Test options (for checking a build without playing):
 //   --size 1600x900        window size
 //   --start campaign       start a game once every asset has loaded (or "endless")
-//   --cheat CODE[@S]       run a cheat code right after --start, or S seconds after it (repeatable)
+//   --cheat CODE[@S]       run a cheat code right after --start, or S seconds after it (repeatable);
+//                          also hire:marine|marauder|ghost and research:KEY[:TIER] (paid for: --cheat mng first)
 //   --key K@S              press key K (a letter, a digit, enter, space, esc, left, right, up, down) S seconds after --start (repeatable)
 //   --open roster|menu|cheat   open a panel after --start
 //   --zoom-in N            press "+" N times after --start

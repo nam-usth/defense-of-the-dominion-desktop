@@ -26,7 +26,15 @@ static const UnitDef UNIT_DEFS[3] = {
 const UnitDef& unitDef(Unit u) { return UNIT_DEFS[(int)u]; }
 
 static const float SNIPE_CD[4] = {8, 6, 4, 2.5f};            // s per snipe level
-static const float CONC_RADIUS[4] = {0, 1.5f, 2.2f, 3.0f};   // concussive AOE radius per level
+// Marauder punisher grenades (blast radius: MG_RADIUS): the rest of the blast takes MG_SPLASH of the
+// round's damage; everyone in it slows to MG_SLOW of their speed for MG_SLOW_DUR s ([1]: Concussive Shells)
+static const float MG_SPLASH = 0.5f, MG_SLOW[2] = {0.7f, 0.4f}, MG_SLOW_DUR[2] = {1.5f, 2.5f};
+// drawn as the Viking's missile, a little larger, with its flame and a shorter light streak (it is faster),
+// burning icy blue with Concussive Shells
+static const float MG_LEN = 0.16f, MG_STREAK = 0.12f, MG_BLAST_DUR = 0.55f;
+// A grenade in flight is a small weak light (reach MG_LIGHT_R) that lifts the night around it, so the
+// Zerg it passes show in the dark; its burst lights the blast for MG_BURST_LIGHT s, fading
+static const float MG_LIGHT_R = 2.4f, MG_LIGHT_I = 0.9f, MG_BURST_LIGHT = 0.35f;
 static const uint32_t STIM_COLOR = 0xff6a3a;
 static const uint32_t SHRIKE_GOLD = 0xffb81f;
 static const float AIM_Y = 0.45f, PORT_Y = 0.62f;
@@ -61,6 +69,9 @@ static const float VM_STREAK = 0.25f;   // its light streak covers the last this
 static const float LAMP_CHEST = 0.62f, LAMP_FRONT = 0.22f, LAMP_SPACING = 0.07f;
 static const float LAMP_TILT = 0.21f;   // its spot light aims this far below level (12°): the ground ahead and a wall it faces; flatter, the cone's near rim spreads far over the ground (soft)
 static const float SENSOR_RING_FADE = 0.35f;   // s: the radar ring's fade time constant (~1 s to show or hide)
+// Within a Sensor Tower's range a Zerg is its blip only (not which kind) until the night leaves it
+// this dark (nightDark); the blip fades out over the last stretch before, so the two never overlap
+static const float SENSOR_SHOW_DARK = 0.6f, SENSOR_BLIP_FADE = 0.15f;
 
 static float angDiff(float a, float b) { return std::atan2(std::sin(a - b), std::cos(a - b)); }
 static glm::vec3 lerp3(const glm::vec3& a, const glm::vec3& b, float t) { return a + (b - a) * t; }
@@ -225,18 +236,6 @@ void Game::buildScene() {
   snipeMesh_ = Mesh::create(geo::cylinder(.04f, .04f, 1, 4));   // scaled to the shot's length
   dotRingMesh_ = Mesh::create(geo::ring(.3f, .6f, 16));
   decalMesh_ = Mesh::create(geo::plane(2.6f, 2.6f));
-  missileBodyMat_.type = MatType::Standard;
-  missileBodyMat_.color = hexColor(0x6b7078);
-  missileBodyMat_.metalness = .6f;
-  missileBodyMat_.roughness = .35f;
-  missileBodyMat_.emissive = hexColor(0x301000);
-  missileGlowMat_.type = MatType::Basic;
-  missileGlowMat_.color = hexColor(0xff9a3a);
-  missileGlowMat_.transparent = true;
-  missileGlowMat_.opacity = .9f;
-  missileGlowMat_.blend = Blend::Additive;
-  missileGlowMat_.depthWrite = false;
-  missileGlowMat_.fog = false;
   nukeTargetTex_ = loadTexture(NUKE_TARGET_TEX);
   if (!nukeTargetTex_) logWarn("nuke target texture failed to load — using a plain ring");
   rebuildBunkerTris();
@@ -307,7 +306,8 @@ void Game::buildNightFx() {
     vmBodyMat_.roughness = .4f;
   }
   // Sensor Tower range ring, per level: a soft glowing band with a brighter core (the glow texture's
-  // centre column gives the profile across it) and a triangle every 30°, its tip toward the bunker
+  // centre column gives the profile across it) and a small equilateral triangle every 30°, its tip
+  // toward the bunker
   for (int lvl = 1; lvl <= 3; lvl++) {
     const float R = cfg::sensor_range[lvl];
     Geometry g;
@@ -325,7 +325,8 @@ void Game::buildNightFx() {
     band(0.12f);   // core
     for (int k = 0; k < 12; k++) {
       float a = k * PI / 6, c = std::cos(a), s = std::sin(a);   // radial (c, s), tangent (-s, c)
-      const float rBase = R + 0.35f, rTip = R - 0.6f, hw = 0.32f;
+      const float side = 0.5f, h = side * 0.8660254f;          // equilateral, its centre on the ring
+      const float rBase = R + h / 3, rTip = R - 2 * h / 3, hw = side / 2;
       vtx(c * rBase - s * hw, s * rBase + c * hw, 0.5f);
       vtx(c * rBase + s * hw, s * rBase - c * hw, 0.5f);
       vtx(c * rTip, s * rTip, 0.5f);
@@ -344,7 +345,19 @@ void Game::buildNightFx() {
     }
     glowRingMesh_ = Mesh::create(g);
   }
-  for (Material* m : {&tracerGlowMat_, &tracerPoolMat_, &blipMat_, &sensorRingMat_, &vmFlameGlowMat_, &vmFlameCoreMat_}) {
+  {   // a grenade blast's glow on the ground: an even soft disk that dies away to nothing, no rim
+    const int N = 64;
+    std::vector<uint8_t> px(N * N * 4);
+    for (int j = 0; j < N; j++)
+      for (int i = 0; i < N; i++) {
+        float x = (i + .5f) / N * 2 - 1, y = (j + .5f) / N * 2 - 1, r = std::sqrt(x * x + y * y);
+        uint8_t* p = &px[(j * N + i) * 4];
+        p[0] = p[1] = p[2] = 255;
+        p[3] = (uint8_t)std::lround(255 * (1 - glm::smoothstep(0.25f, 1.f, r)));
+      }
+    blastTex_ = Texture::create(N, N, px.data());
+  }
+  for (Material* m : {&tracerGlowMat_, &tracerPoolMat_, &blipMat_, &sensorRingMat_, &vmFlameGlowMat_, &vmFlameCoreMat_, &blastWashMat_, &mgBlueGlowMat_, &mgBlueCoreMat_}) {
     m->type = MatType::Basic;
     m->transparent = true;
     m->blend = Blend::Additive;
@@ -385,6 +398,7 @@ void Game::buildNightFx() {
   lampBeamMat_.color = hexColor(0xf2f6ff);   // white LEDs
   lampFx_.init(16);           // the lamps themselves: soft sprites (spheres had hard rims)
   tracerGlowMat_.map = tracerPoolMat_.map = sensorRingMat_.map = glowTex_;
+  blastWashMat_.map = blastTex_;
   sensorRingMat_.color = hexColor(0xff503c);
   for (Material& m : sensorRingMats_) m = sensorRingMat_;
   blipMat_.map = blipTex_;
@@ -393,6 +407,10 @@ void Game::buildNightFx() {
   vmFlameCoreMat_.color = hexColor(0xfff2d0);
   vmFlameCoreMat_.opacity = .95f;
   vmFlameGlowMat_.doubleSide = vmFlameCoreMat_.doubleSide = false;
+  mgBlueGlowMat_ = vmFlameGlowMat_;
+  mgBlueGlowMat_.color = hexColor(0x2f8cff);
+  mgBlueCoreMat_ = vmFlameCoreMat_;
+  mgBlueCoreMat_.color = hexColor(0xdff2ff);
 }
 
 // Asset arrived (loaded one per frame by main): swap it into the scene
@@ -916,6 +934,75 @@ void Game::bloodFx(const Enemy& e, const glm::vec3& p, float dx, float dz) {
   }
   for (int i = 0; i < 4; i++)
     emit(smoke_, p.x, p.y, p.z, dx * 2.4f + (rnd() - .5f) * 1.4f, .6f + rnd() * 1.8f, dz * 2.4f + (rnd() - .5f) * 1.4f, .3f + rnd() * .25f, .09f, .05f, .9f, c0, c1, 14, .6f, 0);
+}
+
+// A punisher grenade bursts at `at`: the enemy it struck (if any) already took the round's damage;
+// everyone else within the blast radius takes MG_SPLASH of it (double vs Armored, as the round),
+// and all of them, struck one too, are slowed (harder with Concussive Shells). Drawn: a ball of
+// light with a few sparks, over a soft glow on the ground (render)
+void Game::marauderBlast(const glm::vec3& at, const EnemyP& struck, float dmg0, const std::vector<EnemyP>& enemies) {
+  const UnitDef& def = unitDef(Unit::Marauder);
+  const float R = MG_RADIUS[concussiveLvl_];
+  const int sl = concussiveUnlocked_ ? 1 : 0;
+  std::vector<EnemyP> killed;
+  for (const EnemyP& o : enemies) {
+    if (o->dead) continue;
+    float dx = o->pos.x - at.x, dz = o->pos.z - at.z;
+    if (o != struck && dx * dx + dz * dz > R * R) continue;
+    o->slowed = true;
+    o->slowUntil = gameT_ + MG_SLOW_DUR[sl];
+    o->slowFactor = MG_SLOW[sl];
+    if (o == struck) continue;
+    o->hp -= dmg0 * def.dmgMult * (def.bonusVsArmored && o->armored ? def.bonusMult : 1) * MG_SPLASH;
+    o->flash = 0.08f;
+    if (o->hp <= 0) killed.push_back(o);
+  }
+  if (mBlasts_.size() >= 48) mBlasts_.erase(mBlasts_.begin());
+  mBlasts_.push_back({{at.x, 0, at.z}, R, 0, sl == 1});
+  // the burst: a small ball of light, white-hot at the heart in a wider soft glow, shrinking as it
+  // fades, and a few sparks — icy blue for a concussive shell (as StarCraft II draws it), else warm
+  const uint32_t heart[2] = {0xfff0c0, 0xe8f6ff}, glow[2] = {0xffa040, 0x5cb0ff}, deep[2] = {0xc03000, 0x1a50e0};
+  emit(glow_, at.x, 0.4f, at.z, 0, .3f, 0, .26f, .85f, .3f, 1, heart[sl], glow[sl], 0, 0, 0);
+  emit(glow_, at.x, 0.4f, at.z, 0, .2f, 0, .34f, 1.7f, .7f, .45f, glow[sl], deep[sl], 0, 0, 0);
+  for (int i = 0; i < 6; i++) {
+    float a = rnd() * 2 * PI, v = 1.4f + rnd() * 1.4f;
+    emit(glow_, at.x, 0.4f, at.z, std::cos(a) * v, .8f + rnd() * .8f, std::sin(a) * v, .2f + rnd() * .12f, .12f, .04f, .9f, heart[sl], glow[sl], 3, 2, 0);
+  }
+  audio::play("mblast");
+  for (const EnemyP& o : killed) killEnemy(o, true);
+}
+
+// This frame's small lights: the bursts of the last MG_BURST_LIGHT s first (brighter, wider: the
+// blast), then grenades in flight; weak by day, at full strength at night
+void Game::updateGlows() {
+  glowCount_ = 0;
+  const float k = 0.35f + 0.65f * dnFactor_;
+  auto add = [&](const glm::vec3& p, uint32_t col, float i, float r, float reveal) {
+    if (glowCount_ < MAX_GLOWS) glows_[glowCount_++] = {p, hexColor(col) * (i * k), r, reveal};
+  };
+  for (auto it = mBlasts_.rbegin(); it != mBlasts_.rend(); ++it) {   // newest first
+    float f = 1 - it->t / MG_BURST_LIGHT;
+    if (f > 0) add({it->p.x, 0.5f, it->p.z}, it->blue ? 0x4a9cff : 0xff8a3a, 2.2f * f * f, it->r + 1, f);
+  }
+  const uint32_t col = concussiveUnlocked_ ? 0x4a9cff : 0xff8a3a;
+  for (const Bullet& b : bullets_)
+    if (b.alive && b.unit == Unit::Marauder) add(b.pos, col, MG_LIGHT_I, MG_LIGHT_R, 0.9f);
+}
+// The radial night fog as the shader draws it at a Zerg's body there, less what a small light lifts
+float Game::nightDark(float x, float z) const {
+  float lift = 0;
+  for (int i = 0; i < glowCount_; i++) {
+    const GlowLight& g = glows_[i];
+    lift = std::max(lift, g.reveal * (1 - glm::smoothstep(0.35f * g.radius, g.radius, glm::distance(g.pos, glm::vec3(x, 0.4f, z)))));
+  }
+  return glm::smoothstep(fogNear_, fogFar_, std::hypot(x, z)) * (1 - lift);
+}
+bool Game::glowLit(float x, float z) const {
+  for (int i = 0; i < glowCount_; i++) {
+    const GlowLight& g = glows_[i];
+    if (g.reveal > 0.3f && std::hypot(x - g.pos.x, z - g.pos.z) < 0.8f * g.radius) return true;
+  }
+  return false;
 }
 
 // Roach acid splashing on the hull
@@ -1507,22 +1594,30 @@ void Game::shoot(float tx, float tz) {
   shootCD_ = .1f;
   int n = roster_.empty() ? 1 : (int)roster_.size();
   bool stimExtra = stimT_ > 0 && stimVolley_++ % 2 == 0;   // stimmed: +1 round every other volley
+  std::vector<glm::vec2> mTargets;   // this volley's Marauder targets
+  const float blastR = MG_RADIUS[concussiveLvl_];
   for (int i = 0; i < (int)roster_.size(); i++) {
     Unit u = roster_[i];
     float atx = tx, atz = tz;
-    if (u == Unit::Marauder) {   // Marauders lock onto the nearest Armored enemy
-      EnemyP best;
-      float bd = 0;
+    if (u == Unit::Marauder) {   // Marauders pick their own targets: the nearest enemy of any kind in sight (at night:
+      EnemyP best, nearest;      // lit or a Sensor Tower blip), each one outside the blasts of the volley's other
+      float bd = 0, nd = 0;      // Marauders while there is one; none in sight: the click, as everyone else
       for (auto& e : allEnemies()) {
-        if (e->dead || !e->armored) continue;
-        float d = glm::length(e->pos);
-        if (!best || d < bd) { best = e; bd = d; }
+        if (e->dead || !(e->visible || sensed(*e))) continue;
+        glm::vec2 q(e->pos.x, e->pos.z);
+        float d = glm::length(q);
+        if (!nearest || d < nd) { nearest = e; nd = d; }
+        bool covered = false;
+        for (const glm::vec2& t : mTargets) covered = covered || glm::distance(t, q) < blastR;
+        if (!covered && (!best || d < bd)) { best = e; bd = d; }
       }
-      if (best) { atx = best->pos.x; atz = best->pos.z; }
+      if (!best) best = nearest;
+      if (best) { atx = best->pos.x; atz = best->pos.z; mTargets.push_back({atx, atz}); }
     }
     float off = (i - (n - 1) / 2.f);
     glm::vec3 p = bunkerPort(std::atan2(atz, atx) + off * 0.2f);   // slits fan out ~11° apart
-    Bullet b = makeBullet(atx, atz, off * .006f, u, p.x, p.y, p.z, AIM_Y);
+    Bullet b = makeBullet(atx, atz, off * .006f, u, p.x, p.y, p.z, u == Unit::Marauder ? 0.15f : AIM_Y);
+    if (u == Unit::Marauder) b.range = std::min(18.f, std::hypot(atx - p.x, atz - p.z));   // the grenade comes down on its target
     bullets_.push_back(b);
     if (u == Unit::Marine && stimT_ > 0) {
       bullets_.back().color = STIM_COLOR;
@@ -2063,7 +2158,7 @@ void Game::researchUpgrade(const std::string& key, int tier) {
   static const UD U[3] = {
     {"superstim", Unit::Marine, "Super Stimpack", {250, 150}, {}, 0},
     {"concussive", Unit::Marauder, "Concussive Shell", {300, 75},
-     {{{250, 80}, "AOE Lv.1 \xE2\x80\x94 slow blast radius 1.5"}, {{400, 130}, "AOE Lv.2 \xE2\x80\x94 radius 2.2"}, {{600, 200}, "AOE Lv.3 \xE2\x80\x94 radius 3.0 (MAX)"}}, 3},
+     {{{250, 80}, "AOE Lv.1 \xE2\x80\x94 blast radius 1.5 \xE2\x86\x92 2.0"}, {{400, 130}, "AOE Lv.2 \xE2\x80\x94 radius 2.6"}, {{600, 200}, "AOE Lv.3 \xE2\x80\x94 radius 3.2 (MAX)"}}, 3},
     {"snipe", Unit::Ghost, "Snipe", {250, 100},
      {{{200, 80}, "Snipe Lv.1 \xE2\x80\x94 CD 8s \xE2\x86\x92 6s"}, {{320, 130}, "Snipe Lv.2 \xE2\x80\x94 CD 6s \xE2\x86\x92 4s"}, {{500, 200}, "Snipe Lv.3 \xE2\x80\x94 CD 4s \xE2\x86\x92 2.5s (MAX)"}}, 3},
   };
@@ -2149,6 +2244,8 @@ void Game::update(float dt) {
     if (t) { ammo_ = maxAmmo_; shoot(t->pos.x, t->pos.z); }
   }
 
+  for (MBlast& bl : mBlasts_) bl.t += dt;
+  mBlasts_.erase(std::remove_if(mBlasts_.begin(), mBlasts_.end(), [](const MBlast& bl) { return bl.t >= MG_BLAST_DUR; }), mBlasts_.end());
   // beams fade
   for (size_t i = 0; i < beams_.size();) {
     Beam& b = beams_[i];
@@ -2184,7 +2281,10 @@ void Game::update(float dt) {
     e.leg += dt * (e.type == 'r' ? 5 : 9);
     if (e.flash > 0) e.flash -= dt;
     float ex = e.pos.x, ez = e.pos.z, d = std::sqrt(ex * ex + ez * ez);
-    e.visible = nightFogFar < INFINITY ? d < nightFogFar * 1.05f : true;
+    if (nightFogFar < INFINITY) {   // at night: in the light, or a grenade's; within a Sensor Tower's range, out of its blip
+      bool blip = sensorLvl_ >= 1 && d <= cfg::sensor_range[sensorLvl_];
+      e.visible = blip ? nightDark(ex, ez) < SENSOR_SHOW_DARK : d < nightFogFar * 1.05f || glowLit(ex, ez);
+    } else e.visible = true;
     if (d < attackReach(e)) {
       if (e.type == 'r') roachAttack(e, dt, ex, ez);   // ranged: acid, damage on impact
       else {                                          // melee: bites the hull
@@ -2239,7 +2339,6 @@ void Game::update(float dt) {
   for (auto& e : allEnemies()) if (e->slowed && gameT_ > e->slowUntil) e->slowed = false;   // slows expire in game time
   float fs = dt * 60;   // movement tuned at 60 fps
   std::vector<EnemyP> enemyList = allEnemies();
-  bool missiles = models::isReady("marauderMissile");
   // Swept hit test along this frame's path: fast rounds must not skip through
   // zerglings. The first live enemy along the round's path is hit.
   auto sweep = [&](const Bullet& b, float& tBest) -> int {
@@ -2270,11 +2369,10 @@ void Game::update(float dt) {
       b.pos.y += b.vy * fs;
       if (b.pos.y < 0.12f) { b.pos.y = 0.12f; b.vy = 0; orientBullet(b); }   // past the aim point: skim the ground
     }
-    if (b.unit == Unit::Marauder && missiles) {   // punisher grenade: fire trail from its tail
-      float k = .35f / std::max(1e-6f, std::sqrt(b.vx * b.vx + b.vy * b.vy + b.vz * b.vz));
-      glm::vec3 p = b.pos;
-      emit(glow_, p.x - b.vx * k, p.y - b.vy * k, p.z - b.vz * k, (rnd() - .5f) * .4f, rnd() * .3f, (rnd() - .5f) * .4f, .16f, .28f, .08f, .95f, 0xffa040, 0xc02000, 0, 1, 0);
-      emit(smoke_, p.x - b.vx * k * 1.5f, p.y - b.vy * k * 1.5f, p.z - b.vz * k * 1.5f, (rnd() - .5f) * .3f, .35f, (rnd() - .5f) * .3f, .55f, .16f, .5f, .5f, 0x9a9488, 0x55524c, -.1f, .6f, 1);
+    if (b.unit == Unit::Marauder) {   // punisher grenade: its light streak (the flame is drawn; smoke puffs, one a frame
+      glm::vec3 dir = glm::normalize(glm::vec3(b.vx, b.vy, b.vz)), tail = b.pos - dir * (0.5f * MG_LEN);   // at its speed, dotted the path)
+      b.trail.push_back({tail, gameT_});
+      while (b.trail.size() > 2 && gameT_ - b.trail.front().w > MG_STREAK) b.trail.erase(b.trail.begin());
     }
     EnemyP hitE = ci >= 0 ? enemyList[ci] : nullptr;
     if (hitE) {
@@ -2289,27 +2387,19 @@ void Game::update(float dt) {
       audio::play("hit");
       if (floatTexts_.size() >= 60) floatTexts_.erase(floatTexts_.begin());   // late waves: ~60 numbers/s
       floatTexts_.push_back({{e.pos.x, e.pos.y + 1.2f, e.pos.z}, std::to_string((int)std::round(dmg)), 0.9f, 0.9f, bonus > 1 ? 0xff6600u : 0xffffffu});
-      if (b.unit == Unit::Marauder && concussiveUnlocked_) {   // Concussive Shells: slow (AOE from level 1)
-        float until = gameT_ + 2.5f;
-        e.slowed = true; e.slowUntil = until; e.slowFactor = 0.4f;
-        float aoeR = CONC_RADIUS[concussiveLvl_];
-        if (aoeR > 0) {
-          for (auto& o : enemyList) {
-            if (o->dead || o == hitE) continue;
-            float dx = o->pos.x - e.pos.x, dz = o->pos.z - e.pos.z;
-            if (dx * dx + dz * dz <= aoeR * aoeR) { o->slowed = true; o->slowUntil = until; o->slowFactor = 0.4f; }
-          }
-          spawnParts(e.pos, 0x4488ff, 10);
-        }
-      }
+      if (b.unit == Unit::Marauder) marauderBlast(b.pos, hitE, baseDmg, enemyList);   // the rest of the blast, and the slow
       float vl = std::max(1e-6f, std::hypot(b.vx, b.vz));
       bloodFx(e, b.pos, b.vx / vl, b.vz / vl);
       b.alive = false;
       if (e.hp <= 0) killEnemy(hitE, true);
     }
-    if (b.alive && b.dist > 18) b.alive = false;
+    if (b.alive && b.dist >= b.range) {
+      if (b.unit == Unit::Marauder) marauderBlast(b.pos, nullptr, baseDmg, enemyList);   // came down on its target point
+      b.alive = false;
+    }
   }
   bullets_.erase(std::remove_if(bullets_.begin(), bullets_.end(), [](const Bullet& b) { return !b.alive; }), bullets_.end());
+  updateGlows();
 
   glow_.update(dt);
   smoke_.update(dt);
@@ -2545,16 +2635,14 @@ void Game::render() {
   }
   for (auto& b : beams_) R.draw(b.prop->mesh, &b.prop->mat, b.prop->m, false, false);
 
-  // bullets: one tracer batch, punisher grenades (and the Viking's missiles) as their own batch.
+  // bullets: one tracer batch; punisher grenades are drawn as the Viking's missiles are.
   // Tracers ignore the fog; at night they run white-hot in a soft halo over a faint pool of
   // light on the ground beneath them (a little halo by day too)
   {
-    static std::vector<Instance> tr, mi, halo, pool;
+    static std::vector<Instance> tr, halo, pool;
     tr.clear();
-    mi.clear();
     halo.clear();
     pool.clear();
-    const Model* mm = models::get("marauderMissile");
     const float night = dnFactor_;
     auto addGlow = [&](const glm::mat4& m, uint32_t col) {
       Instance h;
@@ -2569,46 +2657,39 @@ void Game::render() {
       p.m = glm::mat4(glm::vec4(-f.z * 2.4f, 0, f.x * 2.4f, 0), glm::vec4(0, 1, 0, 0), glm::vec4(f * 1.6f, 0), glm::vec4(m[3].x, 0.03f, m[3].z, 1));
       pool.push_back(p);
     };
-    for (const Bullet& b : bullets_) {
-      if (!b.alive) continue;
-      Instance in;
-      writeBulletMatrix(in.m, b, 1);
-      addGlow(in.m, b.color);
-      if (mm && b.unit == Unit::Marauder) { mi.push_back(in); continue; }
-      writeBulletMatrix(in.m, b, b.len);
-      in.c = lerp3(hexColor(b.color), glm::vec3(1), 0.35f * night);
-      tr.push_back(in);
-    }
-    // Viking missiles, on their own axes (z along the flight), with the rocket's exhaust flame
-    // from the nozzle: a white-hot core in an orange glow, both tapering away, flickering
-    static std::vector<Instance> vm, flameCore, flameGlow, streakCore, streakGlow;
+    // Missiles (Viking and Marauder), on their own axes (z along the flight), with the rocket's
+    // exhaust flame from the nozzle: a white-hot core in a glow, both tapering away, flickering,
+    // and a light streak along the recent path; all scale with the missile's length. Orange, or
+    // icy blue for a concussive shell (as StarCraft II draws it)
+    struct Fire { std::vector<Instance> flameCore, flameGlow, streakCore, streakGlow; };
+    static std::vector<Instance> vm;
+    static Fire fire[2];   // [0] orange, [1] blue
     vm.clear();
-    flameCore.clear();
-    flameGlow.clear();
-    streakCore.clear();
-    streakGlow.clear();
+    for (Fire& f : fire) { f.flameCore.clear(); f.flameGlow.clear(); f.streakCore.clear(); f.streakGlow.clear(); }
     int vi = 0;
-    for (const VMissile& v : vMissiles_) {
-      glm::vec3 side = std::abs(v.dir.y) < 0.99f ? glm::normalize(glm::cross(glm::vec3(0, 1, 0), v.dir)) : glm::vec3(1, 0, 0);
-      glm::vec3 up = glm::cross(v.dir, side);
+    auto missile = [&](const glm::vec3& p, const glm::vec3& dir, float len, const std::vector<glm::vec4>& trail, float streakDur, bool blue) {
+      const float sk = len / VM_LEN;
+      Fire& F = fire[blue];
+      glm::vec3 side = std::abs(dir.y) < 0.99f ? glm::normalize(glm::cross(glm::vec3(0, 1, 0), dir)) : glm::vec3(1, 0, 0);
+      glm::vec3 up = glm::cross(dir, side);
       Instance in;
-      in.m = glm::mat4(glm::vec4(side * VM_LEN, 0), glm::vec4(up * VM_LEN, 0), glm::vec4(v.dir * VM_LEN, 0), glm::vec4(v.p, 1));
+      in.m = glm::mat4(glm::vec4(side * len, 0), glm::vec4(up * len, 0), glm::vec4(dir * len, 0), glm::vec4(p, 1));
       vm.push_back(in);
-      glm::vec3 nozzle = v.p - v.dir * VM_TAIL;
+      glm::vec3 nozzle = p - dir * (0.5f * len);
       float flick = 0.85f + 0.15f * std::sin(gameT_ * 70 + vi++ * 1.7f);
-      auto flame = [&](float len, float w) {   // trailMesh_: unit height on y, wide end (r 1) at y = -0.5
+      auto flame = [&](float fl, float w) {   // trailMesh_: unit height on y, wide end (r 1) at y = -0.5
         Instance f;
-        f.m = glm::mat4(glm::vec4(side * w, 0), glm::vec4(-v.dir * len, 0), glm::vec4(up * w, 0), glm::vec4(nozzle - v.dir * (len / 2), 1));
+        f.m = glm::mat4(glm::vec4(side * w, 0), glm::vec4(-dir * fl, 0), glm::vec4(up * w, 0), glm::vec4(nozzle - dir * (fl / 2), 1));
         return f;
       };
-      flameGlow.push_back(flame(0.45f * flick, 0.05f));
-      flameCore.push_back(flame(0.25f * flick, 0.02f));
-      // the light streak along its recent path: thin cylinders, dimming and narrowing with age
-      for (size_t k = 0; k + 1 < v.trail.size(); k++) {
-        glm::vec3 a(v.trail[k]), b(v.trail[k + 1]), d = b - a;
+      F.flameGlow.push_back(flame(0.45f * sk * flick, 0.05f * sk));
+      F.flameCore.push_back(flame(0.25f * sk * flick, 0.02f * sk));
+      // the light streak: thin cylinders, dimming and narrowing with age
+      for (size_t k = 0; k + 1 < trail.size(); k++) {
+        glm::vec3 a(trail[k]), b(trail[k + 1]), d = b - a;
         float L = glm::length(d);
         if (L < 1e-4f) continue;
-        float age = gameT_ - v.trail[k + 1].w, kk = glm::clamp(1 - age / VM_STREAK, 0.f, 1.f);
+        float age = gameT_ - trail[k + 1].w, kk = glm::clamp(1 - age / streakDur, 0.f, 1.f);
         glm::vec3 s = std::abs(d.y) < 0.99f * L ? glm::normalize(glm::cross(d, glm::vec3(0, 1, 0))) : glm::vec3(1, 0, 0);
         glm::vec3 u = glm::normalize(glm::cross(s, d));
         auto seg = [&](float w, uint32_t col) {
@@ -2617,25 +2698,51 @@ void Game::render() {
           f.c = hexColor(col) * kk;
           return f;
         };
-        streakGlow.push_back(seg(0.04f * (0.4f + 0.6f * kk), 0xff8a3a));
-        streakCore.push_back(seg(0.014f, 0xfff0c0));
+        F.streakGlow.push_back(seg(0.04f * sk * (0.4f + 0.6f * kk), blue ? 0xffffff : 0xff8a3a));
+        F.streakCore.push_back(seg(0.014f * sk, blue ? 0xffffff : 0xfff0c0));
       }
+    };
+    for (const Bullet& b : bullets_) {
+      if (!b.alive) continue;
+      if (b.unit == Unit::Marauder) {
+        missile(b.pos, glm::normalize(glm::vec3(b.vx, b.vy, b.vz)), MG_LEN, b.trail, MG_STREAK, concussiveUnlocked_);
+        continue;   // (its light: updateGlows)
+      }
+      Instance in;
+      writeBulletMatrix(in.m, b, 1);
+      addGlow(in.m, b.color);
+      writeBulletMatrix(in.m, b, b.len);
+      in.c = lerp3(hexColor(b.color), glm::vec3(1), 0.35f * night);
+      tr.push_back(in);
     }
+    for (const VMissile& v : vMissiles_) missile(v.p, v.dir, VM_LEN, v.trail, VM_STREAK, false);
     R.drawInstanced(vmMesh_, &vmBodyMat_, vm.data(), (int)vm.size(), true, false);
-    R.drawInstanced(trailMesh_, &vmFlameGlowMat_, flameGlow.data(), (int)flameGlow.size(), false, false, 2);
-    R.drawInstanced(trailMesh_, &vmFlameCoreMat_, flameCore.data(), (int)flameCore.size(), false, false, 3);
-    R.drawInstanced(streakMesh_, &vmFlameGlowMat_, streakGlow.data(), (int)streakGlow.size(), false, false, 2);
-    R.drawInstanced(streakMesh_, &vmFlameCoreMat_, streakCore.data(), (int)streakCore.size(), false, false, 3);
+    for (int k = 0; k < 2; k++) {
+      Material *glow = k ? &mgBlueGlowMat_ : &vmFlameGlowMat_, *core = k ? &mgBlueCoreMat_ : &vmFlameCoreMat_;
+      R.drawInstanced(trailMesh_, glow, fire[k].flameGlow.data(), (int)fire[k].flameGlow.size(), false, false, 2);
+      R.drawInstanced(trailMesh_, core, fire[k].flameCore.data(), (int)fire[k].flameCore.size(), false, false, 3);
+      R.drawInstanced(streakMesh_, glow, fire[k].streakGlow.data(), (int)fire[k].streakGlow.size(), false, false, 2);
+      R.drawInstanced(streakMesh_, core, fire[k].streakCore.data(), (int)fire[k].streakCore.size(), false, false, 3);
+    }
     tracerGlowMat_.opacity = 0.25f + 0.65f * night;
     tracerPoolMat_.opacity = 0.3f * night;
     R.drawInstanced(glowQuadMesh_, &tracerPoolMat_, pool.data(), (int)pool.size(), false, false, 1);
     R.drawInstanced(glowQuadMesh_, &tracerGlowMat_, halo.data(), (int)halo.size(), false, false, 2);
     R.drawInstanced(bulletMesh_, &bulletMat_, tr.data(), (int)tr.size(), false, false);
-    if (mm && !mi.empty())
-      for (const ModelPart& p : mm->parts) {
-        bool glowPart = p.name == "region_1";
-        R.drawInstanced(p.mesh, glowPart ? &missileGlowMat_ : &missileBodyMat_, mi.data(), (int)mi.size(), !glowPart, false);
-      }
+  }
+  // grenade blasts' light on the ground: a soft glow over the blast radius with no edge, swelling
+  // out in the first moment and dying away (the burst itself is sprites: marauderBlast)
+  {
+    static std::vector<Instance> wash;
+    wash.clear();
+    for (const MBlast& bl : mBlasts_) {
+      float k = bl.t / MG_BLAST_DUR, r = bl.r * (0.5f + 0.5f * glm::smoothstep(0.f, 0.2f, k)), fade = (1 - k) * (1 - k);
+      Instance w;
+      w.m = trs({bl.p.x, 0.04f, bl.p.z}, glm::vec3(0), {2.3f * r, 1, 2.3f * r});
+      w.c = hexColor(bl.blue ? 0x2f7cff : 0xff7a2a) * (0.5f * fade);
+      wash.push_back(w);
+    }
+    R.drawInstanced(blipMesh_, &blastWashMat_, wash.data(), (int)wash.size(), false, false, 1);
   }
   // acid globs (wobbling)
   {
@@ -2673,18 +2780,21 @@ void Game::render() {
     bi.clear();
     float pulse = 0.65f + 0.35f * std::sin(uiTime_ * 2 * PI * 1.5f);
     // the blips come in with the ring (fresh research), and each fades in as it crosses into
-    // range and out as it nears the lit edge (where its Zerg appears) instead of popping
+    // range and out only as its Zerg comes out of the dark (well inside the lit edge, where the
+    // fog still left it black, or in a grenade's light): gone just as the Zerg shows (update), so
+    // no gap, and no Zerg seen under its blip
     const float blipsA = glm::clamp(sensorRingA_[sensorLvl_] / std::max(0.1f, dnFactor_), 0.f, 1.f);
-    const float range = cfg::sensor_range[sensorLvl_], lit = fogFar_ * 1.05f;   // e.visible's edge (update)
+    const float range = cfg::sensor_range[sensorLvl_];
     // the screen's up direction on the ground: the camera's up and forward axes, flattened (no roll)
     glm::vec2 f(view_[0][1] - view_[0][2], view_[2][1] - view_[2][2]);
     f = glm::length(f) > 1e-4f ? glm::normalize(f) : glm::vec2(0, -1);
     const glm::vec3 F(f.x, 0, f.y), right = glm::cross(F, glm::vec3(0, 1, 0));
     for (auto* list : {&zerglings_, &roaches_})
       for (auto& e : *list) {
-        if (!sensed(*e)) continue;
+        if (e->dead) continue;
         float d = std::hypot(e->pos.x, e->pos.z);
-        float a = blipsA * glm::smoothstep(lit, lit + 0.8f, d) * (1 - glm::smoothstep(range - 0.8f, range, d));
+        float a = blipsA * glm::smoothstep(SENSOR_SHOW_DARK, SENSOR_SHOW_DARK + SENSOR_BLIP_FADE, nightDark(e->pos.x, e->pos.z)) *
+                  (1 - glm::smoothstep(range - 0.8f, range, d));
         if (a < 0.01f) continue;
         const float s = 1.4f * (0.94f + 0.06f * pulse);
         Instance in;   // the glyph's top → F (the quad turned half a turn: its +z), its x → the screen's right
@@ -2710,6 +2820,8 @@ void Game::render() {
   sp.points[2] = {firePos_, hexColor(0xff6a1a), fireI_, 6, 2};              // the bunker burns
   sp.points[3] = {nukeLightPos_, hexColor(0xffa050), nukeLightK() * (1 + 3 * dnFactor_), 30, 1.5f};   // a nuke's fireball (strongest at night)
   sp.spot = lampSpot_;   // a crate runner's chest lamps
+  std::copy(glows_, glows_ + glowCount_, sp.glows);   // Marauder grenades and their bursts
+  sp.glowCount = glowCount_;
   sp.fogColor = fogCol_;
   sp.fogNear = fogNear_;
   sp.fogFar = fogFar_;
@@ -2798,6 +2910,8 @@ void Game::clearEntities() {
   acids_.clear();
   vMissiles_.clear();
   mushrooms_.clear();
+  mBlasts_.clear();
+  glowCount_ = 0;
   nukeLightT_ = -1;
   endFlare();   // the flare and the nuke light go with the scene: the lights return to the true day / night
   applyDNLights(dnFactor_);
