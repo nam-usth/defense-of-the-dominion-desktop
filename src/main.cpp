@@ -25,6 +25,7 @@
 //   --dn SECONDS           day/night cycle on, SECONDS into it (78 dusk, 102 night, 156 dawn)
 //   --hold X,Y,S           1 s after --start, hold the left button at (X, Y) (fractions of the window) for S s;
 //                          logs the volleys fired (S = 0: a single click)
+//   --post on|off          HDR post-processing (bloom, tone curve); off: the scene draws straight to a 4x MSAA window
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 
@@ -88,7 +89,7 @@ int main(int argc, char** argv) {
   std::vector<std::string> cheats;
   double shotAfter = 3;
   int zoomIn = 0;
-  bool noTutorial = false;
+  bool noTutorial = false, postOn = true;
   float dnAt = -1, holdX = 0, holdY = 0, holdFor = -1;
   struct Later { double at; std::string cheat; int key; bool done; };   // --cheat CODE@S, --key K@S
   std::vector<Later> later;
@@ -126,6 +127,7 @@ int main(int argc, char** argv) {
     else if (a == "--after") shotAfter = std::atof(next().c_str());
     else if (a == "--data") dataDir = next();
     else if (a == "--no-tutorial") noTutorial = true;
+    else if (a == "--post") postOn = next() != "off";
     else if (a == "--dn") dnAt = std::strtof(next().c_str(), nullptr);
     else if (a == "--hold") {
       std::string v = next();
@@ -157,7 +159,8 @@ int main(int argc, char** argv) {
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-  glfwWindowHint(GLFW_SAMPLES, 4);
+  // the scene's MSAA lives in the HDR target (post.h); the window only takes the composite and the HUD
+  glfwWindowHint(GLFW_SAMPLES, postOn ? 0 : 4);
   // default size: 1600×900 at the monitor's UI scale, fitted into its work area
   GLFWmonitor* mon = glfwGetPrimaryMonitor();
   float monScale = 1, monScaleY = 1;
@@ -237,6 +240,7 @@ int main(int argc, char** argv) {
   game.showPerf(perf);
   game.benchFire(benchFire);
   if (noTutorial) game.tutorialForRun(false);
+  game.postForRun(postOn);
   if (dnAt >= 0) game.setDayNightTime(dnAt);
   int holdStep = 0, holdAmmo0 = 0;   // --hold: 0 wait · 1 cursor placed · 2 pressed · 3 done
   double holdT0 = 0;

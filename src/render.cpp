@@ -451,7 +451,9 @@ void main() {
       float att = pow(clamp(1.0 - d / uGlPos[i].w, 0.0, 1.0), 2.0);
       direct += uGlColor[i].rgb * att * (0.5 + 0.5 * dot(N, lv / max(d, 1e-5)));
     }
-    outC = dif * (uAmbient + direct) + spec + uEmissive * (uHasEmissiveMap ? texture(uEmissiveMap, vUV).rgb : vec3(1.0));
+    // the lit term is clamped as the 8-bit target clamped it: lit surfaces look as before and never
+    // bloom (smoke over a brightly lit hull stays as dense); only emitters exceed 1 in the HDR target
+    outC = min(dif * (uAmbient + direct) + spec, vec3(1.0)) + uEmissive * (uHasEmissiveMap ? texture(uEmissiveMap, vUV).rgb : vec3(1.0));
   }
   if (uFog) {
     float fogF = smoothstep(uFogNear, uFogFar, length(vWorld.xz));   // radial: distance from the bunker
@@ -480,31 +482,48 @@ layout(location=1) in vec3 iPos;
 layout(location=2) in float iSize;
 layout(location=3) in vec3 iColor;
 layout(location=4) in float iAlpha;
+layout(location=5) in float iRot;
 uniform mat4 uView, uProj;
-out vec2 vCoord; out vec3 vColor; out float vAlpha; out vec3 vPos;
+out vec2 vCoord; out vec3 vColor; out float vAlpha; out vec3 vPos; flat out float vRot; out float vWy, vNear;
 void main() {
   vec4 mv = uView * vec4(iPos, 1.0);
   mv.xy += aCorner * iSize;   // world-space diameter = size (the web version's size attenuation)
+  vWy = iPos.y + iSize * (aCorner.x * uView[1][0] + aCorner.y * uView[1][1]);   // this corner's height in the world
+  vNear = smoothstep(1.0 + 0.5 * iSize, 2.0 + 1.6 * iSize, -mv.z);   // fades out as the lens comes within about its size
   vCoord = aCorner + 0.5;
   vColor = iColor; vAlpha = iAlpha;
-  vPos = iPos;
+  vPos = iPos; vRot = iRot;
   gl_Position = uProj * mv;
 }
 )";
 static const char* PART_FS = R"(#version 330 core
-in vec2 vCoord; in vec3 vColor; in float vAlpha; in vec3 vPos;
+in vec2 vCoord; in vec3 vColor; in float vAlpha; in vec3 vPos; flat in float vRot; in float vWy, vNear;
 uniform float uFogNear, uFogFar;
 uniform vec4 uGlPos[8], uGlColor[8]; uniform int uGlCount;   // small lights (the lit shader's)
+uniform bool uPuffs; uniform sampler2D uPuff; uniform vec3 uLightV;   // textured puffs: the atlas, the sun in view space
+uniform float uCover;   // < 0: blended over (straight alpha); else premultiplied light that hides this much of what is behind
 out vec4 fragColor;
 void main() {
   float d = length(vCoord - 0.5) * 2.0;
-  float a = vAlpha * (1.0 - smoothstep(0.15, 1.0, d));   // soft round sprite
+  float a;
+  vec3 col = vColor;
+  if (uPuffs && vRot >= 0.0) {   // a soft billow: a turned atlas cell, gently lit by the sun
+    if (d > 1.0) discard;
+    float cell = floor(vRot / 8.0), ang = vRot - cell * 8.0, s = sin(ang), co = cos(ang);
+    vec2 c = mat2(co, s, -s, co) * (vCoord - 0.5);
+    vec4 t = texture(uPuff, (vec2(mod(cell, 2.0), floor(cell / 2.0)) + c + 0.5) * 0.5);
+    a = vAlpha * t.r;
+    vec2 n = mat2(co, -s, s, co) * (t.gb * 2.0 - 1.0);   // the cell's normal, turned back to the screen
+    vec3 N = vec3(n, sqrt(max(0.0, 1.0 - dot(n, n))));
+    col *= 0.8 + 0.3 * max(dot(N, uLightV), 0.0) + 0.1 * (t.a - 0.5);
+  } else a = vAlpha * (1.0 - smoothstep(0.15, 1.0, d));   // soft round sprite
+  if (uPuffs) a *= smoothstep(-0.05, 0.6, vWy) * vNear;   // the nuke's: no hard cut where they meet the ground, none filling the view
   float lift = 0.0;   // fade out in the night fog, except near a small light
   for (int i = 0; i < uGlCount; i++)
     lift = max(lift, uGlColor[i].a * (1.0 - smoothstep(0.35 * uGlPos[i].w, uGlPos[i].w, length(uGlPos[i].xyz - vPos))));
   a *= 1.0 - smoothstep(uFogNear, uFogFar, length(vPos.xz)) * (1.0 - lift);
   if (a < 0.004) discard;
-  fragColor = vec4(vColor, a);
+  fragColor = uCover < 0.0 ? vec4(col, a) : vec4(col * a, a * uCover);
 }
 )";
 
@@ -589,18 +608,22 @@ bool Renderer::init() {
   glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8, nullptr);
   glGenBuffers(1, &partInstVbo_);
   glBindBuffer(GL_ARRAY_BUFFER, partInstVbo_);
-  const int st8 = 8 * sizeof(float);
+  const int st8 = 9 * sizeof(float);
   glEnableVertexAttribArray(1); glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, st8, (void*)0); glVertexAttribDivisor(1, 1);
   glEnableVertexAttribArray(2); glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, st8, (void*)(3 * sizeof(float))); glVertexAttribDivisor(2, 1);
   glEnableVertexAttribArray(3); glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, st8, (void*)(4 * sizeof(float))); glVertexAttribDivisor(3, 1);
   glEnableVertexAttribArray(4); glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, st8, (void*)(7 * sizeof(float))); glVertexAttribDivisor(4, 1);
+  glEnableVertexAttribArray(5); glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, st8, (void*)(8 * sizeof(float))); glVertexAttribDivisor(5, 1);
   glBindVertexArray(0);
+  postOk_ = post_.init();
+  if (!postOk_) logWarn("post-processing unavailable: drawing straight to the window");
   return true;
 }
 
 void Renderer::begin() {
   cmds_.clear();
   inst_.clear();
+  customs_.clear();
 }
 
 void Renderer::draw(const Mesh* mesh, const Material* mat, const glm::mat4& model, bool cast, bool receive,
@@ -620,6 +643,11 @@ void Renderer::drawInstanced(const Mesh* mesh, const Material* mat, const Instan
 void Renderer::drawParticles(const ParticleSystem* ps, Blend blend, int order) {
   if (!ps || ps->p.empty()) return;
   cmds_.push_back({nullptr, nullptr, glm::mat4(1), 0, (int)ps->p.size(), false, false, order, ps, blend});
+}
+void Renderer::drawCustom(int order, const glm::vec3& at, CustomDraw fn) {
+  if (!fn) return;
+  cmds_.push_back({nullptr, nullptr, glm::mat4(1), 0, 0, false, false, order, nullptr, Blend::Normal, (int)customs_.size()});
+  customs_.push_back({at, std::move(fn)});
 }
 
 void Renderer::bindInstances(int first) {
@@ -682,6 +710,10 @@ void Renderer::render(const SceneParams& sp) {
   glm::mat4 lightVP = glm::ortho(-26.f, 26.f, -26.f, 26.f, 1.f, 70.f) *
                       glm::lookAt(sp.sun.pos, glm::vec3(0), std::abs(sunDir.y) > 0.99f ? glm::vec3(0, 0, 1) : glm::vec3(0, 1, 0));
   bool shadows = sp.shadows && sp.sun.intensity > 0;
+  // the scene goes into the HDR target (post.h), drawn at its origin; without post, into the window at the canvas
+  postActive_ = postOk_ && sp.post.enabled && post_.ensure(sp.vpW, sp.vpH, sp.msaa);
+  const GLuint target = postActive_ ? post_.drawFbo() : 0;
+  const int tx = postActive_ ? 0 : sp.vpX, ty = postActive_ ? 0 : sp.vpY;
 
   glEnable(GL_DEPTH_TEST);
   glDepthFunc(GL_LEQUAL);
@@ -705,11 +737,12 @@ void Renderer::render(const SceneParams& sp) {
       if (c.mesh->indexed) glDrawElementsInstanced(GL_TRIANGLES, c.mesh->count, GL_UNSIGNED_INT, nullptr, c.count);
       else glDrawArraysInstanced(GL_TRIANGLES, 0, c.mesh->count, c.count);
     }
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
   }
 
-  glViewport(sp.vpX, sp.vpY, sp.vpW, sp.vpH);
-  glScissor(sp.vpX, sp.vpY, sp.vpW, sp.vpH);
+  // bound on every frame, shadows or not (no sun at night, none on LOW)
+  glBindFramebuffer(GL_FRAMEBUFFER, target);
+  glViewport(tx, ty, sp.vpW, sp.vpH);
+  glScissor(tx, ty, sp.vpW, sp.vpH);   // glClear and the resolve obey the scissor: it must cover the target
   glEnable(GL_SCISSOR_TEST);
   if (sp.msaa) glEnable(GL_MULTISAMPLE); else glDisable(GL_MULTISAMPLE);
   glClearColor(sp.fogColor.r, sp.fogColor.g, sp.fogColor.b, 1);
@@ -788,8 +821,8 @@ void Renderer::render(const SceneParams& sp) {
   // transparent + particles: by render order, then back to front
   std::vector<std::pair<float, const Cmd*>> tr;
   for (const Cmd& c : cmds_) {
-    if (c.ps || (c.mesh && c.mat->transparent)) {
-      glm::vec3 pos = c.ps ? glm::vec3(0) : glm::vec3(c.model * inst_[c.first].m[3]);
+    if (c.ps || c.custom >= 0 || (c.mesh && c.mat->transparent)) {
+      glm::vec3 pos = c.custom >= 0 ? customs_[c.custom].at : c.ps ? glm::vec3(0) : glm::vec3(c.model * inst_[c.first].m[3]);
       tr.push_back({(sp.view * glm::vec4(pos, 1)).z, &c});
     }
   }
@@ -798,27 +831,48 @@ void Renderer::render(const SceneParams& sp) {
     return a.first < b.first;   // farther (more negative view z) first
   });
   std::vector<float> pbuf;
+  FrameCtx ctx;
+  ctx.view = sp.view;
+  ctx.proj = sp.proj;
+  ctx.camPos = sp.camPos;
+  ctx.fogColor = sp.fogColor;
+  ctx.fogNear = sp.fogNear;
+  ctx.fogFar = sp.fogFar;
+  ctx.hdr = postActive_;
   for (auto& [z, c] : tr) {
+    if (c->custom >= 0) {
+      customs_[c->custom].fn(ctx);
+      continue;
+    }
     if (!c->ps) {
       glUseProgram(litProg_);
       drawCmd(*c);
       continue;
     }
     pbuf.clear();
-    pbuf.reserve(c->ps->p.size() * 8);
-    for (const auto& q : c->ps->p) pbuf.insert(pbuf.end(), {q.pos.x, q.pos.y, q.pos.z, q.size, q.col.r, q.col.g, q.col.b, q.alpha});
+    pbuf.reserve(c->ps->p.size() * 9);
+    for (const auto& q : c->ps->p) pbuf.insert(pbuf.end(), {q.pos.x, q.pos.y, q.pos.z, q.size, q.col.r, q.col.g, q.col.b, q.alpha, q.rot});
     glUseProgram(partProg_);
     glUniformMatrix4fv(U(partProg_, "uView"), 1, GL_FALSE, glm::value_ptr(sp.view));
     glUniformMatrix4fv(U(partProg_, "uProj"), 1, GL_FALSE, glm::value_ptr(sp.proj));
     glUniform1f(U(partProg_, "uFogNear"), sp.fogNear);
     glUniform1f(U(partProg_, "uFogFar"), sp.fogFar);
+    glUniform1i(U(partProg_, "uPuffs"), c->ps->tex != nullptr);
+    if (c->ps->tex) {
+      glm::vec3 lv = glm::normalize(glm::mat3(sp.view) * sunDir);
+      glUniform3fv(U(partProg_, "uLightV"), 1, glm::value_ptr(lv));
+      glUniform1i(U(partProg_, "uPuff"), 0);
+      glActiveTexture(GL_TEXTURE0);
+      glBindTexture(GL_TEXTURE_2D, c->ps->tex->id);
+    }
     glowUniforms(partProg_);
     glBindVertexArray(partVao_);
     glBindBuffer(GL_ARRAY_BUFFER, partInstVbo_);
     glBufferData(GL_ARRAY_BUFFER, pbuf.size() * sizeof(float), pbuf.data(), GL_STREAM_DRAW);
     glDisable(GL_CULL_FACE);
     glEnable(GL_BLEND);
-    if (c->psBlend == Blend::Additive) glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    glUniform1f(U(partProg_, "uCover"), c->psBlend == Blend::Additive ? c->ps->cover : -1.f);
+    if (c->psBlend == Blend::Additive) glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);   // premultiplied: cover 0 is plain additive
     else glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
     glDrawArraysInstanced(GL_TRIANGLES, 0, 6, (GLsizei)c->ps->p.size());
@@ -831,6 +885,7 @@ void Renderer::render(const SceneParams& sp) {
   glDisable(GL_SCISSOR_TEST);
   glDisable(GL_DEPTH_TEST);
   glActiveTexture(GL_TEXTURE0);
+  if (postActive_) post_.finish(sp.post, sp.vpX, sp.vpY, sp.vpW, sp.vpH, !sp.msaa);   // ends on framebuffer 0
 }
 
 bool Renderer::saveScreenshot(const std::string& path, int w, int h) {
