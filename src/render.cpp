@@ -501,6 +501,7 @@ in vec2 vCoord; in vec3 vColor; in float vAlpha; in vec3 vPos; flat in float vRo
 uniform float uFogNear, uFogFar;
 uniform vec4 uGlPos[8], uGlColor[8]; uniform int uGlCount;   // small lights (the lit shader's)
 uniform bool uPuffs; uniform sampler2D uPuff; uniform vec3 uLightV;   // textured puffs: the atlas, the sun in view space
+uniform float uCover;   // < 0: blended over (straight alpha); else premultiplied light that hides this much of what is behind
 out vec4 fragColor;
 void main() {
   float d = length(vCoord - 0.5) * 2.0;
@@ -522,7 +523,7 @@ void main() {
     lift = max(lift, uGlColor[i].a * (1.0 - smoothstep(0.35 * uGlPos[i].w, uGlPos[i].w, length(uGlPos[i].xyz - vPos))));
   a *= 1.0 - smoothstep(uFogNear, uFogFar, length(vPos.xz)) * (1.0 - lift);
   if (a < 0.004) discard;
-  fragColor = vec4(col, a);
+  fragColor = uCover < 0.0 ? vec4(col, a) : vec4(col * a, a * uCover);
 }
 )";
 
@@ -870,7 +871,8 @@ void Renderer::render(const SceneParams& sp) {
     glBufferData(GL_ARRAY_BUFFER, pbuf.size() * sizeof(float), pbuf.data(), GL_STREAM_DRAW);
     glDisable(GL_CULL_FACE);
     glEnable(GL_BLEND);
-    if (c->psBlend == Blend::Additive) glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    glUniform1f(U(partProg_, "uCover"), c->psBlend == Blend::Additive ? c->ps->cover : -1.f);
+    if (c->psBlend == Blend::Additive) glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);   // premultiplied: cover 0 is plain additive
     else glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
     glDrawArraysInstanced(GL_TRIANGLES, 0, 6, (GLsizei)c->ps->p.size());

@@ -36,7 +36,7 @@ inline float exposure(float t) {
   float dip = 0.2f * ss(0.15f, 0.45f, t) * (1 - ss(0.9f, 3, t));
   return (1 + 5 * flashK(t)) * (1 - dip);
 }
-constexpr float FIRE_END = 3.8f;    // the fireball has burnt out into the cloud
+constexpr float FIRE_END = 4.2f;    // the fireball has burnt out into the cloud
 constexpr float FRONT_END = 2.0f;   // the front ring has faded out past the screen
 constexpr float SURGE_END = 6.5f;   // the surge (the cloud's sprites: game.cpp) has settled
 constexpr float SCAR_END = 16;      // the scar has faded

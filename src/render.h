@@ -142,6 +142,8 @@ struct ParticleSystem {
   };
   int cap = 0;
   const Texture* tex = nullptr;   // a 2x2 puff atlas (R density, GB normal, A detail): soft billows, gently lit by the sun
+  float cover = 0;   // additive systems: how much of what lies behind a glow it also hides (0: pure light;
+                     // some cover warms the grass instead of tinting it lime)
   std::vector<P> p;
   void init(int capacity) { cap = capacity; p.reserve(capacity); }
   // fade: 0 = linear fade-out, 1 = fade in then out (smoke)
