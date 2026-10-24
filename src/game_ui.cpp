@@ -766,7 +766,7 @@ void Game::drawPortrait(float x0, float y0, float w, float h) {
 struct CmdInfo { const char *t, *k, *d; };
 static const std::map<std::string, CmdInfo> CMD_INFO = {
   {"air", {"AIRSTRIKE", "R", "A Viking fires a missile at every enemy cluster and drops an ammo crate by the bunker \xE2\x80\x94 your reload once the magazine is empty."}},
-  {"stim", {"STIMPACK", "T", "Unlocked by six Marines in the bunker (fewer with Super Stimpack's tiers: 4, 2, 1). For 11 s the Marines and Marauders fire 50% faster (an extra round every other volley, no extra ammo). Costs 10 HP per Marine and 20 per Marauder, paid by the bunker \xE2\x80\x94 free and repairing with the Super Stimpack research, which also lets you right-click it for autocast: it stims whenever you fire (a gold light runs round the button)."}},
+  {"stim", {"STIMPACK", "T", "Unlocked by six Marines in the bunker (fewer with Super Stimpack's tiers: 4, 2, 1). For 11 s the Marines and Marauders fire 50% faster (Marines: an extra round every other volley, no extra ammo). Costs 10 HP per Marine and 20 per Marauder, paid by the bunker \xE2\x80\x94 free and repairing with the Super Stimpack research, which also lets you right-click it for autocast: it stims whenever you fire (a gold light runs round the button)."}},
   {"nuke", {"NUKE", "N", "Tactical nuke on the centre of the swarm after a 2-second warning. Wipes out everything in a huge radius."}},
   {"roster", {"BUNKER ROSTER", "B", "Hire Marines, Marauders and Ghosts (6 slots) and research their upgrades. In Endless its armory sells more HP, damage, ammo and shorter strike / nuke cooldowns. The game pauses while it is open."}},
   {"view", {"RESET VIEW", "HOME", "Back to the overview. Mouse wheel or + / \xE2\x88\x92 zooms in on the bunker; Insert / Delete rotate the view 90\xC2\xB0."}},
@@ -997,7 +997,7 @@ void Game::drawTooltip() {
     else { warn = "READY"; ok = true; }
   }
   if (shown == "stim") {
-    if (!stimUnlocked()) warn = fmt("Needs %d Marines in the bunker (%d/%d)", stimNeed(), (int)std::count(roster_.begin(), roster_.end(), Unit::Marine), stimNeed());
+    if (!stimUnlocked()) warn = superStimLvl_ >= 3 ? std::string("Needs a Marine or a Marauder in the bunker") : fmt("Needs %d Marines in the bunker (%d/%d)", stimNeed(), stimCount(), stimNeed());
     else if (stimT_ > 0) warn = fmt("Stimmed \xE2\x80\x94 %d s left", (int)std::ceil(stimT_));
     else if (stimCost() && bunkerHp_ <= stimCost()) warn = fmt("Not enough HP (%d needed)", (int)stimCost());
     else if (superStimUnlocked_ && wavePhase_ == WavePhase::Combat) { warn = std::string("READY \xE2\x80\x94 Super Stimpack: no HP cost, repairs the bunker") + (hpLvl_ >= 3 ? " (stacks with self-repair)" : ""); ok = true; }
@@ -1179,8 +1179,15 @@ void Game::drawRoster() {
       ImGui::SetCursorScreenPos({x, y});
       Btn tile = button(fmt("##tile%d", i).c_str(), {tw, th});
       float br = tile.hovered ? 1.25f : 1;
+      bool runner = i == runnerIdx_;
       dl->AddRectFilled(tile.a, tile.b, rgb(fc, 0.35f * br));
-      dl->AddRect(tile.a, tile.b, rgb(bc));
+      dl->AddRect(tile.a, tile.b, runner ? rgb(GOLD) : rgb(bc), 0, 0, runner ? 2 * s : 1);
+      if (runner) {   // the elected crate runner: a little crate in the corner
+        ImVec2 ca(tile.a.x + 3 * s, tile.a.y + 3 * s), cb(ca.x + 9 * s, ca.y + 8 * s);
+        dl->AddRectFilled(ca, cb, rgb(0xb07a2a));
+        dl->AddRect(ca, cb, rgb(GOLD));
+        dl->AddLine({ca.x, (ca.y + cb.y) / 2}, {cb.x, (ca.y + cb.y) / 2}, rgb(GOLD));
+      }
       std::string tag;
       unsigned tagCol = tc;
       if (u == Unit::Ghost && snipeUnlocked_) {
@@ -1195,14 +1202,16 @@ void Game::drawRoster() {
       float cxm = (tile.a.x + tile.b.x) / 2;
       text(dl, {cxm - textW(d.label, lt) / 2, tile.a.y + 6 * s}, d.label, lt);
       text(dl, {cxm - textW(sub, st) / 2, tile.a.y + 24 * s}, sub, st);
-      if (tile.hovered) {   // ✕ dismisses (75% refund)
+      if (tile.hovered) {   // ✕ dismisses (75% refund); the rest elects the crate runner
         ImVec2 ra(tile.b.x - 16 * s, tile.a.y), rb2(tile.b.x, tile.a.y + 16 * s);
         bool overX = ImGui::IsMouseHoveringRect(ra, rb2);
         if (overX) dl->AddRectFilled(ra, rb2, IM_COL32(255, 60, 60, 89));
         Txt xt = T(12, overX ? 0xffffff : 0xff8a80);
         text(dl, {ra.x + 4 * s, ra.y + 1 * s}, "\xE2\x9C\x95", xt);
         if (overX) ImGui::SetTooltip("Dismiss (75%% refund)");
+        else ImGui::SetTooltip(runner ? "Crate runner \xE2\x80\x94 click: any unit again" : "Click: this unit runs out for the supply crates");
         if (tile.clicked && overX) dismissUnit(i);
+        else if (tile.clicked) electRunner(i);
       }
       x += tw + 5 * s;
     }
@@ -1240,7 +1249,7 @@ void Game::drawRoster() {
       yy += 16 * s + 3 * s;
       std::string note = (d.dmgMult != 1 ? fmt("\xC3\x97%g dmg", d.dmgMult) : std::string("balanced")) +
                          (d.bonusVsArmored ? fmt(", +%d%% vs armored", (int)std::round((d.bonusMult - 1) * 100)) : d.bonusVsLight ? fmt(", +%d%% vs light", (int)std::round((d.bonusMult - 1) * 100)) : std::string(", no bonus")) +
-                         (u == Unit::Marauder ? ", blast slows the area" : "");
+                         (u == Unit::Marauder ? ", fires on its own, blast slows" : "");
       wrapped(dl, {ix, yy}, cw - 22 * s, note.c_str(), T(13, 0xb9cfe6), 1.3f);
       yy += 34 * s + 6 * s;
       Txt cmt = T(13, MINERAL, false, 0, true), cgt = T(13, GAS, false, 0, true);
@@ -1261,7 +1270,7 @@ void Game::drawRoster() {
     const auto& sk = cfg::sensor_costs;
     R rs[4] = {
       {"superstim", Unit::Marine, "Super Stimpack", ui_icons::superstim, {250, 150}, superStimUnlocked_, superStimLvl_, 3, {{200, 80}, {320, 130}, {500, 200}},
-       "Nova's Marines: Stimpack costs no HP and repairs the bunker while it lasts (stacks with the hull's self-repair). Its tiers lower the Marines Stimpack needs: 6 \xE2\x86\x92 4 \xE2\x86\x92 2 \xE2\x86\x92 1"},
+       "Stimpack costs no HP and repairs the bunker while it lasts. Its tiers cut the Marines it needs: 6 \xE2\x86\x92 4 \xE2\x86\x92 2 \xE2\x86\x92 1 (or a Marauder)"},
       {"concussive", Unit::Marauder, "Concussive Shell", ui_icons::concussive, {300, 75}, concussiveUnlocked_, concussiveLvl_, 3, {{250, 80}, {400, 130}, {600, 200}}, "Marauder blasts slow harder: to 40% speed (from 70%) for 2.5s (from 1.5s)"},
       {"snipe", Unit::Ghost, "Snipe", ui_icons::snipe, {250, 100}, snipeUnlocked_, snipeLvl_, 3, {{200, 80}, {320, 130}, {500, 200}}, "Ghost auto-snipes highest-threat enemy (8s CD)"},
       {"sensor", Unit::Marine, "Sensor Tower", nullptr, {sk[0][0], sk[0][1]}, sensorLvl_ >= 1, sensorLvl_, 3, {{sk[0][0], sk[0][1]}, {sk[1][0], sk[1][1]}, {sk[2][0], sk[2][1]}},
@@ -1280,7 +1289,8 @@ void Game::drawRoster() {
       if (r.unlocked) {
         if (!strcmp(r.key, "snipe")) status = fmt("CD: %.1fs | tier %d/3", (double)(r.lvl == 0 ? 8 : r.lvl == 1 ? 6 : r.lvl == 2 ? 4 : 2.5), r.lvl);
         if (!strcmp(r.key, "concussive")) status = fmt("Slow 40%% for 2.5s | blast radius %.1f | tier %d/3", (double)MG_RADIUS[r.lvl], r.lvl);
-        if (!strcmp(r.key, "superstim")) status = fmt("Stim: no HP cost, +%d HP/s to the bunker | needs %d Marine%s | tier %d/3", (int)cfg::superstim_heal, cfg::stim_marines[r.lvl], cfg::stim_marines[r.lvl] > 1 ? "s" : "", r.lvl);
+        if (!strcmp(r.key, "superstim")) status = fmt("Stim: no HP cost, +%d HP/s to the bunker | needs %s | tier %d/3", (int)cfg::superstim_heal,
+                                                     r.lvl >= 3 ? "a Marine or a Marauder" : fmt("%d Marines", cfg::stim_marines[r.lvl]).c_str(), r.lvl);
         if (sensor) status = fmt("Blips out to %g | tier %d/3", (double)cfg::sensor_range[r.lvl], r.lvl);
       }
       if (locked) status += std::string(" \xE2\x80\x94 need ") + unitDef(r.unit).key;
@@ -1305,7 +1315,8 @@ void Game::drawRoster() {
       Txt dt3 = T(13, 0xb9cfe6);
       dt3.col = alpha(dt3.col, op);
       float textW2 = cw - 22 * s - 49 * s;
-      float descH = wrapped(nullptr, {0, 0}, textW2, status.c_str(), dt3, 1.3f, false);
+      // every card the same height, whatever its text: room for three lines (a longer one is cut off)
+      const float descH = 3 * textH(dt3) * 1.3f;
       float headH = std::max(40 * s, 19 * s + descH);
       float hgt = 8 * s + headH + 6 * s + 24 * s + 8 * s;
       rowH = std::max(rowH, hgt);
@@ -1319,7 +1330,9 @@ void Game::drawRoster() {
       dl->AddRect(ia, {ia.x + 40 * s, ia.y + 40 * s}, IM_COL32(140, 200, 255, (int)(89 * op)), 2 * s);
       float tx = ia.x + 49 * s;
       text(dl, {tx, yy + 8 * s}, (std::string(r.name) + (r.unlocked ? " \xE2\x9C\x93" : "")).c_str(), TA(15, alpha(rgb(nc), op), true, 1));
+      dl->PushClipRect({tx, yy + 8 * s + 19 * s}, {tx + textW2 + 2 * s, yy + 8 * s + 19 * s + descH}, true);
       wrapped(dl, {tx, yy + 8 * s + 19 * s}, textW2, status.c_str(), dt3, 1.3f);
+      dl->PopClipRect();
       if (wideButton(dl, fmt("##res%d", k).c_str(), {x + 11 * s, yy + 8 * s + headH + 6 * s}, {cw - 22 * s, 24 * s}, lbl, WB_SHOP, !dis))
         researchUpgrade(r.key, tier);
     }
@@ -1334,18 +1347,8 @@ void Game::drawRoster() {
     y += 21 * s;
     static const char* NAMES[4] = {"Hull plating", "Weapon tuning", "Magazine", "Fleet logistics"};
     const char* ICONS[4] = {ui_icons::neosteel, ui_icons::weapons3, ui_icons::enhanced, ui_icons::fleet};
-    float cw = (iw - 24 * s) / 4, chh = 0;
-    std::vector<float> hs(4);
-    for (int k = 0; k < 4; k++) {
-      int n = armory_[k];
-      std::string fx = k == 0 ? fmt("+%d max HP", (int)cfg::armory_hp) : k == 1 ? fmt("+%d%% damage", (int)std::round(cfg::armory_dmg * 100))
-                     : k == 2 ? fmt("+%d rounds", cfg::armory_ammo) : fmt("strike & nuke cooldowns \xE2\x88\x92%d%%", (int)std::round((1 - cfg::armory_cd) * 100));
-      std::string tot = k == 0 ? fmt("+%d HP", n * (int)cfg::armory_hp) : k == 1 ? fmt("+%d%% damage", (int)std::round(n * cfg::armory_dmg * 100))
-                      : k == 2 ? fmt("+%d rounds", n * cfg::armory_ammo) : fmt("cooldowns \xC3\x97%.2f", armoryCdMult(n));
-      std::string desc = fx + (n ? "\nnow " + tot : "");
-      hs[k] = wrapped(nullptr, {0, 0}, cw - 18 * s - 41 * s, desc.c_str(), T(12, 0xb9cfe6), 1.3f, false);
-      chh = std::max(chh, std::max(32 * s, 18 * s + hs[k]));
-    }
+    // every card the same, fixed height, whatever its text: room for three lines (a longer one is cut off)
+    const float cw = (iw - 24 * s) / 4, descH = 3 * textH(T(12, 0xb9cfe6)) * 1.3f, chh = std::max(32 * s, 18 * s + descH);
     float cardH = 7 * s + chh + 3 * s + 14 * s + 6 * s + 24 * s + 7 * s;
     for (int k = 0; k < 4; k++) {
       int n = armory_[k];
@@ -1364,7 +1367,9 @@ void Game::drawRoster() {
                      : k == 2 ? fmt("+%d rounds", cfg::armory_ammo) : fmt("strike & nuke cooldowns \xE2\x88\x92%d%%", (int)std::round((1 - cfg::armory_cd) * 100));
       std::string tot = k == 0 ? fmt("+%d HP", n * (int)cfg::armory_hp) : k == 1 ? fmt("+%d%% damage", (int)std::round(n * cfg::armory_dmg * 100))
                       : k == 2 ? fmt("+%d rounds", n * cfg::armory_ammo) : fmt("cooldowns \xC3\x97%.2f", armoryCdMult(n));
+      dl->PushClipRect({tx, y + 7 * s + 18 * s}, {x + cw - 7 * s, y + 7 * s + 18 * s + descH}, true);
       wrapped(dl, {tx, y + 7 * s + 18 * s}, cw - 18 * s - 41 * s, (fx + (n ? "\nnow " + tot : "")).c_str(), T(12, 0xb9cfe6), 1.3f);
+      dl->PopClipRect();
       float by = y + 7 * s + chh + 3 * s;
       if (!maxed && !afford) rich(dl, {x + 9 * s, by}, ("need " + shortText(m, g, minerals_, gas_) + " more").c_str(), T(11, DANGER));
       by += 14 * s + 6 * s;
@@ -1888,7 +1893,7 @@ void Game::drawTitle() {
   y += 40 * s;
   centred("DOMINION", tt);
   y += 40 * s + 6 * s;
-  centred("Hold the bunker. Every unit inside fires with each click.", T(15, MUTED, true));
+  centred("Hold the bunker. Click to fire \xE2\x80\x94 the Marauders lob grenades on their own.", T(15, MUTED, true));
   y += 20 * s + 14 * s + 4 * s;
   // start buttons wait for the bunker and the first waves' units (or "start now")
   bool ready = skipWait_ || assetsSettled();
@@ -1973,10 +1978,10 @@ void Game::drawHowTo() {
   // topic → rule rows
   const std::pair<const char*, std::string> rows[] = {
     {"GOAL", fmt("Hold the bunker against the Zerg swarm. Campaign: clear %d waves to win \xE2\x80\x94 that unlocks Endless mode.", cfg::victory_wave)},
-    {"FIRE", "Click the ground: every unit inside the bunker fires one volley at that spot, for one round. Hold the button for full auto \xE2\x80\x94 it empties the magazine fast."},
+    {"FIRE", "Click the ground: every Marine and Ghost inside the bunker fires one volley at that spot, for one round (the Marauders fire on their own). Hold the button for full auto \xE2\x80\x94 it empties the magazine fast."},
     {"AMMO", "After each wave a Marine fetches a supply crate that refills the magazine. Out of ammo mid-wave? <kbd>R</kbd> calls a Viking: it fires missiles into the swarm and drops an ammo crate \xE2\x80\x94 one crate covers the wave."},
     {"MONEY", "Kills and cleared waves pay minerals and gas. Spend them on upgrades <kbd>1</kbd>\xE2\x80\x93<kbd>4</kbd> (damage, armor, hull, ammo) and on units in the roster <kbd>B</kbd>, which pauses the game."},
-    {"UNITS", "The bunker has 6 slots. Marine (1 slot): all-round. Marauder (2): aims itself at the nearest enemies; its grenade blasts an area, slowing all in it, double damage to Armored. Ghost (2): bonus damage to Light, researches auto-Snipe."},
+    {"UNITS", "The bunker has 6 slots. <b>Marine</b> (1 slot): fires where you click, the cheapest. <b>Ghost</b> (2): fires where you click, +150% damage to Light; researches Snipe, which fires on its own. <b>Marauder</b> (2): fires on its own at the Zerg not slowed yet, a grenade that blasts and slows an area, double damage to Armored \xE2\x80\x94 every 3 grenades cost 1 round. You choose the unit that runs out for supply crates in the roster."},
     {"POWERS", fmt("<kbd>N</kbd> nuke from wave %d. <kbd>T</kbd> Stimpack with six Marines (fewer with Super Stimpack's tiers), for Marines and Marauders. Bunker hull level 3: Shrike auto-turret and self-repair.", cfg::nuke_wave)},
     {"ZERG", fmt("Zerglings: fast, Light, bite the hull. Roaches from wave %d: Armored, spit acid from range. From wave %d the Zerglings run faster.", cfg::roach_wave, cfg::metabolic_wave)},
   };
@@ -2118,7 +2123,15 @@ static const std::vector<HintDef>& hintDefs() {
     {"upgrade", "cleared", {"cmd-dmg", "cmd-ammo"}, "1234", "UPGRADES",
      "You can afford an upgrade: press <kbd>1</kbd>\xE2\x80\x93<kbd>4</kbd> or click a lit button \xE2\x80\x94 damage, armor, bunker hull, ammo storage."},
     {"roster", "cleared", {"cmd-roster"}, "b", "BUNKER ROSTER",
-     "Between waves is a good moment to press <kbd>B</kbd>: hire more units into the bunker's free slots \xE2\x80\x94 every one of them fires with each volley."},
+     "Between waves is a good moment to press <kbd>B</kbd>: hire more units into the bunker's 6 slots. <b>Marines</b> (1 slot) fire where you click. "
+     "<b>Ghosts</b> (2) too, with +150% damage to Light Zerg, and snipe on their own once you research Snipe. "
+     "<b>Marauders</b> (2) lob slowing grenades on their own \xE2\x80\x94 every 3 cost 1 round."},
+    {"marauder", nullptr, {}, "", "MARAUDER",
+     "Your Marauder fires on its own: a punisher grenade every 0.7 s at the nearest Zerg not slowed yet, out to 14. Its blast hurts and slows everything around it, "
+     "double damage to Armored. No click needed \xE2\x80\x94 but every 3 grenades cost 1 round of ammo, and out of ammo it stops too."},
+    {"ghost", nullptr, {}, "", "GHOST",
+     "Your Ghost fires with your volleys \xE2\x80\x94 click where it should shoot \xE2\x80\x94 with +150% damage to Light Zerg (Zerglings). Research Snipe in the roster "
+     "(<kbd>B</kbd>) and it also snipes the most dangerous Zerg on its own every few seconds."},
     {"roach", nullptr, {}, "", "ROACHES",
      "Roaches are <b>Armored</b> and spit acid from range. Marauders deal Armored enemies double damage; armor (<kbd>2</kbd>) cuts the damage the bunker takes."},
     {"nuke", nullptr, {"cmd-nuke"}, "n", "NUKE READY",
@@ -2153,7 +2166,7 @@ static const std::vector<TourDef>& tourDefs() {
 static std::string tourText(const std::string& k) {
   if (k == "air") return "When the magazine is empty: a Viking fires a missile at every Zerg group and drops an ammo crate by the bunker.";
   if (k == "nuke") return fmt("From wave %d (the button shows W%d until then): a nuke on the middle of the swarm wipes out everything in a huge radius. It recharges after each launch.", cfg::nuke_wave, cfg::nuke_wave);
-  if (k == "roster") return "Hire Marines, Marauders and Ghosts into the bunker's 6 slots and research their upgrades. Every unit inside fires with each volley. The game pauses while it is open.";
+  if (k == "roster") return "Hire Marines, Marauders and Ghosts into the bunker's 6 slots and research their upgrades. Marines and Ghosts fire with each volley, Marauders on their own. The game pauses while it is open.";
   if (k == "view") return "Back to the overview. The mouse wheel zooms in on the bunker; INSERT / DELETE rotate the view.";
   if (k == "menu") return "Save and load, settings, the controls and this tutorial. The game pauses while it is open.";
   if (k == "dmg") return "Every round from every unit hits harder. Three levels.";
@@ -2205,6 +2218,8 @@ bool Game::tutWhen(const std::string& id) {
   if (id == "nuke") return wave_ >= cfg::nuke_wave && combat && nukeCD_ <= 0 && !nukeInFlight_;
   if (id == "hull") return combat && bunkerHp_ < maxHp_ * 0.5f;
   if (id == "stim") return combat && stimUnlocked() && stimT_ <= 0;
+  if (id == "marauder") return combat && std::count(roster_.begin(), roster_.end(), Unit::Marauder);   // its first wave
+  if (id == "ghost") return combat && std::count(roster_.begin(), roster_.end(), Unit::Ghost);
   return false;
 }
 

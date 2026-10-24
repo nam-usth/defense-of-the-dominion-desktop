@@ -186,7 +186,8 @@ class Game {
   // test hooks (command line)
   void autoStart(const std::string& mode) { start(mode == "endless" ? Mode::Endless : Mode::Campaign); }
   void runCheat(const std::string& code) {   // also the test actions hire:<unit>, research:<key>[:<tier>] (paid for: mng first)
-    if (code == "autocast:stim") toggleStimAuto();   // and autocast:stim (the STIM button's right-click)
+    if (code == "autocast:stim") toggleStimAuto();   // and autocast:stim (the STIM button's right-click),
+    else if (code.rfind("runner:", 0) == 0) electRunner(std::atoi(code.c_str() + 7));   // runner:<roster index>
     else if (code.rfind("hire:", 0) == 0) {
       for (int k = 0; k < 3; k++) if (code.substr(5) == unitDef((Unit)k).key) hireUnit((Unit)k);
     } else if (code.rfind("research:", 0) == 0) {
@@ -419,7 +420,8 @@ class Game {
 
   // stim
   bool stimUnlocked() const;
-  int stimNeed() const;   // Marines in the bunker Stimpack needs
+  int stimNeed() const;   // Marines in the bunker Stimpack needs (the last tier: a Marine or a Marauder)
+  int stimCount() const;  // those counting toward it
   float stimCost() const;
   void doStim(bool autocast = false);   // autocast: quietly, only if it can
   bool stimAuto_ = false;               // Super Stimpack autocast (right-click STIM): stims as the bunker fires
@@ -474,6 +476,12 @@ class Game {
   float vMissileSide_ = 1;   // wings take turns
   void doNuke(bool force = false);
   void ghostSnipeTick(float dt);
+  int runnerIdx_ = -1;                 // roster index of the elected crate runner (-1: a Marine, else any free unit)
+  void electRunner(int idx);           // the roster: click a unit (again: back to any)
+  std::vector<float> marauderReady_;   // per Marauder, in roster order: game time it may fire again
+  int marauderShots_ = 0;              // grenades fired: every third costs a round (the first of each three)
+  void marauderFireTick();             // Marauders fire on their own (not with the volleys)
+  bool marauderTarget(glm::vec2& at) const;
 
   // bunker fire
   std::vector<glm::vec3> fireSpots_;

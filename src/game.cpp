@@ -29,6 +29,10 @@ static const float SNIPE_CD[4] = {8, 6, 4, 2.5f};            // s per snipe leve
 // Marauder punisher grenades (blast radius: MG_RADIUS): the rest of the blast takes MG_SPLASH of the
 // round's damage; everyone in it slows to MG_SLOW of their speed for MG_SLOW_DUR s ([1]: Concussive Shells)
 static const float MG_SPLASH = 0.5f, MG_SLOW[2] = {0.7f, 0.4f}, MG_SLOW_DUR[2] = {1.5f, 2.5f};
+// they fire on their own, a grenade every MG_INTERVAL s each (stimmed: 50% faster), at enemies within MG_REACH;
+// every MG_PER_ROUND grenades (the Marauders' together) cost one round of ammo
+static const float MG_INTERVAL = 0.7f, MG_REACH = 14;
+static const int MG_PER_ROUND = 3;
 // drawn as the Viking's missile, a little larger, with its flame and a shorter light streak (it is faster),
 // burning icy blue with Concussive Shells
 static const float MG_LEN = 0.16f, MG_STREAK = 0.12f, MG_BLAST_DUR = 0.55f;
@@ -804,7 +808,11 @@ void Game::updateShrike(float dt) {
 // ─── Stimpack (T): Marines and Marauders fire 50% faster for 11 s ────────────
 // It needs six Marines in the bunker; Super Stimpack's tiers bring that down to 4, 2, 1
 int Game::stimNeed() const { return cfg::stim_marines[std::clamp(superStimLvl_, 0, 3)]; }
-bool Game::stimUnlocked() const { return std::count(roster_.begin(), roster_.end(), Unit::Marine) >= stimNeed(); }
+int Game::stimCount() const {   // who counts toward stimNeed: Marines; at the last tier Marauders too
+  return (int)std::count(roster_.begin(), roster_.end(), Unit::Marine) +
+         (superStimLvl_ >= 3 ? (int)std::count(roster_.begin(), roster_.end(), Unit::Marauder) : 0);
+}
+bool Game::stimUnlocked() const { return stimCount() >= stimNeed(); }
 float Game::stimCost() const {
   if (superStimUnlocked_) return 0;
   return cfg::stim_hp * std::count(roster_.begin(), roster_.end(), Unit::Marine) +
@@ -814,7 +822,11 @@ void Game::doStim(bool autocast) {
   if (phase_ != Phase::Playing || isPaused()) return;
   if (autocast && (wavePhase_ != WavePhase::Combat || !stimUnlocked() || stimT_ > 0 || stimCost() > 0)) return;
   if (wavePhase_ != WavePhase::Combat) { setStatus("Stimpack only during a wave"); audio::play("deny"); return; }
-  if (!stimUnlocked()) { setStatus("Stimpack needs " + std::to_string(stimNeed()) + " Marines in the bunker"); audio::play("deny"); return; }
+  if (!stimUnlocked()) {
+    setStatus(superStimLvl_ >= 3 ? "Stimpack needs a Marine or a Marauder in the bunker" : "Stimpack needs " + std::to_string(stimNeed()) + " Marines in the bunker");
+    audio::play("deny");
+    return;
+  }
   if (stimT_ > 0) { setStatus("Already stimmed!"); return; }
   float cost = stimCost();
   if (cost && bunkerHp_ <= cost) { setStatus("Not enough HP to stim"); audio::play("deny"); return; }
@@ -1163,9 +1175,10 @@ void Game::sendMarine(float tx, float tz, std::function<void()> cb) {
     }
     return;
   }
-  // A Marine fetches the crate when one is free, else any idle unit
+  // The elected runner fetches the crate when it is free, else a free Marine, else any idle unit
   int i = -1;
-  for (size_t k = 0; k < roster_.size(); k++)
+  if (runnerIdx_ >= 0 && runnerIdx_ < (int)std::min(roster_.size(), marines_.size()) && !marines_[runnerIdx_].running) i = runnerIdx_;
+  for (size_t k = 0; i < 0 && k < roster_.size(); k++)
     if (roster_[k] == Unit::Marine && k < marines_.size() && !marines_[k].running) { i = (int)k; break; }
   if (i < 0)
     for (size_t k = 0; k < marines_.size(); k++) if (!marines_[k].running) { i = (int)k; break; }
@@ -1600,55 +1613,87 @@ glm::vec3 Game::bunkerPort(float bearing) {
   return p;
 }
 
-// Each click fires one volley: every unit in the bunker shoots once
+// Each click fires one volley: every Marine and Ghost in the bunker shoots once (the
+// Marauders fire on their own: marauderFireTick)
 void Game::shoot(float tx, float tz) {
   if (shootCD_ > 0 || wavePhase_ != WavePhase::Combat || ammo_ <= 0) return;
+  if (std::all_of(roster_.begin(), roster_.end(), [](Unit u) { return u == Unit::Marauder; })) return;   // nobody to fire it
   if (stimAuto_ && stimT_ <= 0) doStim(true);   // autocast: the volley that finds it ready stims first
   ammo_--;
   shootCD_ = .1f;
   int n = roster_.empty() ? 1 : (int)roster_.size();
   bool stimExtra = stimT_ > 0 && stimVolley_++ % 2 == 0;   // stimmed: +1 round every other volley
-  std::vector<glm::vec2> mTargets;   // where the blasts already on their way land: the grenades in flight, then this volley's
-  for (const Bullet& b : bullets_)
-    if (b.alive && b.unit == Unit::Marauder) mTargets.push_back(b.aim);
-  const float blastR = MG_RADIUS[concussiveLvl_];
   for (int i = 0; i < (int)roster_.size(); i++) {
     Unit u = roster_[i];
-    float atx = tx, atz = tz;
-    if (u == Unit::Marauder) {   // Marauders pick their own targets among the enemies in sight (at night: lit, or a Sensor
-      EnemyP pick[4];            // Tower blip): the nearest one not slowed yet and outside the blasts on their way, else the
-      float pd[4] = {};          // nearest not slowed, else the nearest outside them, else the nearest; none in sight: the click
-      for (auto& e : allEnemies()) {
-        if (e->dead || !(e->visible || sensed(*e))) continue;
-        glm::vec2 q(e->pos.x, e->pos.z);
-        float d = glm::length(q);
-        bool covered = false;
-        for (const glm::vec2& t : mTargets) covered = covered || glm::distance(t, q) < blastR;
-        int tier = (e->slowed && gameT_ <= e->slowUntil ? 2 : 0) + (covered ? 1 : 0);
-        if (!pick[tier] || d < pd[tier]) { pick[tier] = e; pd[tier] = d; }
-      }
-      for (const EnemyP& e : pick)
-        if (e) { atx = e->pos.x; atz = e->pos.z; mTargets.push_back({atx, atz}); break; }
-    }
+    if (u == Unit::Marauder) continue;
     float off = (i - (n - 1) / 2.f);
-    glm::vec3 p = bunkerPort(std::atan2(atz, atx) + off * 0.2f);   // slits fan out ~11° apart
+    glm::vec3 p = bunkerPort(std::atan2(tz, tx) + off * 0.2f);   // slits fan out ~11° apart
     auto round = [&](float spread, float dy) {
-      Bullet r = makeBullet(atx, atz, spread, u, p.x, p.y + dy, p.z, u == Unit::Marauder ? 0.15f : AIM_Y);
-      if (u == Unit::Marauder) {   // the grenade comes down on its target
-        r.range = std::min(18.f, std::hypot(atx - p.x, atz - p.z));
-        r.aim = {atx, atz};
-      }
+      Bullet r = makeBullet(tx, tz, spread, u, p.x, p.y + dy, p.z, AIM_Y);
       if (u == Unit::Marine && stimT_ > 0) r.color = STIM_COLOR;
       bullets_.push_back(r);
       return r;
     };
     Bullet b = round(off * .006f, 0);
-    if (stimExtra && u != Unit::Ghost) round(off * .006f + .02f, .05f);   // stimmed Marines and Marauders
-    muzzleFlash(p.x, p.y, p.z, b.vx / b.speed, b.vz / b.speed, unitDef(u).bulletColor, u == Unit::Marauder);
+    if (stimExtra && u == Unit::Marine) round(off * .006f + .02f, .05f);   // stimmed Marines
+    muzzleFlash(p.x, p.y, p.z, b.vx / b.speed, b.vz / b.speed, unitDef(u).bulletColor, false);
   }
   bool played[3] = {false, false, false};   // one gunshot voice per unit type
-  for (Unit u : roster_) if (!played[(int)u]) { played[(int)u] = true; audio::play(unitDef(u).key); }
+  for (Unit u : roster_) if (u != Unit::Marauder && !played[(int)u]) { played[(int)u] = true; audio::play(unitDef(u).key); }
   if (ammo_ == 0) setStatus("Out of ammo \xE2\x80\x94 R: Airstrike  N: Nuke");
+}
+
+// ─── Marauders: a punisher grenade each every MG_INTERVAL s, on their own ────
+// Not with the volleys; every third grenade costs a round; stimmed, 50% faster. Each picks its target among the
+// enemies in sight (at night: lit, or a Sensor Tower blip) within MG_REACH: the nearest
+// one not slowed yet and outside the blasts already on their way (the grenades in
+// flight), else the nearest not slowed, else the nearest outside them, else the nearest.
+// None: it holds its fire
+bool Game::marauderTarget(glm::vec2& at) const {
+  std::vector<glm::vec2> onTheWay;
+  for (const Bullet& b : bullets_)
+    if (b.alive && b.unit == Unit::Marauder) onTheWay.push_back(b.aim);
+  const float blastR = MG_RADIUS[concussiveLvl_];
+  EnemyP pick[4];
+  float pd[4] = {};
+  for (const EnemyP& e : allEnemies()) {
+    if (e->dead || !(e->visible || sensed(*e))) continue;
+    glm::vec2 q(e->pos.x, e->pos.z);
+    float d = glm::length(q);
+    if (d > MG_REACH) continue;
+    bool covered = false;
+    for (const glm::vec2& t : onTheWay) covered = covered || glm::distance(t, q) < blastR;
+    int tier = (e->slowed && gameT_ <= e->slowUntil ? 2 : 0) + (covered ? 1 : 0);
+    if (!pick[tier] || d < pd[tier]) { pick[tier] = e; pd[tier] = d; }
+  }
+  for (const EnemyP& e : pick)
+    if (e) { at = {e->pos.x, e->pos.z}; return true; }
+  return false;
+}
+void Game::marauderFireTick() {
+  if (wavePhase_ != WavePhase::Combat) return;
+  int n = (int)std::count(roster_.begin(), roster_.end(), Unit::Marauder);
+  if ((int)marauderReady_.size() < n) marauderReady_.resize(n, 0);
+  for (int mi = 0; mi < n; mi++) {
+    if (gameT_ < marauderReady_[mi]) continue;
+    glm::vec2 t;
+    if (!marauderTarget(t)) { marauderReady_[mi] = gameT_ + 0.1f; continue; }   // look again shortly
+    if (marauderShots_ % MG_PER_ROUND == 0) {   // every third grenade (the Marauders' together) costs a round
+      if (ammo_ <= 0) { marauderReady_[mi] = gameT_ + 0.1f; continue; }       // out of ammo: they hold fire too
+      if (--ammo_ == 0) setStatus("Out of ammo \xE2\x80\x94 R: Airstrike  N: Nuke");
+    }
+    marauderShots_++;
+    if (stimAuto_ && stimT_ <= 0) doStim(true);   // autocast: its attack stims too
+    // the next one: a full interval on, nudged apart from the others so they keep a ripple
+    marauderReady_[mi] = gameT_ + MG_INTERVAL / (stimT_ > 0 ? 1.5f : 1.f) * (0.94f + 0.12f * rnd());
+    glm::vec3 p = bunkerPort(std::atan2(t.y, t.x) + (mi - (n - 1) / 2.f) * 0.2f);
+    Bullet b = makeBullet(t.x, t.y, 0, Unit::Marauder, p.x, p.y, p.z, 0.15f);
+    b.range = std::min(18.f, std::hypot(t.x - p.x, t.y - p.z));   // the grenade comes down on its target
+    b.aim = t;
+    bullets_.push_back(b);
+    muzzleFlash(p.x, p.y, p.z, b.vx / b.speed, b.vz / b.speed, unitDef(Unit::Marauder).bulletColor, true);
+    audio::play(unitDef(Unit::Marauder).key);
+  }
 }
 
 // ─── Ghost auto-snipe: threat = hp / distance ────────────────────────────────
@@ -2149,18 +2194,32 @@ std::string Game::hireUnit(Unit u) {
   gas_ -= d.cost[1];
   roster_.push_back(u);
   if (u == Unit::Ghost) snipeReady_.push_back(0);   // a new ghost may snipe at once
+  if (u == Unit::Marauder) marauderReady_.push_back(0);   // ... and a new Marauder fire
   syncMarines();
   return std::string(d.name) + " hired! (" + std::to_string(slotsUsed()) + "/6 slots)";
+}
+
+void Game::electRunner(int idx) {
+  if (idx < 0 || idx >= (int)roster_.size()) return;
+  runnerIdx_ = runnerIdx_ == idx ? -1 : idx;
+  setStatus(runnerIdx_ < 0 ? std::string("Crate runner: a Marine, else any free unit")
+                           : std::string("Crate runner: this ") + unitDef(roster_[idx]).key + " runs out for the supply crates");
 }
 
 void Game::dismissUnit(int idx) {
   if (idx < 0 || idx >= (int)roster_.size()) return;
   if (roster_.size() <= 1) { setStatus("The bunker needs at least one unit!"); return; }   // an empty bunker fires nothing
+  if (idx == runnerIdx_) runnerIdx_ = -1;   // the runner goes; the units after it move up a place
+  else if (idx < runnerIdx_) runnerIdx_--;
   Unit u = roster_[idx];
   const UnitDef& d = unitDef(u);
   if (u == Unit::Ghost) {   // snipe cooldowns are kept per ghost in roster order
     int ord = (int)std::count(roster_.begin(), roster_.begin() + idx, Unit::Ghost);
     if (ord < (int)snipeReady_.size()) snipeReady_.erase(snipeReady_.begin() + ord);
+  }
+  if (u == Unit::Marauder) {   // so are the Marauders' fire timers
+    int ord = (int)std::count(roster_.begin(), roster_.begin() + idx, Unit::Marauder);
+    if (ord < (int)marauderReady_.size()) marauderReady_.erase(marauderReady_.begin() + ord);
   }
   int rm = (int)std::floor(d.cost[0] * 0.75f), rg = (int)std::floor(d.cost[1] * 0.75f);   // 75% refund
   minerals_ += rm;
@@ -2174,7 +2233,7 @@ void Game::researchUpgrade(const std::string& key, int tier) {
   struct UD { const char* key; Unit unit; const char* name; int cost[2]; struct T { int cost[2]; const char* desc; } tiers[3]; int nt; };
   static const UD U[3] = {
     {"superstim", Unit::Marine, "Super Stimpack", {250, 150},
-     {{{200, 80}, "Stimpack Lv.1 \xE2\x80\x94 needs 4 Marines"}, {{320, 130}, "Stimpack Lv.2 \xE2\x80\x94 needs 2 Marines"}, {{500, 200}, "Stimpack Lv.3 \xE2\x80\x94 needs 1 Marine (MAX)"}}, 3},
+     {{{200, 80}, "Stimpack Lv.1 \xE2\x80\x94 needs 4 Marines"}, {{320, 130}, "Stimpack Lv.2 \xE2\x80\x94 needs 2 Marines"}, {{500, 200}, "Stimpack Lv.3 \xE2\x80\x94 needs 1 Marine or Marauder (MAX)"}}, 3},
     {"concussive", Unit::Marauder, "Concussive Shell", {300, 75},
      {{{250, 80}, "AOE Lv.1 \xE2\x80\x94 blast radius 1.5 \xE2\x86\x92 2.0"}, {{400, 130}, "AOE Lv.2 \xE2\x80\x94 radius 2.6"}, {{600, 200}, "AOE Lv.3 \xE2\x80\x94 radius 3.2 (MAX)"}}, 3},
     {"snipe", Unit::Ghost, "Snipe", {250, 100},
@@ -2227,6 +2286,8 @@ void Game::resetRoster() {
   snipeLvl_ = concussiveLvl_ = superStimLvl_ = 0;
   sensorLvl_ = 0;
   snipeReady_.clear();
+  marauderReady_.clear();
+  runnerIdx_ = -1;
   syncMarines();
 }
 
@@ -2437,6 +2498,7 @@ void Game::update(float dt) {
   updateVikingMissiles(dt);
   checkBunkerHover(dt);
   ghostSnipeTick(dt);
+  marauderFireTick();
   updateShrike(dt);
   updateCorpses(dt);
   updateFlare(dt);      // before the lights: they follow its strength (and the nuke light's)
@@ -2953,6 +3015,7 @@ void Game::start(Mode m) {
 void Game::newGameState() {
   score_ = 0; wave_ = 1; kills_ = 0; minerals_ = 150; gas_ = 50;
   ammo_ = maxAmmo_ = cfg::base_ammo;
+  marauderShots_ = 0;
   bunkerHp_ = maxHp_ = 750;
   dmgLvl_ = armorLvl_ = hpLvl_ = ammoLvl_ = 0;
   for (int& a : armory_) a = 0;

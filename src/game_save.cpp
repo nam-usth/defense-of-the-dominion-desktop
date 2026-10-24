@@ -74,6 +74,7 @@ storage::Record Game::snapshot() const {
   r["snipeLvl"] = num(snipeLvl_);
   r["superStimLvl"] = num(superStimLvl_);
   r["stimAuto"] = stimAuto_ ? "1" : "0";
+  r["runner"] = num(runnerIdx_);
   r["sensorLvl"] = num(sensorLvl_);
   r["armoryHp"] = num(armory_[0]);
   r["armoryDmg"] = num(armory_[1]);
@@ -180,12 +181,15 @@ void Game::loadGame(bool autoSlot) {
   snipeLvl_ = (int)getNum(d, "snipeLvl");
   superStimLvl_ = std::clamp((int)getNum(d, "superStimLvl"), 0, 3);   // older saves: none (it indexes the Marines table)
   stimAuto_ = superStimUnlocked_ && getStr(d, "stimAuto") == "1";
+  runnerIdx_ = (int)getNum(d, "runner", -1);   // older saves: none elected
+  if (runnerIdx_ >= (int)roster_.size()) runnerIdx_ = -1;
   sensorLvl_ = std::clamp((int)getNum(d, "sensorLvl"), 0, 3);   // older saves: none (it indexes the range table)
   armory_[0] = (int)getNum(d, "armoryHp");   // HP / ammo purchases are already in maxHp / maxAmmo
   armory_[1] = (int)getNum(d, "armoryDmg");
   armory_[2] = (int)getNum(d, "armoryAmmo");
   armory_[3] = (int)getNum(d, "armoryCd");
   snipeReady_.assign(std::count(roster_.begin(), roster_.end(), Unit::Ghost), 0.f);
+  marauderReady_.assign(std::count(roster_.begin(), roster_.end(), Unit::Marauder), 0.f);
   gameT_ = (float)getNum(d, "gameT");
   victoryAchieved_ = getStr(d, "victoryAchieved") == "1";
   std::string gm = getStr(d, "gameMode");
