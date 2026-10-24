@@ -349,33 +349,46 @@ uniform vec3 uFogColor; uniform float uFogNear, uFogFar; uniform bool uFog;
 uniform vec4 uGlPos[8], uGlColor[8]; uniform int uGlCount;   // small lights: xyz + radius · rgb + reveal
 uniform sampler2D uTerrainTex;                                  // the ground's noise (R, G two fields, BA a fine slope)
 uniform float uNight, uNightDesat; uniform vec3 uMoonTint;      // how much of the fog is night; colour the ground loses
+uniform bool uGroundHD;                                         // GFX HIGH: the ground's fine layers (else SD)
 uniform bool uScenery, uInstAlpha;
 const float PI = 3.141592653589793;
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
 
-// The ground at xz, from the noise at three rotated scales: tiles of 150 and 36 units for the broad
-// layers (the field is 120 across: the first never repeats, the second has too many cells to band)
-// and 6 for the fine one. Two grass tones in soft patches at two scales, frayed by clumps; lighter and
-// darker swathes; soft dirt patches with a darker seam where they meet the grass, a worn ring round
-// the bunker, a fine slope for the light (faint on grass, crinkled on dirt), and shade at the
-// bunker's foot. lod >= 0 reads blurred mips without derivatives (a unit's fog target, in a
-// per-pixel branch): mip 2.5 blurs over about 1.7 units (a) and 0.4 (b).
-const mat2 ROT1 = mat2(0.825, 0.565, -0.565, 0.825), ROT2 = mat2(-0.320, 0.947, -0.947, -0.320), ROT3 = mat2(0.199, -0.980, 0.980, 0.199);
+// The ground at xz, from the noise at rotated scales: tiles of 150 and 36 units for the broad layers
+// (the field is 120 across: the first never repeats, the second has too many cells to band), 6 for
+// the fine one and 1.3 for a speckle. Two grass tones in soft patches at two scales, frayed by clumps;
+// lighter and darker swathes; soft dirt patches with a darker seam where they meet the grass, a worn
+// ring round the bunker, a fine slope for the light (crinkled on dirt, fainter on grass), and shade at
+// the bunker's foot. The broad layer is offset to put a mid-toned stretch of it under the bunker (as
+// on main). Every fine term is zero-mean, so a softer read keeps the tone:
+//  - HD (GFX HIGH): all four layers; detail (0..1, from the pixel's footprint) raises the grass's relief
+//    and the speckle (albedo only: crisp clumps) close up;
+//  - SD (GFX LOW): the broad layers a mip softer and no fine ones (two fetches, a flat light);
+//  - lod >= 0: blurred mips without derivatives (a unit's fog target, in a per-pixel branch): mip 2.5
+//    blurs over about 1.7 units (a) and 0.4 (b).
+const mat2 ROT1 = mat2(0.825, 0.565, -0.565, 0.825), ROT2 = mat2(-0.320, 0.947, -0.947, -0.320), ROT3 = mat2(0.199, -0.980, 0.980, 0.199), ROT4 = mat2(0.545, 0.839, -0.839, 0.545);
 const vec3 GRASS_LUSH = vec3(.184, .290, .102), GRASS_DRY = vec3(.290, .310, .133), DIRT_DARK = vec3(.290, .224, .141), DIRT_LIGHT = vec3(.431, .353, .227);
 struct Ground { vec3 alb; vec3 N; float ao; };
-Ground ground(vec2 xz, float lod) {
-  vec2 u1 = ROT1 * xz / 150.0, u2 = ROT2 * xz / 36.0, u3 = ROT3 * xz / 6.0;
-  vec4 a, b, c;
-  if (lod < 0.0) { a = texture(uTerrainTex, u1); b = texture(uTerrainTex, u2); c = texture(uTerrainTex, u3); }
-  else { a = textureLod(uTerrainTex, u1, lod); b = textureLod(uTerrainTex, u2, lod); c = vec4(0.5); }
+Ground ground(vec2 xz, float lod, float detail) {
+  vec2 u1 = ROT1 * xz / 150.0 + vec2(0.89, 0.85), u2 = ROT2 * xz / 36.0, u3 = ROT3 * xz / 6.0;
+  vec4 a, b, c = vec4(0.5);
+  float s = 0.5;
+  if (lod >= 0.0) { a = textureLod(uTerrainTex, u1, lod); b = textureLod(uTerrainTex, u2, lod); }
+  else if (uGroundHD) {
+    a = texture(uTerrainTex, u1); b = texture(uTerrainTex, u2); c = texture(uTerrainTex, u3);
+    s = texture(uTerrainTex, ROT4 * xz / 1.3).r;
+  } else { a = texture(uTerrainTex, u1, 1.0); b = texture(uTerrainTex, u2, 1.0); }
   float r = length(xz);
-  vec3 grass = mix(GRASS_LUSH, GRASS_DRY, smoothstep(0.36, 0.70, 0.6 * b.g + 0.4 * a.g + (c.g - 0.5) * 0.12)) * (0.8 + 0.4 * a.r) * (0.88 + 0.24 * c.r);
-  float dn = a.g * 0.65 + b.r * 0.35 + (c.r - 0.5) * 0.1;
-  float dirt = max(smoothstep(0.63, 0.73, dn), 0.85 * (1.0 - smoothstep(2.0, 4.6, r + (b.r - 0.5) * 1.6)));
+  vec3 grass = mix(GRASS_LUSH, GRASS_DRY, smoothstep(0.36, 0.70, 0.6 * b.g + 0.4 * a.g + (c.g - 0.5) * 0.12))
+             * (0.8 + 0.4 * a.r) * (1.0 + 0.16 * (c.r - 0.5)) * (1.0 + mix(0.06, 0.24, detail) * (s - 0.5));
+  float dn = a.g * 0.65 + b.r * 0.35, ring = 0.85 * (1.0 - smoothstep(2.0, 4.6, r + (b.r - 0.5) * 1.6));
+  float dirt = max(smoothstep(0.632, 0.732, dn + (c.r - 0.5) * 0.05), ring);
+  // the seam only round dirt the broad layers make (no dark specks where the fine term alone tips over)
+  float seam = 0.64 * dirt * (1.0 - dirt) * smoothstep(0.15, 0.5, max(smoothstep(0.632, 0.732, dn), ring));
   Ground G;
   vec3 soil = mix(DIRT_DARK, DIRT_LIGHT, clamp(0.5 + (b.g - 0.5) * 1.2 + (c.r - 0.5) * 1.0, 0.0, 1.0)) * (0.9 + 0.2 * a.r);
-  G.alb = mix(grass, soil, dirt) * (1.0 - 0.64 * dirt * (1.0 - dirt));
-  vec2 g = transpose(ROT3) * (c.ba * 2.0 - 1.0) * mix(0.3, 0.75, dirt);
+  G.alb = mix(grass, soil, dirt) * (1.0 - seam);
+  vec2 g = transpose(ROT3) * (c.ba * 2.0 - 1.0) * mix(mix(0.3, 0.45, detail), 0.75, dirt);
   G.N = normalize(vec3(-g.x, 1.0, -g.y));
   G.ao = mix(0.55, 1.0, smoothstep(1.4, 2.8, r));
   return G;
@@ -426,7 +439,10 @@ vec3 specBlinn(vec3 L, vec3 V, vec3 N, vec3 f0, float shin) {
 }
 void main() {
 #ifdef TERRAIN
-  Ground G = ground(vWorld.xz, -1.0);
+  // the close-up detail by the pixel's footprint: crisp grass close up, calm where a pixel spans more of
+  // the fine layer (no hatching); the footprint along the screen's axes, the same at any yaw
+  float wpp = max(length(dFdx(vWorld.xz)), length(dFdy(vWorld.xz)));
+  Ground G = ground(vWorld.xz, -1.0, 1.0 - smoothstep(0.011, 0.020, wpp));
   vec4 diffuse = vec4(mix(G.alb, vec3(dot(G.alb, LUMA)), uNightDesat), 1.0);   // at night it greys out
 #else
   vec4 diffuse = uInstAlpha ? vec4(uColor, uOpacity * vColor.r) : vec4(uColor * vColor, uOpacity);
@@ -526,7 +542,7 @@ void main() {
 #else
         vec3 dark;
         if (uScenery) dark = nightOf(1.5 * diffuse.rgb, Nn);   // paler than the field: a boulder in the dark reads as a stone, not a crouching Zerg
-        else { Ground U = ground(vWorld.xz, 2.5); dark = nightOf(U.alb, vec3(0.0, 1.0, 0.0)) * U.ao; }
+        else { Ground U = ground(vWorld.xz, 2.5, 0.0); dark = nightOf(U.alb, vec3(0.0, 1.0, 0.0)) * U.ao; }
 #endif
         target = mix(uFogColor, dark, uNight);
       }
@@ -882,6 +898,7 @@ void Renderer::render(const SceneParams& sp) {
     glUniform1f(U(p, "uNight"), sp.terrainTex ? sp.night : 0.f);   // (no texture: the old night, to the fog colour)
     glUniform1f(U(p, "uNightDesat"), sp.nightDesat);
     glUniform3fv(U(p, "uMoonTint"), 1, glm::value_ptr(sp.moonTint));
+    glUniform1i(U(p, "uGroundHD"), sp.groundHD);
     glowUniforms(p);
     glUniform1i(U(p, "uMap"), 0);
     glUniform1i(U(p, "uEmissiveMap"), 1);

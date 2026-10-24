@@ -99,13 +99,17 @@ shrinks geometrically (90 → 9) so the night closes in evenly, the sun turns or
 with the fog, and switching the cycle off lifts the night over 2.5 s, also behind the menu and title. The top bar
 shows the phase and the countdown to the next one (`☀ DAY  DUSK IN 0:42`, then `NIGHT IN`, `DAWN IN`, `DAY IN`).
 
-The field is drawn by the shader from one small tiling noise texture read at three rotated scales (no repeat
-shows): two grass tones, soft dirt patches, a worn ring round the bunker with shade at its foot, and a fine
-pebbly relief for the light (finer still close up on GFX HIGH). Clusters of faceted boulders lie out past the
-Sensor ring, and every Zerg, corpse and unit out of the bunker sits on a soft contact shadow. At night the
-field does not go black: the fog fades it to its own grey, moon-blue value under a cool moon from behind left
-(no shadows), a Zerg in the dark fades to the ground under it, the bunker's light is warm white, and the sky
-turns violet at dusk. Boulders stay paler than the field in the dark, so none reads as a crouching Zerg.
+The field is drawn by the shader from one tiling 512² gradient-noise texture, built at startup with its broad
+octaves domain-warped (no stripes, no straight edges), read at rotated scales of 150, 36 and 6 units (no repeat
+shows): two grass tones in soft patches with lighter and darker swathes, soft dirt patches, a worn ring round
+the bunker with shade at its foot, and a fine pebbly relief for the light. GFX HIGH draws it in HD: closer in,
+by each pixel's footprint, the grass gains relief and a fourth, finer speckle (the overview stays calm, with no
+hatching). GFX LOW draws it in SD: the broad layers alone, a little softer, in the same tones (every fine term
+averages out). Clusters of faceted boulders lie out past the Sensor ring, and every Zerg, corpse and unit out
+of the bunker sits on a soft contact shadow. At night the field does not go black: the fog fades it to its own
+grey, moon-blue value under a cool moon from behind left (no shadows), a Zerg in the dark fades to the ground
+under it, the bunker's light is warm white, and the sky turns violet at dusk. Boulders stay paler than the
+field in the dark, so none reads as a crouching Zerg.
 
 Shooting in the dark: tracers ignore the fog and burn white-hot in a soft halo over a faint pool of light on the
 ground, so a volley shows where it goes past the lit edge; every round from the bunker and the Shrike draws the
@@ -259,7 +263,8 @@ and logs the volleys fired · `--post on|off` the HDR post-processing. Each clea
 
 - Desktop window, native OpenGL: three.js materials re-implemented in one shader (Standard / Lambert / Phong /
   Basic, SC2 team colour, DXT5nm normal maps), PCF sun shadows, radial fog, instanced enemies and particles.
-- GFX LOW turns off shadows and 4× MSAA (the web LOW turned off shadows and HiDPI rendering).
+- GFX LOW turns off shadows and 4× MSAA and draws the field in SD (the web LOW turned off shadows and HiDPI
+  rendering).
 - The ground (grass tones, dirt, boulders, contact shadows) and the moonlit night are desktop-only so far; the
   web field is still flat green with dirt quads and fades to the near-black fog colour at night.
 - `help` in the cheat console lists the codes in the console itself (the web printed them to the browser console).

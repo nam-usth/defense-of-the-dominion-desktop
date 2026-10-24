@@ -133,10 +133,12 @@ struct SceneParams {
   int vpX = 0, vpY = 0, vpW = 1, vpH = 1;   // framebuffer pixels, origin bottom-left
   PostParams post;                          // HDR target, bloom, tone curve (post.h)
   // night: how much of the fog is darkness (the field fades to its moonlit value, not to the fog colour),
-  // how much colour the ground and scenery lose; the ground's noise texture (TERRAIN)
+  // how much colour the ground and scenery lose; the ground's noise texture (TERRAIN) and its detail
+  // (HD: the fine layers and a finer speckle; SD: softer, the broad layers alone)
   float night = 0, nightDesat = 0;
   glm::vec3 moonTint{0.20f, 0.27f, 0.42f};
   const Texture* terrainTex = nullptr;
+  bool groundHD = true;
 };
 
 // Soft round sprites with per-particle size / colour / alpha (the web version's

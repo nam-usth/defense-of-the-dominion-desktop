@@ -270,7 +270,7 @@ void Game::buildScene() {
   rebuildBunkerTris();
 }
 
-// The ground's noise (render.cpp LIT_FS, TERRAIN, reads it at three rotated scales): 512² of
+// The ground's noise (render.cpp LIT_FS, TERRAIN, reads it at rotated scales): 512² of
 // gradient-noise fbm that tiles. Many cells to the tile (no low harmonic to repeat as bands), each
 // octave's lattice offset (no lattice lines in common) and the broad octaves warped (no straight
 // edges). R and G two unrelated fields (tone, brightness, dirt; the fine clumps close up), BA the
@@ -338,8 +338,8 @@ void Game::buildTerrainTex() {
         H[i] = fbm(oH, u, v) + 0.35f * (1 - std::abs(2 * fbm(oK, u, v)));
       }
   };
-  {   // in bands on a few threads (about 50 ms of work on one)
-    int T = std::clamp((int)std::thread::hardware_concurrency(), 1, 8);
+  {   // in bands on up to 4 threads (at startup: 45-100 ms of work on one)
+    int T = std::clamp((int)std::thread::hardware_concurrency(), 1, 4);
     std::vector<std::thread> ts;
     for (int t = 1; t < T; t++) ts.emplace_back(rows, N * t / T, N * (t + 1) / T);
     rows(0, N / T);
@@ -356,24 +356,26 @@ void Game::buildTerrainTex() {
   normalise(R, 0.2f);
   normalise(G, 0.165f);
   std::vector<glm::vec2> slope(N * N);
-  float most = 1e-6f;
-  for (int y = 0; y < N; y++) {
-    const float *h = &H[y * N], *hu = &H[(y + 1) % N * N], *hd = &H[(y + N - 1) % N * N];
+  double ss = 0;
+  for (int y = 0; y < N; y++) {   // Sobel: the slope of a slightly smoothed height (no texel-sized grain)
+    const float *p = &H[(y + N - 1) % N * N], *q = &H[y * N], *r = &H[(y + 1) % N * N];
     for (int x = 0; x < N; x++) {
-      int xl = x ? x - 1 : N - 1, xr = x + 1 < N ? x + 1 : 0;
-      glm::vec2 g(h[xr] - h[xl], hu[x] - hd[x]);
+      int a = x ? x - 1 : N - 1, b = x + 1 < N ? x + 1 : 0;
+      glm::vec2 g(p[b] + 2 * q[b] + r[b] - p[a] - 2 * q[a] - r[a], r[a] + 2 * r[x] + r[b] - p[a] - 2 * p[x] - p[b]);
       slope[y * N + x] = g;
-      most = std::max(most, std::max(std::abs(g.x), std::abs(g.y)));
+      ss += glm::dot(g, g);
     }
   }
+  const float sk = 0.3056f / (float)std::sqrt(std::max(1e-12, ss / (N * N)));   // to main's RMS slope (no single texel sets it)
   std::vector<uint8_t> px((size_t)N * N * 4);
   for (int i = 0; i < N * N; i++) {   // (+0.5, truncated: rounded, all positive)
+    glm::vec2 g = glm::clamp(slope[i] * sk, -1.f, 1.f);
     px[i * 4] = (uint8_t)(255 * R[i] + .5f);
     px[i * 4 + 1] = (uint8_t)(255 * G[i] + .5f);
-    px[i * 4 + 2] = (uint8_t)(128.5f + 127 * glm::clamp(slope[i].x / most, -1.f, 1.f));
-    px[i * 4 + 3] = (uint8_t)(128.5f + 127 * glm::clamp(slope[i].y / most, -1.f, 1.f));
+    px[i * 4 + 2] = (uint8_t)(128.5f + 127 * g.x);
+    px[i * 4 + 3] = (uint8_t)(128.5f + 127 * g.y);
   }
-  terrainTex_ = Texture::create(N, N, px.data(), true, 4);
+  terrainTex_ = Texture::create(N, N, px.data(), true, 8);   // (anisotropy clamped to the card's most)
 }
 
 // The night effects' textures (drawn here: no art for them), shapes and materials
@@ -3370,6 +3372,7 @@ void Game::render() {
   sp.night = dnLightF_;
   sp.nightDesat = 0.55f * dnLightF_;
   sp.terrainTex = terrainTex_;
+  sp.groundHD = gfxHigh_;
   sp.fogColor = fogCol_ + glm::vec3(1, 0.95f, 0.85f) * (0.9f * nkFlash) + glm::vec3(1, 0.45f, 0.15f) * (0.12f * nukeLightK() * dnFactor_);
   sp.fogNear = fogNear_;
   sp.fogFar = fogFar_;
