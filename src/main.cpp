@@ -17,10 +17,11 @@
 //   --bench-fire           test load: fire every volley at the nearest enemy (magazine refilled)
 //   --cpu-particles        this run without the GPU particles (the stored setting is kept)
 //   --ui-scale S           override the monitor's UI scale
-//   --gpu dedicated|integrated   graphics card for this run (the menu stores the choice)
+//   --gpu dedicated|integrated   graphics card for this run (the menu stores the choice; Windows only)
+//   --platform x11|wayland  Linux: the windowing system (default: X11 when $DISPLAY is set, else Wayland)
 //   --resize WxH           change the window size after --start (tests the HUD rescale)
 //   --open menu:TAB|tour|howto   a menu tab (game, settings, display, controls, tutorial, cheats), the HUD tour, HOW TO PLAY
-//   --data DIR             settings and saves in DIR instead of %APPDATA% (a new player; the real ones untouched)
+//   --data DIR             settings and saves in DIR instead of %APPDATA% / ~/.local/share (a new player; the real ones untouched)
 //   --no-tutorial          this run without the HUD tour and hints (the stored setting is kept)
 //   --dn SECONDS           day/night cycle on, SECONDS into it (78 dusk, 102 night, 156 dawn)
 //   --hold X,Y,S           1 s after --start, hold the left button at (X, Y) (fractions of the window) for S s;
@@ -35,6 +36,7 @@
 #include <thread>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -54,7 +56,6 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#endif
 
 // Hybrid-graphics laptops: ask the NVIDIA (Optimus) / AMD (PowerXpress) driver for
 // the discrete GPU — without these exports Windows runs the game on the integrated one
@@ -62,6 +63,7 @@ extern "C" {
 __declspec(dllexport) unsigned long NvOptimusEnablement = 1;
 __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 }
+#endif
 
 static Game* g_game = nullptr;
 
@@ -82,7 +84,7 @@ int main(int argc, char** argv) {
   int winW = 0, winH = 0;
   float uiScaleArg = 0;
   bool perf = false, vsync = true, benchFire = false, cpuParticles = false;
-  std::string gpuArg;
+  std::string gpuArg, platformArg;
   int resizeW = 0, resizeH = 0;
   int threads = -1;
   std::string shotPath, startMode, openPanel, dataDir;
@@ -102,6 +104,7 @@ int main(int argc, char** argv) {
     else if (a == "--bench-fire") benchFire = true;
     else if (a == "--cpu-particles") cpuParticles = true;
     else if (a == "--gpu") gpuArg = next();
+    else if (a == "--platform") platformArg = next();
     else if (a == "--resize") { std::string v = next(); sscanf(v.c_str(), "%dx%d", &resizeW, &resizeH); }
     else if (a == "--threads") threads = std::atoi(next().c_str());
     else if (a == "--no-vsync") vsync = false;
@@ -139,13 +142,18 @@ int main(int argc, char** argv) {
   const auto appStart = std::chrono::steady_clock::now();
   auto sinceStart = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - appStart).count(); };
   std::string dir = storage::init(dataDir);
-  logOpen(dir.empty() ? "dotd_desktop.log" : dir + "\\dotd_desktop.log");
+  logOpen(dir.empty() ? "dotd_desktop.log" : (std::filesystem::path(dir) / "dotd_desktop.log").string());
   if (dir.empty()) logWarn("no writable save folder: settings and saves last for this session only");
   if (!findAssetRoot()) { fatal("The assets folder was not found next to the game (assets/models/terran/bunker.obj)."); return 1; }
   // Graphics card: the driver reads these exports when the GL context is created,
   // so the menu's choice (or --gpu) takes effect at startup — checked: Intel with 0, the RTX with 1
   std::string gpu = gpuArg.empty() ? storage::get("gpu", "dedicated") : gpuArg;
+#ifdef _WIN32
   if (gpu == "integrated") { NvOptimusEnablement = 0; AmdPowerXpressRequestHighPerformance = 0; }
+#else
+  // Linux: the card is picked outside the game (DRI_PRIME=1 for Mesa, prime-run for NVIDIA)
+  if (!gpuArg.empty()) logWarn("--gpu has no effect on Linux: start the game with DRI_PRIME=1 (Mesa) or prime-run (NVIDIA)");
+#endif
 
   // The workers parse the assets and the audio device opens while the window is created
   jobs::init(threads);
@@ -153,7 +161,18 @@ int main(int argc, char** argv) {
   audio::init(std::strtof(storage::get("volume", "0.6").c_str(), nullptr), storage::get("muted") == "1", storage::get("music", "1") != "0");
 
   glfwSetErrorCallback([](int code, const char* desc) { logError("GLFW %d: %s", code, desc); });
+#ifdef __linux__
+  // X11 (XWayland on a Wayland desktop) wherever there is an X server: GLFW's Wayland backend can
+  // neither place the window nor switch video modes, which the Display menu does
+  int platform = platformArg == "wayland" ? GLFW_PLATFORM_WAYLAND
+               : platformArg == "x11" || (platformArg.empty() && std::getenv("DISPLAY")) ? GLFW_PLATFORM_X11 : GLFW_ANY_PLATFORM;
+  if (platform != GLFW_ANY_PLATFORM && glfwPlatformSupported(platform)) glfwInitHint(GLFW_PLATFORM, platform);
+  else if (!platformArg.empty()) logWarn("--platform %s: not built into this binary", platformArg.c_str());
+#endif
   if (!glfwInit()) { fatal("GLFW could not initialise."); return 1; }
+#ifdef __linux__
+  logInfo("windowing: %s", glfwGetPlatform() == GLFW_PLATFORM_WAYLAND ? "Wayland" : glfwGetPlatform() == GLFW_PLATFORM_X11 ? "X11" : "other");
+#endif
   // OpenGL 4.3 (compute shaders for the GPU particles), else 3.3 below
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);

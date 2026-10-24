@@ -39,6 +39,10 @@ static fs::path exeDir() {
   wchar_t buf[MAX_PATH];
   DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
   if (n > 0 && n < MAX_PATH) return fs::path(buf).parent_path();
+#elif defined(__linux__)
+  std::error_code ec;
+  fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+  if (!ec) return exe.parent_path();
 #endif
   return fs::current_path();
 }

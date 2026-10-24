@@ -18,8 +18,52 @@ build/dotd.exe
 ```
 
 The game finds `assets/` next to the executable or in a parent folder. Settings, saves and the log
-(`dotd_desktop.log`) live in `%APPDATA%\DefenseOfTheDominion`. `CMakeLists.txt` is an alternative build for
-CMake users; it was not tested here (no CMake on the build machine).
+(`dotd_desktop.log`) live in `%APPDATA%\DefenseOfTheDominion`. `CMakeLists.txt` also builds on Windows, but
+that half was not tested (no CMake on the build machine); it is the Linux build below.
+
+## Build and run (Linux)
+
+X11 and Wayland, GCC 11+ or Clang, CMake 3.16+ and Ninja. The packages on Debian / Ubuntu:
+
+```bash
+sudo apt install g++ cmake ninja-build pkg-config libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev libavformat-dev libavcodec-dev libavutil-dev fonts-dejavu
+```
+
+```bash
+cmake -S . -B build/linux -G Ninja
+```
+
+```bash
+cmake --build build/linux
+```
+
+```bash
+build/linux/dotd
+```
+
+- **Windowing.** GLFW's X11 and Wayland backends are both built in. The game runs on X11 whenever `$DISPLAY`
+  is set (XWayland on a Wayland desktop), because GLFW's Wayland backend can neither place the window nor change
+  video modes, and the Display menu does both. `--platform wayland` runs it on Wayland natively.
+  `-DDOTD_WAYLAND=OFF` or `-DDOTD_X11=OFF` leaves one backend out. GLFW opens libX11, libwayland-client, libGL
+  and libEGL at run time, so the binary links none of them.
+- **Music.** The tracks are AAC, the same files as the web and Windows versions, and FFmpeg's libavformat and
+  libavcodec decode them. Linux has no system AAC decoder that miniaudio can use, and converting the tracks to
+  Ogg or MP3 would add a second lossy 13 MB copy that has to be kept in step. FFmpeg comes with nearly every
+  desktop Linux. The binary needs the FFmpeg major version it was built against, so build it on the machine that
+  runs it. `-DDOTD_MUSIC=OFF` builds without FFmpeg: sound effects only, and the log says the music is off.
+- **Fonts.** Bahnschrift, Consolas and Segoe UI Symbol are Windows fonts. The game uses them if they are
+  installed (for example in `~/.local/share/fonts`). Otherwise it uses DejaVu Sans Condensed, DejaVu Sans Mono and
+  DejaVu Sans, then Ubuntu, Liberation or Noto. The log names the fonts it picked.
+- **Saves.** Settings, saves and the log are in `$XDG_DATA_HOME/DefenseOfTheDominion`, or
+  `~/.local/share/DefenseOfTheDominion` if `XDG_DATA_HOME` is not set.
+- **Graphics card.** The menu does not list the cards on Linux. To pick the dedicated one, start the game with
+  `DRI_PRIME=1 build/linux/dotd` (Mesa: AMD, Intel, nouveau) or `prime-run build/linux/dotd` (NVIDIA's driver).
+
+Tested on Ubuntu 22.04 under WSLg: GCC 11.4, FFmpeg 4.4, X11 through XWayland and native Wayland, sound
+through PulseAudio. WSLg's Mesa D3D12 driver stops at OpenGL 4.1, so the game falls back to 3.3 with CPU
+particles there (about 40 FPS at 1600×900). With Mesa's llvmpipe (`LIBGL_ALWAYS_SOFTWARE=1`, OpenGL 4.5), the GPU
+particles' compute shaders compile and run. Not tested: a native Linux desktop, AMD / Intel / NVIDIA drivers on
+Linux, PipeWire, and FFmpeg 5.1+. The code handles 5.1's channel-layout API but was compiled only against 4.4.
 
 Controls are the web version's (click, or hold the button for full auto; R, N, T, B, 1–4, wheel, Insert/Delete,
 Home, M/Esc, Q, Y, K; type `dotd` for the cheat console), plus **F3** for a performance overlay.
@@ -35,7 +79,8 @@ screen, SETTINGS (beside HOW TO PLAY) opens it on the Settings tab, and M / Esc 
 - **Display** (desktop only) — windowed or fullscreen, resolution (window presets that fit the monitor, or the
   monitor's video modes), applied at once: the HUD keeps its 1600×900 layout scaled to the height (its fonts are
   rebuilt). The graphics card on hybrid laptops, dedicated (e.g. NVIDIA) or integrated (Intel): the driver picks it
-  when the game starts, so a change offers *Restart now* (default: dedicated). The frame-time overlay.
+  when the game starts, so a change offers *Restart now* (default: dedicated; on Linux the menu says how to pick
+  the card instead). The frame-time overlay.
 - **Controls** — the key list. **Tutorial** — hints on / off, HUD TOUR, START OVER. **Cheats** — the console.
 
 ## Tutorial
@@ -140,10 +185,10 @@ hull, the Zerg and the rocks it faces.
 |---|---|
 | main (GL) | simulation, draw submission, HUD (Dear ImGui), GPU uploads of finished assets (≤ 4 ms per frame) |
 | 4 workers (`src/jobs.cpp`) | parsing OBJ / GLB models, decoding DDS / PNG / JPG, normalising geometry, extracting the hologram's feature edges |
-| audio device init | opening the WASAPI output (≈ 1.2 s on the test laptop) without holding up the window |
+| audio device init | opening the WASAPI output (≈ 1.2 s on the test laptop; PulseAudio / ALSA on Linux) without holding up the window |
 | font atlas | building the glyph atlas while the game initialises |
 | audio callback (miniaudio) | synthesising the effects, mixing, compressor |
-| music decoder | AAC → PCM with Media Foundation, into a ring buffer |
+| music decoder | AAC → PCM with Media Foundation (Linux: FFmpeg), into a ring buffer |
 
 Per-frame loops (particles, bullet hit tests) stay on the main thread on purpose: measured, a parallel-for there
 made the frame slower (update 0.27 ms with 19 workers vs 0.11 ms serial in the heaviest scene below), because
@@ -196,8 +241,9 @@ the start; also `hire:marine|marauder|ghost` and `research:KEY[:TIER]`, paid for
 `--open roster|menu|cheat|menu:TAB|tour|tour:N|howto` (TAB: game, settings, display, controls, tutorial, cheats) ·
 `--zoom-in N` · `--shot FILE --after S` saves a screenshot and exits · `--perf` overlay + log line ·
 `--no-vsync` · `--threads N` (0 = no workers) · `--bench-fire` fires every volley automatically · `--ui-scale S` ·
-`--gpu dedicated|integrated` · `--resize WxH` (after --start) · `--data DIR` settings and saves in DIR (a new
-player; the real ones untouched) · `--no-tutorial` this run without the tour and hints · `--dn S` day/night on,
+`--gpu dedicated|integrated` (Windows) · `--platform x11|wayland` (Linux) · `--resize WxH` (after --start) ·
+`--data DIR` settings and saves in DIR (a new player; the real ones untouched) · `--no-tutorial` this run without
+the tour and hints · `--dn S` day/night on,
 S seconds into the cycle · `--hold X,Y,S` holds the fire button at (X, Y) (fractions of the window) for S seconds
 and logs the volleys fired · `--post on|off` the HDR post-processing. Each cleared wave logs how it was resupplied.
 
@@ -207,8 +253,10 @@ and logs the volleys fired · `--post on|off` the HDR post-processing. Each clea
   Basic, SC2 team colour, DXT5nm normal maps), PCF sun shadows, radial fog, instanced enemies and particles.
 - GFX LOW turns off shadows and 4× MSAA (the web LOW turned off shadows and HiDPI rendering).
 - `help` in the cheat console lists the codes in the console itself (the web printed them to the browser console).
-- Saves are `key=value` files in `%APPDATA%` instead of `localStorage`, so web saves do not carry over.
-- Music decoding uses Windows Media Foundation: the game is Windows-only as written.
+- Saves are `key=value` files in `%APPDATA%` (Linux: `~/.local/share`) instead of `localStorage`, so web saves
+  do not carry over.
+- Windows and Linux. Music decoding uses Media Foundation on Windows and FFmpeg on Linux (see Build and run
+  (Linux)). macOS is not supported: no Cocoa build and no AAC decoder there.
 
 ## Layout
 
@@ -219,12 +267,13 @@ src/game_ui.cpp     HUD, command card, roster, menu, tutorial, title / HOW TO PL
 src/game_save.cpp   save / load, cheat codes
 src/render.*        geometry, materials, shadows, instancing, particles
 src/assets.*        DDS / PNG / JPG, OBJ / GLB loading on workers, feature edges
-src/audio.*         synthesised effects, AAC music
+src/audio.*         synthesised effects, AAC music (Media Foundation / FFmpeg)
 src/jobs.*          worker pool
 src/display.*       graphics cards (DXGI), resolutions, fullscreen, HUD scale, restart
 src/ui.*            fonts, text, cut-corner panels, SVG icons
-src/storage.*       %APPDATA% persistence
-third_party/        GLFW 3.4 (+ its glad loader), Dear ImGui 1.91.9, cgltf 1.14, stb, miniaudio 0.11.21, glm 1.0.1
+src/storage.*       %APPDATA% / XDG persistence
+third_party/        GLFW 3.4 (+ its glad loader and Wayland protocol XML), Dear ImGui 1.91.9, cgltf 1.14, stb,
+                    miniaudio 0.11.21, glm 1.0.1
 assets/             SC2 models, textures, icons and music
 ```
 

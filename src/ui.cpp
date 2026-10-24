@@ -5,6 +5,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <functional>
@@ -31,6 +32,31 @@ ImFont* nearest(std::map<float, ImFont*>& m, float px) {
     if (std::abs(s - px) < bd) { bd = std::abs(s - px); best = f; }
   return best ? best : ImGui::GetFont();
 }
+
+#ifndef _WIN32
+// Linux: the first of these font files found in the usual font folders (each distribution lays
+// /usr/share/fonts out its own way, so they are found by file name; one scan per run)
+std::string systemFont(std::initializer_list<const char*> names) {
+  namespace fs = std::filesystem;
+  static std::map<std::string, std::string> files;   // file name → path, the first found wins
+  static bool scanned = false;
+  if (!scanned) {
+    scanned = true;
+    std::vector<fs::path> roots;
+    if (const char* home = std::getenv("HOME")) roots.push_back(fs::path(home) / ".local/share/fonts");
+    roots.push_back("/usr/local/share/fonts");
+    roots.push_back("/usr/share/fonts");
+    for (const fs::path& r : roots) {
+      std::error_code ec;
+      for (fs::recursive_directory_iterator it(r, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec))
+        if (it->is_regular_file(ec)) files.emplace(it->path().filename().string(), it->path().string());
+    }
+  }
+  for (const char* n : names)
+    if (auto f = files.find(n); f != files.end()) return f->second;
+  return "";
+}
+#endif
 }  // namespace
 
 float S() { return g_scale; }
@@ -45,19 +71,35 @@ bool init(float scale) {
                                    0x221E, 0x221E, 0x237C, 0x237C, 0x25B2, 0x25B2, 0x25B8, 0x25B8, 0x25BE, 0x25BE,
                                    0x25C0, 0x25C0, 0x25C6, 0x25C6, 0x25C8, 0x25C8, 0x2600, 0x2600, 0x2605, 0x2605, 0x263D, 0x263D,
                                    0x2713, 0x2713, 0x2715, 0x2715, 0x2717, 0x2717, 0x2759, 0x2759, 0};
-  const char* uiPath = "C:/Windows/Fonts/bahnschrift.ttf";
-  const char* monoPath = "C:/Windows/Fonts/consola.ttf";
-  const char* symPath = "C:/Windows/Fonts/seguisym.ttf";
   namespace fs = std::filesystem;
+#ifdef _WIN32
+  const std::string uiPath = "C:/Windows/Fonts/bahnschrift.ttf";
+  const std::string monoPath = "C:/Windows/Fonts/consola.ttf";
+  const std::string symPath = "C:/Windows/Fonts/seguisym.ttf";
   bool haveUi = fs::exists(uiPath), haveMono = fs::exists(monoPath), haveSym = fs::exists(symPath);
-  if (!haveUi) logWarn("font %s not found — using ImGui's default font", uiPath);
-  auto add = [&](const char* path, bool have, float px) -> ImFont* {
+  if (!haveUi) logWarn("font %s not found — using ImGui's default font", uiPath.c_str());
+#else
+  // The Windows fonts if they were installed, else stand-ins: a condensed sans for Bahnschrift, a mono for
+  // Consolas, and DejaVu Sans for the symbols of Segoe UI Symbol (fonts-dejavu-core / -extra on Debian / Ubuntu)
+  const std::string uiPath = systemFont({"bahnschrift.ttf", "DejaVuSansCondensed.ttf", "Ubuntu-C.ttf", "LiberationSansNarrow-Regular.ttf",
+                                         "NotoSans-Regular.ttf", "DejaVuSans.ttf", "LiberationSans-Regular.ttf"});
+  const std::string monoPath = systemFont({"consola.ttf", "DejaVuSansMono.ttf", "UbuntuMono-R.ttf", "LiberationMono-Regular.ttf", "NotoSansMono-Regular.ttf"});
+  const std::string symPath = systemFont({"seguisym.ttf", "DejaVuSans.ttf", "NotoSansSymbols2-Regular.ttf"});
+  bool haveUi = !uiPath.empty(), haveMono = !monoPath.empty(), haveSym = !symPath.empty();
+  static bool logged = false;   // init runs again on every HUD rescale
+  if (!logged) {
+    logged = true;
+    if (haveUi) logInfo("fonts: %s, %s%s%s", uiPath.c_str(), haveMono ? monoPath.c_str() : "(no mono font)", haveSym ? ", symbols from " : "", symPath.c_str());
+    else logWarn("fonts: no DejaVu, Ubuntu, Liberation or Noto font found — using ImGui's default font (install fonts-dejavu)");
+  }
+#endif
+  auto add = [&](const std::string& path, bool have, float px) -> ImFont* {
     ImFontConfig c;
     c.OversampleH = 2;
     c.OversampleV = 2;
     c.PixelSnapH = false;
     ImFont* f = nullptr;
-    if (have) f = io.Fonts->AddFontFromFileTTF(path, px * scale, &c, ranges);
+    if (have) f = io.Fonts->AddFontFromFileTTF(path.c_str(), px * scale, &c, ranges);
     if (!f) {
       ImFontConfig d;
       d.SizePixels = px * scale;
@@ -68,7 +110,7 @@ bool init(float scale) {
       m.MergeMode = true;
       m.OversampleH = 2;
       m.OversampleV = 2;
-      io.Fonts->AddFontFromFileTTF(symPath, px * scale, &m, ranges);
+      io.Fonts->AddFontFromFileTTF(symPath.c_str(), px * scale, &m, ranges);
     }
     return f;
   };

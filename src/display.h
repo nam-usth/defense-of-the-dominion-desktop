@@ -11,7 +11,8 @@ struct Gpu {
   std::string name;
   bool dedicated;   // its own video memory (NVIDIA / AMD discrete) vs integrated
 };
-std::vector<Gpu> adapters();   // hardware adapters (DXGI); virtual / software ones are left out
+std::vector<Gpu> adapters();   // hardware adapters (DXGI); virtual / software ones are left out. Linux: none
+const char* noGpuChoiceNote();   // the menu's line when adapters() offers no dedicated + integrated pair
 
 struct Size { int w, h; };
 std::vector<Size> windowSizes(GLFWwindow* win);       // 16:9 presets that fit the monitor's work area
