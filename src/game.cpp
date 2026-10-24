@@ -134,6 +134,8 @@ bool Game::init(GLFWwindow* win) {
   gpuFx_.init(131072, 32768);   // false without OpenGL 4.3: the CPU particles stay
   gpuFxOn_ = storage::get("gpuParticles", "1") != "0";
   R.setGpuParticles(gpuFx() ? &gpuFx_ : nullptr);
+  weatherFx_.init();   // false: no rain drawn (the ground still wets)
+  weatherOn_ = storage::get("weather", "1") != "0";
   applyDNLights(0);
   tutLoad();
   roster_ = {Unit::Marine, Unit::Marine};
@@ -2059,25 +2061,39 @@ static const GfxLights GFX_HIGH = {0x99aabb, 0.7f, 1.8f, 0.5f}, GFX_LOW = {0xaaa
 void Game::applyDNLights(float f) {
   dnLightF_ = f;
   const GfxLights& b = gfxHigh_ ? GFX_HIGH : GFX_LOW;
-  ambCol_ = lerp3(hexColor(b.ambCol), hexColor(0x223459), f);
-  ambI_ = b.amb * (1 - f) + 0.26f * f;
+  // the weather: clouds dim the sun and flatten the day's light toward grey, and at night hide part
+  // of the moon; a downpour darkens the day further; rain hazes the distance by day (the night's
+  // fog, which what the player can see follows, is left as it is). A clear sky changes nothing
+  const float cl = weather_.cloud, cd = cl * (1 - f), rn = weather_.rain, haze = std::max(0.35f * cl, rn);
+  auto grey = [](const glm::vec3& c, float k) { return lerp3(c, glm::vec3(glm::dot(c, glm::vec3(0.299f, 0.587f, 0.114f))), k); };
+  ambCol_ = grey(lerp3(hexColor(b.ambCol), hexColor(0x223459), f), 0.5f * cd);
+  ambI_ = (b.amb * (1 - f) + 0.26f * f) * (1 + 0.3f * cd) * (1 - 0.15f * rn * (1 - f));
   // sun: day full → night off, through a warm low sun at dusk / dawn
-  sunCol_ = f < 0.45f ? lerp3(hexColor(0xfff4cc), hexColor(0xff9a55), f / 0.45f) : lerp3(hexColor(0xff9a55), hexColor(0x001122), (f - 0.45f) / 0.55f);
-  sunI_ = b.sun * (1 - f);
+  sunCol_ = grey(f < 0.45f ? lerp3(hexColor(0xfff4cc), hexColor(0xff9a55), f / 0.45f) : lerp3(hexColor(0xff9a55), hexColor(0x001122), (f - 0.45f) / 0.55f), 0.4f * cl);
+  sunI_ = b.sun * (1 - f) * (1 - 0.6f * cl) * (1 - 0.35f * rn);
   // the day's fill light becomes a cool moon from behind left (no shadows: cheaper, and a shadow
   // could give a hidden Zerg away)
   fillCol_ = lerp3(hexColor(0x4488cc), hexColor(0x8fa8e8), f);
   fillPos_ = glm::mix(glm::vec3(-8, 10, -6), glm::vec3(-9, 16, -12), f);
-  fillI_ = b.fill * (1 - f) + 0.32f * f;
+  fillI_ = (b.fill * (1 - f) + 0.32f * f) * (1 - 0.4f * cl * f);
   bunkerLightI_ = f * 4.4f;
   // Fog: the radius shrinks by the same ratio every second (geometric blend).
   // Blended linearly, it stayed outside the battlefield for the first 60% of
   // dusk, then closed in on the bunker all at once.
-  fogNear_ = DN_DAY_FOG_NEAR * std::pow(DN_NIGHT_FOG_NEAR / DN_DAY_FOG_NEAR, f);
-  fogFar_ = DN_DAY_FOG_FAR * std::pow(DN_NIGHT_FOG_FAR / DN_DAY_FOG_FAR, f);
+  const float dayNear = DN_DAY_FOG_NEAR * (1 - 0.45f * haze), dayFar = DN_DAY_FOG_FAR * (1 - 0.35f * haze);
+  fogNear_ = dayNear * std::pow(DN_NIGHT_FOG_NEAR / dayNear, f);
+  fogFar_ = dayFar * std::pow(DN_NIGHT_FOG_FAR / dayFar, f);
   // the sky: violet at dusk against the low orange sun, night blue (the fogged field itself fades
-  // to its own moonlit value: SceneParams::night)
+  // to its own moonlit value: SceneParams::night); a grey rain haze by day
   fogCol_ = f < 0.5f ? lerp3(hexColor(0x2a3a18), hexColor(0x1d1f33), f / 0.5f) : lerp3(hexColor(0x1d1f33), hexColor(0x070c18), (f - 0.5f) / 0.5f);
+  fogCol_ = lerp3(fogCol_, hexColor(0x3c4648), 0.6f * cd);
+  // the sky the puddles mirror: blue, or the clouds' grey (dark under a downpour), a violet dusk,
+  // night blue
+  const glm::vec3 zen = lerp3(hexColor(0x5a7cab), hexColor(0x6c747a) * (1 - 0.4f * rn), cl),
+                  hor = lerp3(hexColor(0x9db2c6), hexColor(0x858c90) * (1 - 0.3f * rn), cl);
+  const float dusk = 4 * f * (1 - f);
+  skyZen_ = lerp3(lerp3(zen, hexColor(0x141c30), f), hexColor(0x3a2f58), 0.5f * dusk);
+  skyHor_ = lerp3(lerp3(hor, hexColor(0x222a40), f), hexColor(0x7a5060), 0.5f * dusk);
 }
 
 // Night factor at time t of the cycle: 0 through the day, eased up through dusk,
@@ -2099,9 +2115,9 @@ void Game::updateDayNight(float dt) {
   // the cycle on / off is blended (the night lifts over DN_SLEW s, not at once)
   float step = dt / DN_SLEW;
   dnFactor_ = std::max(dnFactor_ - step, std::min(dnFactor_ + step, target));
-  // the lights follow the factor lifted by a flare: re-applied also as one lights up or burns out
-  float lit = dnLit();
-  if (lit != dnLightF_) applyDNLights(lit);
+  // the lights follow the factor lifted by a flare (re-applied also as one lights up or burns out)
+  // and the weather
+  applyDNLights(dnLit());
 }
 
 // Top-bar label (a night still lifting after the cycle restarted at day reads DAWN)
@@ -2144,6 +2160,41 @@ void Game::setDayNightTime(float t) {   // test: the cycle on at t seconds, ligh
   dnTime_ = std::fmod(std::max(0.f, t), DN_CYCLE);
   dnFactor_ = dnCycleFactor(dnTime_);
   applyDNLights(dnLit());
+}
+
+// ─── Weather ─────────────────────────────────────────────────────────────────
+void Game::setWeatherOn(bool on) {
+  weatherOn_ = on;
+  storage::set("weather", on ? "1" : "0");
+  setStatus(on ? "Weather ON \xE2\x80\x94 clear skies, clouds, now and then rain" : "Weather OFF \xE2\x80\x94 the sky clears");
+}
+// The cheat, in turn: a downpour now (out of clouds already in: it starts at once), it eases to a
+// drizzle, the sky clears
+void Game::rainCheat() {   // (the status line follows: update)
+  if (!weatherOn_) { setStatus("Weather is off \xE2\x80\x94 Menu \xE2\x86\x92 Settings"); return; }
+  if (weather_.sky != Weather::Sky::Rain) {
+    weather_.set(Weather::Sky::Rain, rng_, false);
+    weather_.pour(true, rng_);
+    weather_.cloud = std::max(weather_.cloud, 0.8f);
+  } else if (weather_.heavy()) weather_.pour(false, rng_);
+  else weather_.set(Weather::Sky::Clear, rng_, false);
+}
+// 5% in a drizzle, 10% in a downpour, between the two as the rain grows (none in the last of it)
+float Game::rainMiss() const {
+  const float r = weather_.rain;
+  return r < 0.05f ? 0.f : RAIN_MISS[0] + (RAIN_MISS[1] - RAIN_MISS[0]) * glm::smoothstep(0.35f, 0.7f, r);
+}
+// Test: a state at once, held (no random change) for the run
+void Game::weatherForRun(const std::string& s) {
+  const bool rains = s == "rain" || s == "drizzle";
+  const Weather::Sky sky = rains ? Weather::Sky::Rain : s == "overcast" ? Weather::Sky::Overcast : Weather::Sky::Clear;
+  weather_.set(sky, rng_, true);
+  if (rains) weather_.rain = weather_.showerMax = s == "rain" ? 0.9f : 0.25f;
+  weather_.wet = rains ? 1.f : s == "after" ? 0.6f : 0.f;   // after: a shower just over, the sun out
+  weather_.puddle = s == "rain" || s == "after" ? 1.f : s == "drizzle" ? 0.3f : 0.f;
+  weather_.held = true;
+  applyDNLights(dnLit());
+  logInfo("weather for this run: %s (wet %.1f, puddles %.1f)", s.c_str(), weather_.wet, weather_.puddle);
 }
 
 // ─── Viking flare (night airstrikes) ─────────────────────────────────────────
@@ -2650,7 +2701,7 @@ void Game::update(float dt) {
     tBest = 2;
     for (int k = 0; k < (int)enemyList.size(); k++) {
       const Enemy& c = *enemyList[k];
-      if (c.dead) continue;
+      if (c.dead || &c == b.passed) continue;
       float ex = c.pos.x - px, ez = c.pos.z - pz;
       float t = glm::clamp((ex * sx + ez * sz) / sLen2, 0.f, 1.f);   // closest point on the segment
       float dx = ex - sx * t, dz = ez - sz * t, hitR = c.type == 'r' ? .75f : .5f;
@@ -2677,6 +2728,12 @@ void Game::update(float dt) {
       while (b.trail.size() > 2 && gameT_ - b.trail.front().w > MG_STREAK) b.trail.erase(b.trail.begin());
     }
     EnemyP hitE = ci >= 0 ? enemyList[ci] : nullptr;
+    if (hitE && b.unit != Unit::Marauder && rnd() < rainMiss()) {   // the rain spoils the aim: it flies on past
+      b.passed = hitE.get();
+      if (floatTexts_.size() >= 60) floatTexts_.erase(floatTexts_.begin());
+      floatTexts_.push_back({{hitE->pos.x, hitE->pos.y + 1.2f, hitE->pos.z}, "MISS", 0.9f, 0.9f, 0x9fb4c8u});
+      hitE = nullptr;
+    }
     if (hitE) {
       Enemy& e = *hitE;
       b.pos = {px + sx * tBest, b.pos.y, pz + sz * tBest};
@@ -2725,6 +2782,18 @@ void Game::update(float dt) {
   updateCorpses(dt);
   updateFlare(dt);      // before the lights: they follow its strength (and the nuke light's)
   if (nukeLightT_ >= 0 && (nukeLightT_ += dt) >= NUKE_LIGHT_DUR) nukeLightT_ = -1;
+  const char* sky0 = weather_.name();
+  const bool rained = weather_.sky == Weather::Sky::Rain;
+  weather_.update(dt, rng_, weatherOn_);   // likewise: the light under the clouds
+  if (strcmp(weather_.name(), sky0)) {     // the player is told what the rain does to the aim
+    logInfo("weather: %s", weather_.name());
+    if (weather_.sky == Weather::Sky::Rain) {
+      const bool hard = weather_.heavy();
+      char buf[64];
+      snprintf(buf, sizeof buf, "%s \xE2\x80\x94 %d%% of rounds miss", hard ? "DOWNPOUR" : "DRIZZLE", (int)std::lround(100 * RAIN_MISS[hard]));
+      setStatus(buf);
+    } else if (rained) setStatus("The rain stops");
+  }
   updateDayNight(dt);
   updateNukes(dt);
   tutorialTick();
@@ -3299,6 +3368,14 @@ void Game::render() {
   }
   R.drawParticles(&smoke_, Blend::Normal, 2);   // glow over smoke
   R.drawParticles(&glow_, Blend::Additive, 3);
+  {   // the rain (weather.h): lit by the sky, the sun through the clouds and the moon, warm near the bunker's light
+    WeatherRenderer::Look lk;
+    lk.light = ambCol_ * ambI_ + sunCol_ * (0.25f * sunI_) + fillCol_ * (0.3f * fillI_);
+    lk.lampPos = {0, 2.6f, 0};
+    lk.lampCol = hexColor(0xffd2a0) * (0.3f * bunkerLightI_);
+    lk.lampR = 15;
+    weatherFx_.draw(R, weather_, lk);
+  }
 
   SceneParams sp;
   sp.view = view_;
@@ -3330,6 +3407,14 @@ void Game::render() {
   sp.nightDesat = 0.55f * dnLightF_;
   sp.terrainTex = terrainTex_;
   sp.hiDetail = gfxHigh_ && zoom_ > 0.5f;   // the finest ground detail is sub-pixel from the overview
+  sp.wet = weather_.wet;
+  sp.puddle = weather_.puddle;
+  sp.rain = weather_.rain;
+  sp.weatherT = (float)std::fmod(weather_.t, 2048.0);
+  sp.cloud = weather_.cloud;
+  sp.skyZenith = skyZen_;
+  sp.skyHorizon = skyHor_;
+  sp.cloudDrift = glm::mod(weather_.drift, glm::vec2(160));   // (the cloud deck the puddles mirror repeats every 160)
   sp.fogColor = fogCol_ + glm::vec3(1, 0.95f, 0.85f) * (0.9f * nkFlash) + glm::vec3(1, 0.45f, 0.15f) * (0.12f * nukeLightK() * dnFactor_);
   sp.fogNear = fogNear_;
   sp.fogFar = fogFar_;
@@ -3375,6 +3460,7 @@ void Game::frame(float dt) {
   double t0 = glfwGetTime();
   layout();
   update(dt);
+  audio::setRain(phase_ == Phase::Playing ? weather_.rain : 0);   // (not under the title and results: their music alone)
   double t1 = glfwGetTime();
   gpuFx_.update(phase_ == Phase::Playing && !isPaused() ? dt : 0);   // spawn this frame's bursts, move the GPU particles
   updateSensorRing(dt);
@@ -3436,6 +3522,7 @@ void Game::clearEntities() {
   glowCount_ = 0;
   nukeLightT_ = -1;
   endFlare();   // the flare and the nuke light go with the scene: the lights return to the true day / night
+  weather_.reset(rng_);   // a new game (and the title) under a clear sky, on dry ground
   applyDNLights(dnFactor_);
   props_.clear();
 }

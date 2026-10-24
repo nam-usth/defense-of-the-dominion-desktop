@@ -239,6 +239,7 @@ static const Cheat CHEATS[] = {
   {"immortal", "Bunker HP set to 99999 (godmode)"},
   {"kaboom", "Nuke every enemy position individually"},
   {"general", "Instant rank: GENERAL (280 kills added)"},
+  {"rain", "A downpour now (again: a drizzle, then clear)"},
   {"help", "Lists all cheat codes"},
 };
 
@@ -329,6 +330,7 @@ void Game::submitCheat(const std::string& raw) {
     }
   } else if (key == "general") { kills_ += 280; score_ += 2800; }
   else if (key == "sensor") { sensorLvl_ = 3; setStatus("Sensor Tower maxed \xE2\x80\x94 blips out to 16"); }
+  else if (key == "rain") rainCheat();
   else if (key == "help") {
     cheatMsgCol_ = 0x44ff88;
     cheatMsg_.clear();

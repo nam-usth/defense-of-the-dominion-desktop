@@ -45,6 +45,7 @@ build build/obj/display.o: cxx src/display.cpp
 build build/obj/gpu_particles.o: cxx src/gpu_particles.cpp
 build build/obj/post.o: cxx src/post.cpp
 build build/obj/nuke_fx.o: cxx src/nuke_fx.cpp
+build build/obj/weather.o: cxx src/weather.cpp
 build build/obj/third_party_impl.o: cc src/third_party_impl.c
 
 # Dear ImGui
@@ -79,7 +80,7 @@ build build/obj/glfw_win32_window.o: glfwcc third_party/glfw/src/win32_window.c
 build build/obj/glfw_wgl_context.o: glfwcc third_party/glfw/src/wgl_context.c
 
 build build/dotd.exe: link build/obj/main.o build/obj/game.o build/obj/game_ui.o build/obj/game_save.o build/obj/render.o $
-    build/obj/assets.o build/obj/audio.o build/obj/storage.o build/obj/ui.o build/obj/log.o build/obj/jobs.o build/obj/display.o build/obj/gpu_particles.o build/obj/post.o build/obj/nuke_fx.o build/obj/third_party_impl.o $
+    build/obj/assets.o build/obj/audio.o build/obj/storage.o build/obj/ui.o build/obj/log.o build/obj/jobs.o build/obj/display.o build/obj/gpu_particles.o build/obj/post.o build/obj/nuke_fx.o build/obj/weather.o build/obj/third_party_impl.o $
     build/obj/imgui.o build/obj/imgui_draw.o build/obj/imgui_tables.o build/obj/imgui_widgets.o build/obj/imgui_impl_glfw.o $
     build/obj/imgui_impl_opengl3.o build/obj/glfw_context.o build/obj/glfw_init.o build/obj/glfw_input.o build/obj/glfw_monitor.o $
     build/obj/glfw_platform.o build/obj/glfw_vulkan.o build/obj/glfw_window.o build/obj/glfw_egl_context.o $

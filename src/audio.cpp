@@ -94,6 +94,30 @@ bool g_reqNew = false;
 
 double frand() { return std::uniform_real_distribution<double>(0, 1)(g_rng); }
 
+// The rain: a hiss of band-limited noise (~0.3-4 kHz, each side its own) and the patter of near
+// drops (short ticks, panned at random, more of them as it gets heavier), as loud as the rain is
+// heavy; it eases to a new level over ~0.6 s. Rendered on the audio thread only (its own noise)
+std::atomic<float> g_rainTarget{0};
+struct RainBed {
+  double lvl = 0, lpL = 0, lpR = 0, hpL = 0, hpR = 0, tick = 0, pan = 0.5;
+  uint32_t seed = 0x9e3779b9u;
+  double rnd() { seed = seed * 1664525u + 1013904223u; return (seed >> 8) / 16777216.0; }
+  void add(double target, double& l, double& r) {
+    lvl += (target - lvl) / (0.6 * RATE);
+    if (lvl < 1e-4) return;
+    static const double aLo = std::exp(-2 * PI * 4000 / RATE), aHi = std::exp(-2 * PI * 300 / RATE), tickFade = std::exp(-1 / (0.004 * RATE));
+    lpL = aLo * lpL + (1 - aLo) * (rnd() * 2 - 1);
+    lpR = aLo * lpR + (1 - aLo) * (rnd() * 2 - 1);
+    hpL = aHi * hpL + (1 - aHi) * lpL;
+    hpR = aHi * hpR + (1 - aHi) * lpR;
+    if (rnd() < (20 + 160 * lvl) / RATE) { tick = 0.3 + 0.7 * rnd(); pan = rnd(); }
+    double tk = tick * (rnd() * 2 - 1) * 0.12;
+    tick *= tickFade;
+    l += lvl * ((lpL - hpL) * 0.28 + tk * (1 - pan));
+    r += lvl * ((lpR - hpR) * 0.28 + tk * pan);
+  }
+} g_rainBed;
+
 void setBiquad(Voice& v, double f) {
   double w0 = 2 * PI * std::min(f, RATE * 0.49) / RATE, c = std::cos(w0), s = std::sin(w0);
   double b0, b1, b2, a0, a1, a2;
@@ -171,6 +195,7 @@ void dataCallback(ma_device*, void* pOut, const void*, ma_uint32 frames) {
     g_ring.n -= take * 2;
   }
   const double att = std::exp(-1.0 / (0.003 * RATE)), rel = std::exp(-1.0 / (0.25 * RATE));
+  const double rainT = g_suspended.load() ? 0 : g_rainTarget.load();
   for (ma_uint32 f = 0; f < frames; f++) {
     double fx = 0;
     int64_t i = base + f;
@@ -178,7 +203,9 @@ void dataCallback(ma_device*, void* pOut, const void*, ma_uint32 frames) {
       if (!renderVoice(g_active[k], i, fx)) { g_active[k] = g_active.back(); g_active.pop_back(); }
       else k++;
     }
-    double l = (fx + mus[f * 2] * MUSIC_LEVEL) * master, r = (fx + mus[f * 2 + 1] * MUSIC_LEVEL) * master;
+    double rl = 0, rr = 0;
+    g_rainBed.add(rainT, rl, rr);
+    double l = (fx + rl + mus[f * 2] * MUSIC_LEVEL) * master, r = (fx + rr + mus[f * 2 + 1] * MUSIC_LEVEL) * master;
     double peak = std::max(std::abs(l), std::abs(r));
     g_env = peak > g_env ? att * g_env + (1 - att) * peak : rel * g_env + (1 - rel) * peak;
     double g = std::pow(10.0, compGainDb(20 * std::log10(std::max(g_env, 1e-6))) / 20) * g_makeup;
@@ -541,4 +568,5 @@ void music(const char* scene) {
 void setMusicOn(bool on) { g_musicOn = on; }
 bool musicOn() { return g_musicOn.load(); }
 void setSuspended(bool s) { g_suspended = s; }
+void setRain(float level) { g_rainTarget = std::clamp(level, 0.f, 1.f); }
 }  // namespace audio

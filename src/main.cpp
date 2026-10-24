@@ -27,6 +27,8 @@
 //   --hold X,Y,S           1 s after --start, hold the left button at (X, Y) (fractions of the window) for S s;
 //                          logs the volleys fired (S = 0: a single click)
 //   --post on|off          HDR post-processing (bloom, tone curve); off: the scene draws straight to a 4x MSAA window
+//   --weather STATE        clear | overcast | rain (a downpour, puddles full) | drizzle | after (a shower just over:
+//                          puddles full, the sun out), at once and held for the run (after --start)
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 
@@ -87,7 +89,7 @@ int main(int argc, char** argv) {
   std::string gpuArg, platformArg;
   int resizeW = 0, resizeH = 0;
   int threads = -1;
-  std::string shotPath, startMode, openPanel, dataDir;
+  std::string shotPath, startMode, openPanel, dataDir, weatherArg;
   std::vector<std::string> cheats;
   double shotAfter = 3;
   int zoomIn = 0;
@@ -132,6 +134,13 @@ int main(int argc, char** argv) {
     else if (a == "--no-tutorial") noTutorial = true;
     else if (a == "--post") postOn = next() != "off";
     else if (a == "--dn") dnAt = std::strtof(next().c_str(), nullptr);
+    else if (a == "--weather") {
+      weatherArg = next();
+      if (weatherArg != "clear" && weatherArg != "overcast" && weatherArg != "rain" && weatherArg != "drizzle" && weatherArg != "after") {
+        fprintf(stderr, "--weather: clear, overcast, rain, drizzle or after\n");
+        return 1;
+      }
+    }
     else if (a == "--hold") {
       std::string v = next();
       if (sscanf(v.c_str(), "%f,%f,%f", &holdX, &holdY, &holdFor) != 3) { fprintf(stderr, "--hold wants X,Y,S\n"); return 1; }
@@ -261,6 +270,7 @@ int main(int argc, char** argv) {
   if (noTutorial) game.tutorialForRun(false);
   game.postForRun(postOn);
   if (dnAt >= 0) game.setDayNightTime(dnAt);
+  if (!weatherArg.empty()) game.weatherForRun(weatherArg);   // (the title; --start sets it again in the new game)
   int holdStep = 0, holdAmmo0 = 0;   // --hold: 0 wait · 1 cursor placed · 2 pressed · 3 done
   double holdT0 = 0;
   if (cpuParticles) game.gpuParticlesForRun(false);
@@ -292,6 +302,7 @@ int main(int argc, char** argv) {
     last = now;
     if ((!startMode.empty() || !openPanel.empty()) && allLoaded && started < 0) {   // --open alone: on the title
       if (!startMode.empty()) game.autoStart(startMode);
+      if (!startMode.empty() && !weatherArg.empty()) game.weatherForRun(weatherArg);
       for (auto& c : cheats) game.runCheat(c);
       for (int i = 0; i < zoomIn; i++) game.testKey(GLFW_KEY_EQUAL);
       if (!openPanel.empty()) game.openPanel(openPanel);
