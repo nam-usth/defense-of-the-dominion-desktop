@@ -105,11 +105,19 @@ The crate runner: click a unit in the roster to send it out for the supply crate
 its corner; click it again for any unit); unelected, a Marine goes, else any free unit (`--cheat runner:N` in
 tests). The research and armory cards keep one height whatever their text (three lines; longer is cut off).
 
-The nuke: a mushroom cloud of fire as StarCraft II draws it — a cap rolling on a fiery stem, white-yellow inside,
-orange at the edges, cooling to dark red and soot over 7 s — with a grey dust ring surging along the ground and
-the shockwave; nothing is flung across the field (sparks, embers and debris were hard to read and cost ~30 000
-GPU particles a blast). Its fireball lights the field: a warm point light, and at night the dark lifts (fog out
-to ~40) and settles back as it cools (6 s).
+The nuke: StarCraft II's, rebuilt on one closed-form timeline (src/nuke_fx.h). The flash blows the field out to
+white through the HDR exposure (the HUD stays clear), then a soft fireball of overlapping fire round a white-hot
+heart that blooms rises, flattens and rolls into the mushroom cloud, whose heart widens into a soft ember glow as
+it cools. A ragged shock front races over the ground under a fading shock dome; a ring of dust with a burning
+leading edge rolls out past the kill radius; the Zerg freeze white in the flash and are flung out, charred, when the
+front reaches them, and the shock booms as it passes the bunker (no camera shake). It leaves a small pit of
+scorched earth whose cracks glow deep red, cool and fade by 16 s. Its fireball lights the field: a warm point light,
+and at night the dark lifts (fog out to ~40) and settles back as it cools.
+
+The scene renders into an HDR target (R11G11B10F, RGBA16F if refused; 4x MSAA on GFX HIGH): a bloom chain and a
+hue-preserving tone curve composite it before the HUD (src/post.h). Lit surfaces stay as before; only emitters
+(fire, tracers, lamps) go past 1 and bloom. `--post off` draws straight to the window as before.
+
 
 A round hitting a Zerg spurts a little of its blood out the far side, instead of sparks in the round's colour
 flung up and out, which read as fireworks; a Zerg dying leaves a low splash of blood and a little smoke (not 220–450
@@ -188,7 +196,7 @@ the start; also `hire:marine|marauder|ghost` and `research:KEY[:TIER]`, paid for
 `--gpu dedicated|integrated` · `--resize WxH` (after --start) · `--data DIR` settings and saves in DIR (a new
 player; the real ones untouched) · `--no-tutorial` this run without the tour and hints · `--dn S` day/night on,
 S seconds into the cycle · `--hold X,Y,S` holds the fire button at (X, Y) (fractions of the window) for S seconds
-and logs the volleys fired. Each cleared wave logs how it was resupplied.
+and logs the volleys fired · `--post on|off` the HDR post-processing. Each cleared wave logs how it was resupplied.
 
 ## Differences from the web version
 
