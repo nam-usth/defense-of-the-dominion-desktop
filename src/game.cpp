@@ -2846,6 +2846,10 @@ void Game::render() {
   sp.fogFar = fogFar_;
   sp.shadows = gfxHigh_;
   sp.msaa = gfxHigh_;
+  // post: bloom carries further at night; a light vignette (the Zerg come in at the edges)
+  sp.post.enabled = postRun_;
+  sp.post.bloomStrength = 0.6f + 0.3f * dnFactor_;
+  sp.post.vignette = 0.08f + 0.04f * dnFactor_;
   float sx = (float)fbW_ / std::max(1, winW_), sy = (float)fbH_ / std::max(1, winH_);
   sp.vpX = (int)std::round(canvasX_ * sx);
   sp.vpW = std::max(1, (int)std::round(canvasW_ * sx));

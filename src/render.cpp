@@ -451,7 +451,9 @@ void main() {
       float att = pow(clamp(1.0 - d / uGlPos[i].w, 0.0, 1.0), 2.0);
       direct += uGlColor[i].rgb * att * (0.5 + 0.5 * dot(N, lv / max(d, 1e-5)));
     }
-    outC = dif * (uAmbient + direct) + spec + uEmissive * (uHasEmissiveMap ? texture(uEmissiveMap, vUV).rgb : vec3(1.0));
+    // the lit term is clamped as the 8-bit target clamped it: lit surfaces look as before and never
+    // bloom (smoke over a brightly lit hull stays as dense); only emitters exceed 1 in the HDR target
+    outC = min(dif * (uAmbient + direct) + spec, vec3(1.0)) + uEmissive * (uHasEmissiveMap ? texture(uEmissiveMap, vUV).rgb : vec3(1.0));
   }
   if (uFog) {
     float fogF = smoothstep(uFogNear, uFogFar, length(vWorld.xz));   // radial: distance from the bunker
@@ -595,6 +597,8 @@ bool Renderer::init() {
   glEnableVertexAttribArray(3); glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, st8, (void*)(4 * sizeof(float))); glVertexAttribDivisor(3, 1);
   glEnableVertexAttribArray(4); glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, st8, (void*)(7 * sizeof(float))); glVertexAttribDivisor(4, 1);
   glBindVertexArray(0);
+  postOk_ = post_.init();
+  if (!postOk_) logWarn("post-processing unavailable: drawing straight to the window");
   return true;
 }
 
@@ -682,6 +686,10 @@ void Renderer::render(const SceneParams& sp) {
   glm::mat4 lightVP = glm::ortho(-26.f, 26.f, -26.f, 26.f, 1.f, 70.f) *
                       glm::lookAt(sp.sun.pos, glm::vec3(0), std::abs(sunDir.y) > 0.99f ? glm::vec3(0, 0, 1) : glm::vec3(0, 1, 0));
   bool shadows = sp.shadows && sp.sun.intensity > 0;
+  // the scene goes into the HDR target (post.h), drawn at its origin; without post, into the window at the canvas
+  postActive_ = postOk_ && sp.post.enabled && post_.ensure(sp.vpW, sp.vpH, sp.msaa);
+  const GLuint target = postActive_ ? post_.drawFbo() : 0;
+  const int tx = postActive_ ? 0 : sp.vpX, ty = postActive_ ? 0 : sp.vpY;
 
   glEnable(GL_DEPTH_TEST);
   glDepthFunc(GL_LEQUAL);
@@ -705,11 +713,12 @@ void Renderer::render(const SceneParams& sp) {
       if (c.mesh->indexed) glDrawElementsInstanced(GL_TRIANGLES, c.mesh->count, GL_UNSIGNED_INT, nullptr, c.count);
       else glDrawArraysInstanced(GL_TRIANGLES, 0, c.mesh->count, c.count);
     }
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
   }
 
-  glViewport(sp.vpX, sp.vpY, sp.vpW, sp.vpH);
-  glScissor(sp.vpX, sp.vpY, sp.vpW, sp.vpH);
+  // bound on every frame, shadows or not (no sun at night, none on LOW)
+  glBindFramebuffer(GL_FRAMEBUFFER, target);
+  glViewport(tx, ty, sp.vpW, sp.vpH);
+  glScissor(tx, ty, sp.vpW, sp.vpH);   // glClear and the resolve obey the scissor: it must cover the target
   glEnable(GL_SCISSOR_TEST);
   if (sp.msaa) glEnable(GL_MULTISAMPLE); else glDisable(GL_MULTISAMPLE);
   glClearColor(sp.fogColor.r, sp.fogColor.g, sp.fogColor.b, 1);
@@ -831,6 +840,7 @@ void Renderer::render(const SceneParams& sp) {
   glDisable(GL_SCISSOR_TEST);
   glDisable(GL_DEPTH_TEST);
   glActiveTexture(GL_TEXTURE0);
+  if (postActive_) post_.finish(sp.post, sp.vpX, sp.vpY, sp.vpW, sp.vpH, !sp.msaa);   // ends on framebuffer 0
 }
 
 bool Renderer::saveScreenshot(const std::string& path, int w, int h) {

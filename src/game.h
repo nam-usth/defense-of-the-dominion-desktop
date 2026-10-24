@@ -210,6 +210,7 @@ class Game {
   }
   void setDayNightTime(float t);                    // test: the cycle on, t seconds into it
   void tutorialForRun(bool on) { tutRun_ = on; }    // test: no tour / hints this run (the stored setting is kept)
+  void postForRun(bool on) { postRun_ = on; }       // HDR post-processing (main sets the window's samples to match)
   void testPress(bool down) { onMouseButton(0, down ? 1 : 0); }   // test: the left button (GLFW_MOUSE_BUTTON_LEFT, PRESS / RELEASE)
   int ammo() const { return ammo_; }
   void testKey(int key) { onKey(key, 1, 0); }
@@ -585,6 +586,7 @@ class Game {
     std::string titleKey;               // a tour page's hotkey, shown after the title
   };
   bool tutOn_ = true, tutRun_ = true;   // hints on (stored) · this run allows them (--no-tutorial)
+  bool postRun_ = true;                 // HDR post-processing this run (--post off: straight to the window)
   std::vector<std::string> tutSeen_;    // ids seen (stored)
   bool tutOpen_ = false;                // a hint or a tour page is shown: the game pauses
   TutStep tutStep_;

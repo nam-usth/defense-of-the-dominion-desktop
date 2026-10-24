@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "post.h"
+
 inline glm::vec3 hexColor(uint32_t h) {
   return {((h >> 16) & 255) / 255.f, ((h >> 8) & 255) / 255.f, (h & 255) / 255.f};
 }
@@ -125,6 +127,7 @@ struct SceneParams {
   float fogNear = 1, fogFar = 100;
   bool shadows = true, msaa = true;
   int vpX = 0, vpY = 0, vpW = 1, vpH = 1;   // framebuffer pixels, origin bottom-left
+  PostParams post;                          // HDR target, bloom, tone curve (post.h)
 };
 
 // Soft round sprites with per-particle size / colour / alpha (the web version's
@@ -159,8 +162,11 @@ class Renderer {
   void setGpuParticles(class GpuParticles* g) { gpuParticles_ = g; }   // drawn after the CPU particles (null: none)
   // Pixel readback of the default framebuffer (screenshots for testing)
   static bool saveScreenshot(const std::string& path, int w, int h);
+  bool postActive() const { return postActive_; }   // the last frame went through the HDR post passes
 
  private:
+  PostFx post_;
+  bool postOk_ = false, postActive_ = false;
   struct Cmd {
     const Mesh* mesh;
     const Material* mat;
