@@ -212,6 +212,12 @@ bool build(const std::string& n, int64_t t, std::vector<Voice>& o) {
   } else if (n == "nukeBoom") {
     add(o, noise(t, 2.2, 2200, 38, 1.0, F::Lowpass, .6)); add(o, tone(t, 2.0, 48, 24, .9, W::Sine));
     add(o, noise(t + S(.05), .5, 4000, 900, .35, F::Highpass));
+  } else if (n == "nukeShock") {   // the shock front passing the bunker: a crack, then a deep thud
+    add(o, noise(t, 1.0, 3200, 45, .8, F::Lowpass, .6)); add(o, noise(t, .3, 5000, 900, .4, F::Highpass));
+    add(o, tone(t, 2.2, 46, 21, .8, W::Sine)); add(o, tone(t + S(.02), .8, 90, 35, .35, W::Triangle));
+  } else if (n == "nukeRumble") {   // the long rumble after it (a noise voice lasts ~1 s: chained)
+    for (int i = 0; i < 5; i++) add(o, noise(t + S(i * .75), 1.1, 520 * std::pow(.8, i), 60, .4 * std::pow(.78, i), F::Lowpass, .4));
+    add(o, tone(t, 4.5, 31, 20, .35, W::Sine));
   } else if (n == "wave") {
     add(o, tone(t, .55, 110, 108, .07, W::Saw)); add(o, tone(t, .55, 165, 162, .06, W::Saw)); add(o, tone(t + S(.3), .5, 220, 218, .05, W::Saw));
   } else if (n == "clear") {

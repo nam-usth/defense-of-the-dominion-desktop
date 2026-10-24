@@ -19,7 +19,7 @@ target_include_directories(glfw_win32 PUBLIC third_party/glfw/include third_part
 
 add_executable(dotd WIN32
   src/main.cpp src/game.cpp src/game_ui.cpp src/game_save.cpp src/render.cpp src/assets.cpp
-  src/audio.cpp src/storage.cpp src/ui.cpp src/log.cpp src/jobs.cpp src/display.cpp src/gpu_particles.cpp src/post.cpp src/third_party_impl.c
+  src/audio.cpp src/storage.cpp src/ui.cpp src/log.cpp src/jobs.cpp src/display.cpp src/gpu_particles.cpp src/post.cpp src/nuke_fx.cpp src/third_party_impl.c
   third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp third_party/imgui/imgui_tables.cpp
   third_party/imgui/imgui_widgets.cpp third_party/imgui/backends/imgui_impl_glfw.cpp
   third_party/imgui/backends/imgui_impl_opengl3.cpp)

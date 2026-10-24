@@ -13,6 +13,7 @@
 #include "assets.h"
 #include "display.h"
 #include "gpu_particles.h"
+#include "nuke_fx.h"
 #include "render.h"
 #include "storage.h"
 
@@ -79,6 +80,16 @@ struct Corpse {
   Pool* pool;
   float t;
   float spin;
+  // flung by a nuke's shock front: frozen white in the flash until the front reaches it (delay),
+  // then thrown outward, charred, tumbling (spin: rad/s), bouncing once, sinking
+  bool flung = false;
+  glm::vec3 vel{0};
+  float delay = 0, tint = 1;
+};
+// How killEnemy throws a corpse (a nuke victim)
+struct Fling {
+  glm::vec3 vel{0};
+  float delay = 0, spin = 0;
 };
 
 struct Bullet {
@@ -120,10 +131,19 @@ struct VMissile {
   std::vector<glm::vec4> trail;   // its light streak: recent nozzle positions, w = game time
 };
 
-// A nuke's mushroom cloud: smoke sprites on a stem under a rolling cap, the fire glowing through
-struct Mushroom {
+// A nuke's blast (nuke_fx.h draws it; the mushroom cloud is sprites): its shock front reaches
+// the bunker at tHit (the camera jolts, the shock booms), shaking along toBunker by joltA
+struct NukeBlast {
   glm::vec3 p;
   float t = 0;   // seconds since the blast (game time)
+  float tHit = 0, joltA = 0, seed = 0;
+  glm::vec2 toBunker{0};
+  bool hitDone = false;
+};
+// The scar a nuke leaves on the ground: a burn with glowing cracks that cool, then fade
+struct Scar {
+  glm::vec2 p;
+  float age = 0, seed = 0;
 };
 
 struct FloatText {
@@ -358,7 +378,7 @@ class Game {
        *dotRingMesh_ = nullptr, *decalMesh_ = nullptr, *unitBoxMesh_ = nullptr;
   const Texture* nukeTargetTex_ = nullptr;
   // night visuals: tracer halos and their light on the ground, Sensor Tower blips lying on the ground
-  const Texture *glowTex_ = nullptr, *blipTex_ = nullptr;
+  const Texture *glowTex_ = nullptr, *blipTex_ = nullptr, *puffTex_ = nullptr;   // puffTex_: the nuke smoke's atlas
   Mesh *glowQuadMesh_ = nullptr, *blipMesh_ = nullptr, *vmMesh_ = nullptr;   // vmMesh_: a Viking missile, unit length on +z
   Material vmBodyMat_;
   ParticleSystem mushSmoke_, mushFire_;   // the mushroom clouds' sprites, rebuilt every frame (not simulated)
@@ -386,8 +406,12 @@ class Game {
   SpotLight lampSpot_;   // their light (drawUnitLamps sets it, the scene uses it)
   void buildNightFx();
   bool sensed(const Enemy& e) const;   // a Zerg out in the dark within the Sensor Tower's range
-  std::vector<Mushroom> mushrooms_;
-  void updateMushrooms(float dt);
+  std::vector<NukeBlast> nukes_;   // at most 3: the oldest goes first
+  std::vector<Scar> scars_;        // at most 3
+  NukeRenderer nukeFx_;
+  bool hdrLast_ = false;           // the last frame went through the HDR post passes (the nuke flash is its exposure)
+  void updateNukes(float dt);
+  void nukeShake(glm::vec3& off, float& roll) const;   // the camera's jolt and tremor from the blasts
   ParticleSystem glow_, smoke_;
   void emit(ParticleSystem& s, float x, float y, float z, float vx, float vy, float vz, float life, float s0, float s1,
             float a0, uint32_t c0, uint32_t c1, float grav, float drag, int fade) {
@@ -451,7 +475,7 @@ class Game {
   void spitAcid(Enemy& e);
   void updateAcids(float dt);
   void updateCorpses(float dt);
-  void killEnemy(const EnemyP& e, bool reward, bool splash = true);   // splash: its blood (not for a nuke: burnt)
+  void killEnemy(const EnemyP& e, bool reward, bool splash = true, const Fling* fling = nullptr);   // splash: its blood (not for a nuke: burnt)
   std::vector<EnemyP> allEnemies() const;
   Bullet makeBullet(float tx, float tz, float spread, Unit u, float ox, float oy, float oz, float ty);
   static void orientBullet(Bullet& b);

@@ -58,8 +58,9 @@ static const float NUKE_SKY_Y = 30, NUKE_FALL_AT = 0.4f, NUKE_TRAIL_FADE = 0.5f;
 static const float NUKE_SLANT = 0.55f;   // the dive path's lean: horizontal per vertical (29° off vertical)
 // The fireball's light: flashes up, holds NUKE_LIGHT_HOLD s, then cools (gone after NUKE_LIGHT_DUR s);
 // at full strength it lifts a night to NUKE_LIGHT_F (fog far ≈ 40: past the spawn ring)
-static const float NUKE_LIGHT_DUR = 6, NUKE_LIGHT_HOLD = 0.5f, NUKE_LIGHT_F = 0.35f;
-static const float MUSH_DUR = 7;   // the mushroom cloud rises, spreads, cools and thins out over this many seconds
+static const float NUKE_LIGHT_DUR = 8, NUKE_LIGHT_HOLD = 0.6f, NUKE_LIGHT_F = 0.32f;
+static const float MUSH_DUR = 9;   // the mushroom cloud rises, spreads, cools and thins out over this many seconds
+static const float NUKE_VAPOR_R = 3.5f;   // the Zerg this close to ground zero vanish in the fireball; the rest are flung
 // Viking missiles: VM_FLIGHT s from the wing to the target, running VM_RUN ahead before the dive
 static const float VM_FLIGHT = 0.6f, VM_RUN = 4;
 // its length (a tenth of the punisher grenade model it first borrowed, scaled 1.7) and the centre → nozzle distance
@@ -120,6 +121,7 @@ struct ProcBuilder {
 bool Game::init(GLFWwindow* win) {
   win_ = win;
   if (!R.init()) return false;
+  nukeFx_.init();   // false: the sprite cloud alone shows a nuke
   glow_.init(3000);    // sparks, debris, flames, embers (additive)
   smoke_.init(800);    // smoke (normal blending)
   audio::music("title");
@@ -243,6 +245,56 @@ void Game::buildScene() {
 
 // The night effects' textures (drawn here: no art for them), shapes and materials
 void Game::buildNightFx() {
+  // the nuke's smoke: a 2x2 atlas of cauliflower puffs, 128² each. R density (lumpy, with a
+  // ragged rim), GB the billows' normal (x, y; 0.5 = flat), A fine detail (fire flicker)
+  {
+    const int N = 128, W = 2 * N;
+    auto hash = [](int x, int y, int s) {
+      uint32_t n = (uint32_t)x * 374761393u + (uint32_t)y * 668265263u + (uint32_t)s * 2246822519u;
+      n = (n ^ (n >> 13)) * 1274126177u;
+      return ((n ^ (n >> 16)) & 0xffff) / 65535.f;
+    };
+    auto noise = [&](float x, float y, int s) {
+      int ix = (int)std::floor(x), iy = (int)std::floor(y);
+      float fx = x - ix, fy = y - iy;
+      fx = fx * fx * (3 - 2 * fx);
+      fy = fy * fy * (3 - 2 * fy);
+      float a = hash(ix, iy, s) + (hash(ix + 1, iy, s) - hash(ix, iy, s)) * fx;
+      float b = hash(ix, iy + 1, s) + (hash(ix + 1, iy + 1, s) - hash(ix, iy + 1, s)) * fx;
+      return a + (b - a) * fy;
+    };
+    auto fbm = [&](float x, float y, int s, int oct) {
+      float v = 0, a = .5f;
+      for (int o = 0; o < oct; o++, a *= .5f) { v += a * noise(x, y, s + o * 17); x = x * 2.03f + 5.1f; y = y * 2.03f + 1.3f; }
+      return v;
+    };
+    std::vector<uint8_t> px((size_t)W * W * 4);
+    std::vector<float> hgt((size_t)N * N);
+    for (int cell = 0; cell < 4; cell++) {
+      const int ox = (cell % 2) * N, oy = (cell / 2) * N;
+      for (int j = 0; j < N; j++)
+        for (int i = 0; i < N; i++) {
+          float x = (i + .5f) / N * 2 - 1, y = (j + .5f) / N * 2 - 1;
+          float r = std::sqrt(x * x + y * y) * (1 + .45f * (fbm(x * 1.7f + cell * 3.1f, y * 1.7f, cell * 7, 3) - .45f));
+          float base = std::clamp(1 - r * r, 0.f, 1.f), cauli = fbm(x * 4.5f + cell * 5.3f, y * 4.5f, 100 + cell * 7, 4);
+          float d = r > .97f ? 0 : std::clamp(1.4f * base * (.45f + .75f * cauli) - .1f, 0.f, 1.f);
+          hgt[j * N + i] = std::sqrt(base) * (.55f + .45f * cauli);
+          uint8_t* p = &px[((oy + j) * W + ox + i) * 4];
+          p[0] = (uint8_t)std::lround(255 * d);
+          p[3] = (uint8_t)std::lround(255 * std::clamp(fbm(x * 9 + cell, y * 9, 300 + cell, 2) * 1.3f, 0.f, 1.f));
+        }
+      for (int j = 0; j < N; j++)
+        for (int i = 0; i < N; i++) {
+          auto H = [&](int a, int b) { return hgt[std::clamp(b, 0, N - 1) * N + std::clamp(a, 0, N - 1)]; };
+          glm::vec3 n = glm::normalize(glm::vec3((H(i - 1, j) - H(i + 1, j)) * 22, (H(i, j - 1) - H(i, j + 1)) * 22, 1));
+          uint8_t* p = &px[((oy + j) * W + ox + i) * 4];
+          p[1] = (uint8_t)std::lround(255 * (n.x * .5f + .5f));
+          p[2] = (uint8_t)std::lround(255 * (n.y * .5f + .5f));
+        }
+    }
+    puffTex_ = Texture::create(W, W, px.data());
+    mushSmoke_.tex = mushFire_.tex = puffTex_;
+  }
   // soft round glow: white, its alpha falling to 0 at the rim (the quads stretch it into streaks)
   {
     const int N = 64;
@@ -684,11 +736,30 @@ void Game::updateAcids(float dt) {
   }
 }
 
-// Dying enemies: pop, roll onto their side, then sink into the ground (~1.2 s)
+// Dying enemies: pop, roll onto their side, then sink into the ground (~1.2 s). A nuke's
+// victims stand frozen, white in the flash, until its front reaches them, then fly outward
+// charred and tumbling, bounce once and sink.
 void Game::updateCorpses(float dt) {
   for (size_t i = 0; i < corpses_.size();) {
     Corpse& c = corpses_[i];
     c.t += dt;
+    if (c.flung) {
+      const float s = c.t - c.delay;
+      if (s < 0) c.tint = 1 + 1.2f * std::exp(-c.t / 0.12f);
+      else {
+        c.tint = 0.12f + 0.5f * std::exp(-s / 0.08f);
+        if (s < 1.6f) {
+          c.vel.y -= 20 * dt;
+          c.pos += c.vel * dt;
+          if (c.pos.y < 0) { c.pos.y = 0; c.vel *= glm::vec3(0.5f, -0.25f, 0.5f); c.spin *= 0.5f; }
+          c.rotZ += c.spin * dt;
+        } else c.pos.y = std::min(c.pos.y, 0.f) - 0.8f * dt;
+      }
+      // gone once sunk (or as it comes at the close-up camera's lens)
+      if (s < 2.4f && glm::length(c.pos - camPos_) > 1.5f) i++;
+      else corpses_.erase(corpses_.begin() + i);
+      continue;
+    }
     if (c.t < 0.12f) c.pos.y = c.t / 0.12f * 0.18f;
     else c.pos.y = 0.18f - std::pow(std::min(1.f, (c.t - 0.12f) / 1.0f), 2.f) * 0.9f;
     c.rotZ = c.spin * std::min(1.f, c.t / 0.3f) * PI * 0.5f;
@@ -1451,6 +1522,8 @@ void Game::doNuke(bool force) {
   };
   auto trailGlow = glowProp(trailMesh_, 0xff6a1a, .45f, 1), trailCore = glowProp(trailMesh_, 0xfff2d0, .95f, 2);
   auto flare = glowProp(fireballMesh_, 0xffd28a, .9f, 3);
+  trailCore->mat.color *= 3.f;   // white-hot: past 1 in the HDR target, so the streak blooms (clamped without it)
+  flare->mat.color *= 3.f;
   auto setTrail = [=](float bottom) {   // the streak from height `bottom` up the path into the sky
     float top = NUKE_SKY_Y + 8, len = (top - bottom) / up.y;
     glm::mat4 m = glm::translate(glm::mat4(1), along((top + bottom) / 2)) * tilt;
@@ -1508,29 +1581,40 @@ void Game::doNuke(bool force) {
       trailCore->mat.opacity = .95f * k;
       return k > 0;
     }, [=, this]() { for (auto& p : {trailGlow, trailCore}) props_.erase(std::remove(props_.begin(), props_.end(), p), props_.end()); });
-    auto shock = std::make_shared<Prop>();
-    shock->mesh = ringMesh_;
-    shock->mat.type = MatType::Basic;
-    shock->mat.color = hexColor(0xff6600);
-    shock->mat.doubleSide = true;
-    shock->mat.transparent = true;
-    shock->mat.opacity = .9f;
-    shock->mat.fog = false;
-    shock->m = trs({tx, .1f, tz}, {-PI / 2, 0, 0}, glm::vec3(.2f));
-    beams_.push_back({shock, 1.2f, 1.2f, 1, {tx, .1f, tz}});
-    // the mushroom cloud of fire (it replaces the solid cone and ball the blast used to
-    // show), and the fireball's light (at night it lights the field)
-    mushrooms_.push_back({{tx, 0, tz}, 0});
+    // the blast (nuke_fx.h): the fireball, the shock front under its dome, the base surge and
+    // the scar, with the mushroom cloud's sprites; the fireball's light lights the field (and
+    // the night). The front reaches the bunker at tHit: the camera jolts, the shock booms.
+    NukeBlast nb;
+    nb.p = {tx, 0, tz};
+    const float db = std::max(0.5f, std::hypot(tx, tz));
+    nb.tHit = nk::frontT(db);
+    nb.toBunker = -glm::vec2(tx, tz) / db;
+    nb.joltA = glm::clamp(0.55f * (1 - db / 30), 0.15f, 0.5f);
+    nb.seed = rnd() * 50;
+    if (nukes_.size() >= 3) nukes_.erase(nukes_.begin());
+    nukes_.push_back(nb);
+    if (scars_.size() >= 3) scars_.erase(scars_.begin());
+    scars_.push_back({{tx, tz}, 0, nb.seed});
     nukeLightT_ = 0;
     nukeLightPos_ = {tx, 3, tz};
-    flash(0);
+    if (!hdrLast_) flash(0);   // in the HDR target the white-out is the exposure (render): the HUD stays clear
     // (no sparks, embers or debris flung across the field: hard to read, and ~30 000 GPU
-    // particles a blast; the cloud, its dust ring and the shockwave carry it)
-    int killed = 0;   // the bunker is hardened: only enemies die
+    // particles a blast; the cloud, the surge and the shock front carry it)
+    int killed = 0;   // the bunker is hardened: only enemies die (burnt: no blood)
     for (auto& e : allEnemies()) {
       if (e->dead) continue;
-      float dx = e->pos.x - tx, dz = e->pos.z - tz;
-      if (std::sqrt(dx * dx + dz * dz) <= NUKE_RADIUS) { killEnemy(e, true, false); killed++; }   // burnt: no blood
+      float dx = e->pos.x - tx, dz = e->pos.z - tz, d = std::sqrt(dx * dx + dz * dz);
+      if (d > NUKE_RADIUS) continue;
+      killed++;
+      if (d < NUKE_VAPOR_R) { e->visible = false; killEnemy(e, true, false); continue; }   // vaporised: nothing left
+      // the rest freeze white in the flash, then the front flings them outward, charred
+      glm::vec2 out = glm::vec2(dx, dz) / d;
+      float k = 1 - d / 24, j = 0.8f + 0.4f * rnd();
+      Fling f;
+      f.delay = nk::frontT(d);
+      f.vel = {out.x * (3 + 10 * k) * j, 3 + 5 * k * rnd(), out.y * (3 + 10 * k) * j};
+      f.spin = (rnd() < .5f ? -1 : 1) * (6 + 6 * rnd());
+      killEnemy(e, true, false, &f);
     }
     setStatus("Nuclear detonation \xE2\x80\x94 " + std::to_string(killed) + " unit" + (killed != 1 ? "s" : "") + " annihilated. Bunker intact.");
     return false;
@@ -1542,15 +1626,22 @@ void Game::doNuke(bool force) {
 }
 
 // ─── Kill ────────────────────────────────────────────────────────────────────
-void Game::killEnemy(const EnemyP& e, bool reward, bool splash) {
+void Game::killEnemy(const EnemyP& e, bool reward, bool splash, const Fling* fling) {
   if (e->dead) return;
   e->dead = true;
   e->slowed = false;
   if (splash) deathFx(*e);
   audio::play(e->type == 'r' ? "rdie" : "zdie");
-  if (e->pool && e->visible) {   // death animation
-    if (corpses_.size() >= 80) corpses_.erase(corpses_.begin());
-    corpses_.push_back({e->pos, e->rotY, e->rotZ, e->pool, 0, rnd() < .5f ? -1.f : 1.f});
+  if (e->pool && e->visible) {   // death animation (a nuke's victims: flung by its shock front)
+    if (corpses_.size() >= 160) corpses_.erase(corpses_.begin());
+    Corpse c{e->pos, e->rotY, e->rotZ, e->pool, 0, rnd() < .5f ? -1.f : 1.f};
+    if (fling) {
+      c.flung = true;
+      c.vel = fling->vel;
+      c.delay = fling->delay;
+      c.spin = fling->spin;
+    }
+    corpses_.push_back(c);
   }
   if (reward) {
     score_ += e->rScore;
@@ -1755,7 +1846,13 @@ void Game::updateCamera(float dt) {
   float elev = cam::farElev + (cam::nearElev - cam::farElev) * z;
   float ly = cam::nearLookY * z, hz = std::cos(elev) * dist;
   camPos_ = {std::sin(camYaw_) * hz, ly + std::sin(elev) * dist, std::cos(camYaw_) * hz};
-  view_ = glm::lookAt(camPos_, glm::vec3(0, ly, 0), glm::vec3(0, 1, 0));
+  glm::vec3 look(0, ly, 0), up(0, 1, 0), off;
+  float roll;
+  nukeShake(off, roll);   // (picking uses the shaken view: what the player sees)
+  camPos_ += off;
+  look += 0.6f * off;
+  if (roll != 0) up = std::cos(roll) * up + std::sin(roll) * glm::normalize(glm::cross(look - camPos_, up));
+  view_ = glm::lookAt(camPos_, look, up);
   proj_ = glm::perspective(glm::radians(55.f), canvasW_ / std::max(1.f, canvasH_), 0.1f, 200.f);
 }
 void Game::rotateView(int dir) {
@@ -1882,11 +1979,28 @@ float Game::flareK() const {
   if (flareT_ < 0) return 0;
   return std::min(1.f, flareT_ / 0.4f) * std::min(1.f, (FLARE_DUR - flareT_) / 1.5f);
 }
-// Nuke fireball light: up in 0.08 s, full for NUKE_LIGHT_HOLD s, then cooling; 0 when none
+// Nuke fireball light: up in 0.05 s, full for NUKE_LIGHT_HOLD s, then cooling; 0 when none
 float Game::nukeLightK() const {
   if (nukeLightT_ < 0) return 0;
   float t = nukeLightT_;
-  return std::min(1.f, t / 0.08f) * (t < NUKE_LIGHT_HOLD ? 1 : std::exp(-(t - NUKE_LIGHT_HOLD) / 1.4f)) * std::min(1.f, NUKE_LIGHT_DUR - t);
+  return std::min(1.f, t / 0.05f) * (t < NUKE_LIGHT_HOLD ? 1 : std::exp(-(t - NUKE_LIGHT_HOLD) / 1.8f)) * std::min(1.f, NUKE_LIGHT_DUR - t);
+}
+
+// The camera's shake from the blasts: a faint tremor before the shock front arrives, then a
+// jolt along its travel (a few damped swings) and a decaying rumble. None while paused.
+void Game::nukeShake(glm::vec3& off, float& roll) const {
+  off = glm::vec3(0);
+  roll = 0;
+  if (phase_ != Phase::Playing || isPaused()) return;
+  const float zk = 1 - 0.55f * zoom_, g = gameT_;
+  const glm::vec3 nz(std::sin(g * 37.1f) + std::sin(g * 61.7f), std::sin(g * 43.3f) + std::sin(g * 71.9f), std::sin(g * 29.9f) + std::sin(g * 53.3f));
+  for (const NukeBlast& n : nukes_) {
+    float th = n.t - n.tHit, pre = th < 0 ? 0.05f : 0;
+    float jolt = th >= 0 ? n.joltA * std::exp(-th / 0.16f) * std::sin(2 * PI * 6.5f * th) : 0;
+    float tr = th >= 0 ? 1.6f * n.joltA * std::exp(-th / 0.9f) : 0;
+    off += (glm::vec3(n.toBunker.x, 0, n.toBunker.y) * jolt + nz * (0.5f * (0.22f * tr * tr + 0.4f * pre))) * zk;
+    roll += 0.02f * tr * tr * std::sin(23 * g);
+  }
 }
 // The factor the lights and fog use: a flare lifts the night toward FLARE_F, a nuke's
 // fireball toward NUKE_LIGHT_F. The top-bar label and the "is it night" tests keep the
@@ -2269,11 +2383,7 @@ void Game::update(float dt) {
   for (size_t i = 0; i < beams_.size();) {
     Beam& b = beams_[i];
     b.life -= dt;
-    if (b.kind == 1) {   // shockwave ring expands outward
-      float prog = 1 - b.life / b.startLife;
-      b.prop->m = trs(b.pos, {-PI / 2, 0, 0}, glm::vec3(std::max(0.2f, prog * 18)));
-      b.prop->mat.opacity = std::max(0.f, b.life / b.startLife * 0.7f);
-    } else b.prop->mat.opacity = std::max(0.f, b.life / .5f * .8f);
+    b.prop->mat.opacity = std::max(0.f, b.life / .5f * .8f);
     if (b.life <= 0) beams_.erase(beams_.begin() + i);
     else i++;
   }
@@ -2442,15 +2552,24 @@ void Game::update(float dt) {
   updateFlare(dt);      // before the lights: they follow its strength (and the nuke light's)
   if (nukeLightT_ >= 0 && (nukeLightT_ += dt) >= NUKE_LIGHT_DUR) nukeLightT_ = -1;
   updateDayNight(dt);
-  updateMushrooms(dt);
+  updateNukes(dt);
   tutorialTick();
   for (FloatText& f : floatTexts_) { f.life -= dt; f.p.y += dt * 0.8f; }
   floatTexts_.erase(std::remove_if(floatTexts_.begin(), floatTexts_.end(), [](const FloatText& f) { return f.life <= 0; }), floatTexts_.end());
 }
 
-void Game::updateMushrooms(float dt) {
-  for (Mushroom& mc : mushrooms_) mc.t += dt;
-  mushrooms_.erase(std::remove_if(mushrooms_.begin(), mushrooms_.end(), [](const Mushroom& mc) { return mc.t >= MUSH_DUR; }), mushrooms_.end());
+void Game::updateNukes(float dt) {
+  for (NukeBlast& n : nukes_) {
+    n.t += dt;
+    if (!n.hitDone && n.t >= n.tHit) {   // the shock front reaches the bunker: the boom, then a long rumble
+      n.hitDone = true;
+      audio::play("nukeShock");
+      after(0.3f, [] { audio::play("nukeRumble"); });
+    }
+  }
+  nukes_.erase(std::remove_if(nukes_.begin(), nukes_.end(), [](const NukeBlast& n) { return n.t >= MUSH_DUR; }), nukes_.end());
+  for (Scar& s : scars_) s.age += dt;
+  scars_.erase(std::remove_if(scars_.begin(), scars_.end(), [](const Scar& s) { return s.age >= nk::SCAR_END; }), scars_.end());
 }
 
 // ─── Render ──────────────────────────────────────────────────────────────────
@@ -2458,6 +2577,11 @@ void Game::updateMushrooms(float dt) {
 static float puffHash(int i, int salt) {
   float s = std::sin(i * 12.9898f + salt * 78.233f) * 43758.5453f;
   return s - std::floor(s);
+}
+
+// A nuke fireball's light at its age: white in the flash, orange as it rises, a dull red as it cools
+static glm::vec3 nukeLightCol(float t) {
+  return lerp3(lerp3(hexColor(0xfff4e0), hexColor(0xffa050), nk::ss(0.1f, 1, t)), hexColor(0xc04010), nk::ss(1.5f, 5, t));
 }
 
 // Fire by temperature: white-hot → yellow → orange → deep red → soot
@@ -2468,16 +2592,28 @@ static glm::vec3 fireRamp(float T) {
   return lerp3(c[i], c[i + 1], T - i);
 }
 
+// A puff's atlas cell and turn (ParticleSystem::P::rot): fixed per puff, turning by `turn`
+static float puffRot(int i, int salt, float turn) {
+  float a = std::fmod(puffHash(i, salt) * 6.2831853f + turn, 6.2831853f);
+  if (a < 0) a += 6.2831853f;
+  return std::floor(puffHash(i, salt + 1) * 3.999f) * 8 + a;
+}
+
 // The mushroom cloud at its age, as soft sprites, as StarCraft II draws it: a cap of fire
 // (a rolling torus under a dome) on a fiery stem, burning white-yellow inside and orange
-// at the edges, cooling to dark red and soot; a grey dust ring surging out along the
-// ground around it. `lit` dims what has cooled to smoke with the scene's light (at night
-// it goes dark once the fireball fades); the fire is self-lit.
-static void mushroomSprites(const Mushroom& mc, float lit, std::vector<ParticleSystem::P>& smoke, std::vector<ParticleSystem::P>& fire) {
-  const float t = mc.t, g = 1 - std::exp(-t / 0.9f), spread = 1 - std::exp(-t / 1.0f);
-  const float heat = std::exp(-t / 2.8f);   // the cloud's temperature, 1 → 0
-  const float capH = 1.4f + 6.0f * g + 0.2f * t, capR = 0.9f + 2.7f * spread, tube = 0.7f + 0.9f * g, puff = 1.3f + 1.6f * g;
+// at the edges, cooling to dark red and soot, around a white-hot heart. It follows the
+// fireball (nuke_fx.h's curves) and takes over as that burns away (`shell`: the fireball is
+// drawn; without it the sprites are the whole blast). `lit` dims what has cooled to smoke
+// with the scene's light (at night it goes dark once the fireball fades); the fire is
+// self-lit, and in the HDR target (`hdr`) its hottest parts burn past 1 and bloom.
+static void mushroomSprites(const NukeBlast& mc, float lit, bool hdr, bool shell, std::vector<ParticleSystem::P>& smoke,
+                            std::vector<ParticleSystem::P>& fire) {
+  const float t = mc.t, g = 1 - std::exp(-t / 0.9f);
+  const float heat = std::exp(-t / 3.6f);   // the cloud's temperature, 1 → 0
+  const float fr = nk::fireR(t), sxz = 1 + 0.22f * nk::ss(0.6f, 2.6f, t);
+  const float capH = nk::fireY(t) + 0.25f * std::max(0.f, t - 2), capR = 0.8f * fr * sxz + 0.1f * t, tube = 0.42f * fr, puff = 1.3f + 1.6f * g;
   const float fade = std::min(1.f, t / 0.15f) * (1 - glm::smoothstep(MUSH_DUR - 2.5f, MUSH_DUR, t));
+  const float capIn = shell ? nk::ss(1.5f, 3.0f, t) : 1, stemIn = shell ? nk::ss(0.4f, 1.4f, t) : 1;
   int n = 0;
   // inner: how hot this puff burns for the cloud's temperature (1 = its core)
   auto add = [&](glm::vec3 p, float size, float a, float inner) {
@@ -2486,49 +2622,96 @@ static void mushroomSprites(const Mushroom& mc, float lit, std::vector<ParticleS
     ParticleSystem::P q{};
     q.pos = mc.p + p;
     q.size = size * (0.85f + 0.3f * puffHash(i, 2));
-    q.col = fireRamp(T);
-    if (T < 0.3f) q.col *= lit + (1 - lit) * T / 0.3f;   // cooled to smoke: lit by the scene
+    q.col = fireRamp(T) * (hdr ? 1 + 2 * std::max(0.f, T - 0.5f) : 1.f);   // the hottest smoke glows a little past 1
+    if (T < 0.3f) q.col = lerp3(hexColor(0x6a5a4c) * lit, fireRamp(0.3f), T / 0.3f);   // cooled to grey-brown smoke, lit by the scene
     q.alpha = a * fade * (0.6f + 0.4f * std::min(1.f, T * 2));
+    q.rot = puffRot(i, 40, t * (puffHash(i, 42) - 0.5f) * 0.8f);
     smoke.push_back(q);
     if (T < 0.45f) return;   // the hottest parts glow
-    q.size *= 0.6f;
-    q.col = fireRamp(std::min(1.f, T + 0.2f));
-    q.alpha = 0.5f * std::min(1.f, (T - 0.45f) / 0.55f) * fade;
+    q.size *= 0.5f;
+    q.col = fireRamp(std::min(1.f, T + 0.2f)) * (hdr ? 1 + 5 * T * T : 1.f);
+    q.alpha = 0.9f * a * fade * std::min(1.f, (T - 0.45f) / 0.55f);
     fire.push_back(q);
   };
   const float PI2 = 2 * PI_F, stemTop = std::max(0.5f, capH - tube * 0.6f);
   for (int i = 0; i < 22; i++) {   // stem: a column of fire, wider at the foot, twisting slowly
     float f = i / 21.f, a = puffHash(i, 3) * PI2 + t * 0.7f, r = (0.12f + 0.25f * (1 - f)) * puffHash(i, 4);
-    add({std::cos(a) * r, 0.3f + f * (stemTop - 0.3f), std::sin(a) * r}, (1.2f + 0.9f * (1 - f)) * (0.6f + 0.4f * g), 0.6f, 1.05f - 0.15f * f);
+    add({std::cos(a) * r, 0.3f + f * (stemTop - 0.3f), std::sin(a) * r}, (1.2f + 0.9f * (1 - f)) * (0.6f + 0.4f * g), 0.6f * stemIn, 1.05f - 0.15f * f);
   }
   for (int k = 0; k < 90; k++) {   // cap: the rolling torus (golden-angle offsets spread the puffs over its tube)
     float a = PI2 * k / 90 + puffHash(k, 5) * 0.1f, phi = -t * 1.4f + k * 2.39996f, s = std::sin(phi), cph = std::cos(phi);
     float rr = capR + tube * cph;
-    add({std::cos(a) * rr, capH + tube * 0.8f * s, std::sin(a) * rr}, puff * 0.85f, 0.55f, 0.85f + 0.2f * s - 0.1f * cph);   // the outer rim cools first
+    add({std::cos(a) * rr, capH + tube * 0.8f * s, std::sin(a) * rr}, puff * 0.85f, 0.75f * capIn, 0.85f + 0.2f * s - 0.1f * cph);   // the outer rim cools first
   }
   for (int k = 0; k < 18; k++) {   // dome and core of the cap: the hottest
     float a = PI2 * puffHash(k, 6), r = capR * 0.7f * std::sqrt(puffHash(k, 7));
-    add({std::cos(a) * r, capH + tube * (0.2f + 0.6f * puffHash(k, 8)), std::sin(a) * r}, puff * 1.1f, 0.55f, 1.1f - 0.3f * r / std::max(capR, 0.1f));
+    add({std::cos(a) * r, capH + tube * (0.2f + 0.6f * puffHash(k, 8)), std::sin(a) * r}, puff * 1.1f, 0.75f * capIn, 1.1f - 0.3f * r / std::max(capR, 0.1f));
   }
-  // the dust ring: grey smoke rolling out along the ground, thickest at its rim, settling
-  float ringR = 1.8f + 5.0f * (1 - std::exp(-t / 0.8f)), settle = 1 - glm::smoothstep(3.f, MUSH_DUR, t);
-  for (int k = 0; k < 56; k++) {
-    float a = PI2 * k / 56 + puffHash(k, 9) * 0.1f, r = ringR + (puffHash(k, 10) - 0.5f) * 0.9f;
+  // the cap's white-hot heart: a knot of flame puffs glowing through the smoke (and a faint
+  // glow up the stem, seen from the side; from above it would read as a stick)
+  const float hk = fade * glm::smoothstep(0.08f, 0.3f, heat);
+  if (hk > 0) {
     ParticleSystem::P q{};
-    q.pos = mc.p + glm::vec3(std::cos(a) * r, 0.35f + 0.3f * puffHash(k, 11), std::sin(a) * r);
-    q.size = (1.5f + 1.0f * g) * (0.8f + 0.4f * puffHash(k, 12));
-    float shade = 0.75f + 0.25f * puffHash(k, 13);
-    q.col = lerp3(hexColor(0x6a6460), hexColor(0x9a948c), shade) * lit;
-    q.alpha = 0.42f * settle * std::min(1.f, t / 0.2f);
-    smoke.push_back(q);
+    for (int i = 0; i < 7; i++) {
+      float a = PI2 * puffHash(i, 60), r = capR * 0.35f * std::sqrt(puffHash(i, 61));
+      q.pos = mc.p + glm::vec3(std::cos(a) * r, capH + tube * (0.1f + 0.4f * puffHash(i, 62)), std::sin(a) * r);
+      q.size = capR * (0.45f + 0.25f * puffHash(i, 63));
+      q.col = fireRamp(std::min(1.f, heat * (1.6f + 0.4f * puffHash(i, 64)))) * (hdr ? 1.5f + 5 * heat : 1.f);
+      q.alpha = 0.8f * hk * capIn;
+      q.rot = puffRot(i, 65, t * (puffHash(i, 66) - 0.5f) * 1.5f);
+      fire.push_back(q);
+    }
+    q.rot = -1;   // smooth glows, not puffs
+    for (int i = 0; i < 6; i++) {
+      float f = (i + 0.5f) / 6;
+      q.pos = mc.p + glm::vec3(0, 0.4f + f * (stemTop - 0.4f), 0);
+      q.size = 1.1f + 0.5f * (1 - f);
+      q.col = fireRamp(std::min(1.f, heat * (1.6f - 0.3f * f))) * (hdr ? 1 + 4 * heat : 1.f);
+      q.alpha = 0.25f * hk * stemIn;
+      fire.push_back(q);
+    }
   }
-  if (heat > 0.35f) {   // the white flash at the heart of the young fireball
+  if (!shell && heat > 0.45f) {   // the white flash at the heart of the young fireball (the shell is that, when drawn)
     ParticleSystem::P q{};
     q.pos = mc.p + glm::vec3(0, capH * 0.8f, 0);
     q.size = capR * 2.6f;
     q.col = hexColor(0xfff0c0);
-    q.alpha = 0.55f * (heat - 0.35f) / 0.65f;
+    q.alpha = 0.55f * (heat - 0.45f) / 0.55f;
+    q.rot = -1;
     fire.push_back(q);
+  }
+  // the base surge: a ring of dust rolling out past the kill radius with a burning leading edge
+  // (shock-heated dust), the most of it at its front, breaking up and settling as it slows
+  if (t < nk::SURGE_END) {
+    const float Rd = nk::surgeR(t), H = nk::surgeH(t), grow = 1 + 0.5f * nk::ss(1.5f, nk::SURGE_END, t);
+    const float sa = nk::ss(0.03f, 0.2f, t) * (1 - nk::ss(2.0f, 4.5f, t));
+    const float rim = std::exp(-t / 2.2f), rimHeat = std::exp(-t / 1.8f), rimIn = nk::ss(0.03f, 0.15f, t);
+    auto keep = [](const glm::vec3& p) { return 0.3f + 0.7f * nk::ss(1.5f, 4, std::hypot(p.x, p.z)); };   // the bunker stays readable
+    const int NW = 130, NF = 96;
+    for (int k = 0; k < NW; k++) {
+      float h1 = puffHash(k, 30), h2 = puffHash(k, 31), h3 = puffHash(k, 32), h4 = puffHash(k, 33);
+      float a = PI2 * (k + 0.5f * h1) / NW, r = Rd - (0.2f + 0.25f * Rd) * h2 * h2;
+      ParticleSystem::P q{};
+      q.pos = mc.p + glm::vec3(std::cos(a) * r, 0.5f + 0.55f * H * (0.3f + 0.7f * h3) * (1 - 0.5f * h2), std::sin(a) * r);
+      q.size = (1.6f + 0.13f * Rd) * (0.75f + 0.5f * h4) * grow;
+      q.col = lerp3(hexColor(0x3c3026), hexColor(0x8a7660), h3) * lit;   // dust: lit by the scene
+      q.alpha = 0.9f * sa * keep(q.pos);
+      q.rot = puffRot(k, 34, t * (h1 - 0.5f) * 0.8f);
+      if (q.alpha > 0.01f) smoke.push_back(q);
+    }
+    // the burning edge: flames licking along the front, close enough to merge. Blended over
+    // (not added): added, the yellow would tint the grass lime; HDR, so it still blooms
+    for (int k = 0; k < NF && rim * rimIn > 0.02f; k++) {
+      float h1 = puffHash(k, 50), h3 = puffHash(k, 52), h4 = puffHash(k, 53);
+      float a = PI2 * (k + 0.6f * h1) / NF, r = Rd + 0.2f + 0.3f * h4, T = 0.35f + 0.6f * rimHeat * (0.6f + 0.4f * h4);
+      ParticleSystem::P q{};
+      q.pos = mc.p + glm::vec3(std::cos(a) * r, 0.45f + 0.3f * H * h3, std::sin(a) * r);
+      q.size = (1.1f + 0.1f * Rd) * (0.8f + 0.4f * h3);
+      q.col = fireRamp(T) * (hdr ? 1 + 4 * T * T : 1.f);
+      q.alpha = 0.8f * std::min(1.f, 1.3f * rim) * rimIn * (0.5f + 0.5f * h1) * keep(q.pos);
+      q.rot = puffRot(k, 54, t * (h1 - 0.5f) * 2.f);
+      smoke.push_back(q);
+    }
   }
 }
 
@@ -2619,7 +2802,7 @@ void Game::render() {
       else if (e->slowed) c = {0.6f, 0.8f, 1.5f};        // concussive slow: icy blue
       addInst(e->pool, e->pos, e->rotY, e->rotZ, c);
     }
-  for (const Corpse& c : corpses_) addInst(c.pool, c.pos, c.rotY, c.rotZ, glm::vec3(std::max(0.25f, 1 - c.t * 1.4f)));
+  for (const Corpse& c : corpses_) addInst(c.pool, c.pos, c.rotY, c.rotZ, glm::vec3(c.flung ? c.tint : std::max(0.25f, 1 - c.t * 1.4f)));
   for (auto& [k, pool] : pools_)
     if (!pool->inst.empty())
       for (const BakedPart& p : pool->parts) R.drawInstanced(p.mesh, p.mat, pool->inst.data(), (int)pool->inst.size(), p.cast, false);
@@ -2776,10 +2959,43 @@ void Game::render() {
     }
     R.drawInstanced(acidMesh_, &acidMat_, ai.data(), (int)ai.size(), false, false);
   }
-  // nuke mushroom clouds: smoke sprites back to front, the fire glowing over them
+  // nukes (nuke_fx.h): the scars on the ground, each blast and the fireball's glow on the ground
+  // under it; then the mushroom clouds: smoke sprites back to front, the fire glowing over them
+  {
+    for (const Scar& s : scars_) nukeFx_.drawScar(R, s.p, s.age, s.seed, nk::frontR(s.age));
+    static std::vector<Instance> wash;
+    wash.clear();
+    for (const NukeBlast& n : nukes_) {
+      NukeRenderer::Blast b;
+      b.p = n.p;
+      b.t = n.t;
+      b.seed = n.seed;
+      b.low = !gfxHigh_;
+      nukeFx_.draw(R, b);
+      const float k = nk::heat(n.t) * (1 - nk::ss(4, 7, n.t)), wr = 3.4f * nk::fireR(n.t);
+      if (k <= 0.01f) continue;
+      Instance w;
+      w.m = trs({n.p.x, 0.045f, n.p.z}, glm::vec3(0), {wr, 1, wr});
+      w.c = hexColor(0xff8c38) * ((hdrLast_ ? 2.5f : 1.f) * k);
+      wash.push_back(w);
+    }
+    R.drawInstanced(blipMesh_, &blastWashMat_, wash.data(), (int)wash.size(), false, false, 1);
+  }
   mushSmoke_.p.clear();
   mushFire_.p.clear();
-  for (const Mushroom& mc : mushrooms_) mushroomSprites(mc, 1 - 0.75f * dnLightF_, mushSmoke_.p, mushFire_.p);
+  for (const NukeBlast& n : nukes_) mushroomSprites(n, 1 - 0.75f * dnLightF_, hdrLast_, nukeFx_.ok(), mushSmoke_.p, mushFire_.p);
+  {   // the cloud thins where it hangs between the camera and the bunker: the fight there stays readable
+    glm::vec4 b = proj_ * view_ * glm::vec4(0, 1, 0, 1);
+    const glm::vec2 bs = glm::vec2(b) / std::max(b.w, 1e-3f);
+    const float aspect = canvasW_ / std::max(1.f, canvasH_);
+    for (auto* ps : {&mushSmoke_, &mushFire_})
+      for (auto& q : ps->p) {
+        glm::vec4 c = proj_ * view_ * glm::vec4(q.pos, 1);
+        if (c.w <= 0 || q.pos.y < 2) continue;   // (the dust on the ground does not cover it)
+        glm::vec2 d = (glm::vec2(c) / c.w - bs) * glm::vec2(aspect, 1);
+        q.alpha *= 0.35f + 0.65f * nk::ss(0.12f, 0.4f, glm::length(d));
+      }
+  }
   if (!mushSmoke_.p.empty()) {
     auto viewZ = [this](const glm::vec3& p) { return view_[0][2] * p.x + view_[1][2] * p.y + view_[2][2] * p.z; };
     std::sort(mushSmoke_.p.begin(), mushSmoke_.p.end(), [&](const ParticleSystem::P& a, const ParticleSystem::P& b) { return viewZ(a.pos) < viewZ(b.pos); });
@@ -2830,18 +3046,29 @@ void Game::render() {
   sp.view = view_;
   sp.proj = proj_;
   sp.camPos = camPos_;
-  sp.ambientColor = ambCol_;
-  sp.ambientIntensity = ambI_;
+  // a nuke's flash (the youngest blast's): the field blows out to white through the exposure
+  // (post.h; the HUD stays clear), the light surges, the sky flashes; then the fireball's
+  // light, rising and cooling with it (at night it lights the field and glows on the sky)
+  float nkFlash = 0, nkExpo = 1;
+  glm::vec3 nkPos = nukeLightPos_, nkCol = hexColor(0xffa050);
+  for (const NukeBlast& n : nukes_) {
+    nkFlash = std::max(nkFlash, nk::flashK(n.t));
+    nkExpo = nk::exposure(n.t);
+    nkPos = {n.p.x, std::max(3.f, nk::fireY(n.t)), n.p.z};
+    nkCol = nukeLightCol(n.t);
+  }
+  sp.ambientColor = ambCol_ * ambI_ + glm::vec3(1, 0.97f, 0.92f) * (6 * nkFlash);
+  sp.ambientIntensity = 1;
   sp.sun = {{10, 28, 8}, sunCol_, sunI_};
   sp.fill = {{-8, 10, -6}, hexColor(0x4488cc), fillI_};
   sp.points[0] = {{0, 2.5f, 0}, hexColor(0xff9944), bunkerLightI_, 14, 2};   // night glow
   sp.points[1] = {muzzlePos_, hexColor(0xffb060), muzzleI_, 4.5f, 2};        // muzzle flash on the hull
   sp.points[2] = {firePos_, hexColor(0xff6a1a), fireI_, 6, 2};              // the bunker burns
-  sp.points[3] = {nukeLightPos_, hexColor(0xffa050), nukeLightK() * (1 + 3 * dnFactor_), 30, 1.5f};   // a nuke's fireball (strongest at night)
+  sp.points[3] = {nkPos, nkCol, 30 * nkFlash + 1.3f * nukeLightK() * (1 + 3 * dnFactor_), 34, 1.5f};   // a nuke's fireball (strongest at night)
   sp.spot = lampSpot_;   // a crate runner's chest lamps
   std::copy(glows_, glows_ + glowCount_, sp.glows);   // Marauder grenades and their bursts
   sp.glowCount = glowCount_;
-  sp.fogColor = fogCol_;
+  sp.fogColor = fogCol_ + glm::vec3(1, 0.95f, 0.85f) * (0.9f * nkFlash) + glm::vec3(1, 0.45f, 0.15f) * (0.12f * nukeLightK() * dnFactor_);
   sp.fogNear = fogNear_;
   sp.fogFar = fogFar_;
   sp.shadows = gfxHigh_;
@@ -2850,12 +3077,21 @@ void Game::render() {
   sp.post.enabled = postRun_;
   sp.post.bloomStrength = 0.6f + 0.3f * dnFactor_;
   sp.post.vignette = 0.08f + 0.04f * dnFactor_;
+  sp.post.exposure = nkExpo;
+  if (nkFlash > 0.001f) {   // and a hot white bloom over ground zero
+    glm::vec4 c = proj_ * view_ * glm::vec4(nkPos, 1);
+    if (c.w > 0) sp.post.flashPos = glm::vec2(c) / c.w * 0.5f + 0.5f;
+    sp.post.flashColor = glm::vec3(1, 0.96f, 0.9f) * (2.5f * nkFlash);
+    sp.post.flashRadius = 0.45f;
+    sp.post.flashGlobal = 0.3f;
+  }
   float sx = (float)fbW_ / std::max(1, winW_), sy = (float)fbH_ / std::max(1, winH_);
   sp.vpX = (int)std::round(canvasX_ * sx);
   sp.vpW = std::max(1, (int)std::round(canvasW_ * sx));
   sp.vpH = std::max(1, (int)std::round(canvasH_ * sy));
   sp.vpY = fbH_ - (int)std::round((canvasY_ + canvasH_) * sy);
   R.render(sp);
+  hdrLast_ = R.postActive();
 }
 
 // ─── Frame ───────────────────────────────────────────────────────────────────
@@ -2932,7 +3168,8 @@ void Game::clearEntities() {
   corpses_.clear();
   acids_.clear();
   vMissiles_.clear();
-  mushrooms_.clear();
+  nukes_.clear();
+  scars_.clear();
   mBlasts_.clear();
   glowCount_ = 0;
   nukeLightT_ = -1;

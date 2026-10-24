@@ -1,4 +1,4 @@
-// Post-processing: the 3D scene renders into an HDR target (RGBA16F, 4x MSAA on
+// Post-processing: the 3D scene renders into an HDR target (R11G11B10F, else RGBA16F; 4x MSAA on
 // GFX HIGH), then a bloom chain and a composite pass (tone curve, exposure, a
 // radial flash, grading, vignette, dither) write the canvas into the default
 // framebuffer. The ImGui HUD is drawn afterwards, untouched.
