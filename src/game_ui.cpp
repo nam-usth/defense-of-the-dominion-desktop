@@ -147,13 +147,15 @@ void Game::drawOverlayCanvas() {
         if (!project(e->pos + glm::vec3(0, e->type == 'r' ? 1.4f : 1.1f, 0), sx, sy)) continue;
         bool r = e->type == 'r';
         float bw = (r ? 36 : 24) * s, bh = (r ? 5 : 4) * s, bx = sx - bw / 2, by = sy - bh / 2;
-        dl->AddRectFilled({bx - s, by - s}, {bx + bw + s, by + bh + s}, alpha(IM_COL32(0, 0, 0, 166), fa));
+        // attribute badge: ARM (Roach) / LGT (Zergling), on the bar's dark backing (bare, it was lost on the grass and the Zerg)
+        Txt tag = TA(6, alpha(r ? IM_COL32(255, 150, 50, 217) : IM_COL32(100, 220, 255, 217), fa), true, 0, true);
+        const char* tg = r ? "ARM" : "LGT";
+        float tx = bx + bw + 3 * s;
+        dl->AddRectFilled({bx - s, by - s}, {tx + textW(tg, tag) + 2 * s, by + bh + s}, alpha(IM_COL32(0, 0, 0, 166), fa));
         ImU32 col = pct > 0.5f ? IM_COL32((int)std::round(255 * (1 - pct) * 2), 200, 0, 255) : IM_COL32(255, (int)std::round(255 * pct * 2), 0, 255);
         dl->AddRectFilled({bx, by}, {bx + bw * pct, by + bh}, alpha(col, fa));
         dl->AddRect({bx, by}, {bx + bw, by + bh}, alpha(IM_COL32(255, 255, 255, 64), fa), 0, 0, 0.5f * s);
-        // attribute badge: ARM (Roach) / LGT (Zergling)
-        Txt tag = TA(6, alpha(r ? IM_COL32(255, 150, 50, 217) : IM_COL32(100, 220, 255, 217), fa), true, 0, true);
-        textB(dl, bx + bw + 2 * s, by + bh - s, r ? "ARM" : "LGT", tag);
+        textB(dl, tx, by + bh - s, tg, tag);
         if (r) {   // numeric HP for Roaches
           Txt n = TA(7, alpha(IM_COL32(255, 255, 255, 166), fa), false, 0, true);
           std::string hp = std::to_string((int)std::ceil(e->hp));
@@ -488,9 +490,16 @@ void Game::drawConsole(float dt) {
       gradRect(dl, {a.x, a.y + h * 0.45f}, {a.x + fw, b.y}, IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 46));
       glowRect(dl, a, {a.x + fw, b.y}, glow, 5 * s);
     }
-    if (tickFrac > 0 && tickFrac < 1) {
+    Txt l = TA(lblPx, IM_COL32(255, 255, 255, 204), true, 1.5f);
+    l.shadow = true;
+    Txt v = TA(valPx, valCol, false, 0, true);
+    v.shadow = true;
+    const float cy = (a.y + b.y) / 2, lx0 = a.x + 7 * s, lx1 = lx0 + textW(label, l), vx1 = b.x - 7 * s, vx0 = vx1 - textW(val.c_str(), v);
+    if (tickFrac > 0 && tickFrac < 1) {   // none under the label or the value (they cut through the letters)
       float step = (b.x - a.x) * tickFrac;
-      if (step >= 2) for (float tx = a.x + step; tx < b.x - 0.5f; tx += step) dl->AddLine({tx - 0.5f, a.y}, {tx - 0.5f, b.y}, tickCol);
+      if (step >= 2)
+        for (float tx = a.x + step; tx < b.x - 0.5f; tx += step)
+          if ((tx < lx0 - 2 * s || tx > lx1 + 2 * s) && (tx < vx0 - 2 * s || tx > vx1 + 2 * s)) dl->AddLine({tx - 0.5f, a.y}, {tx - 0.5f, b.y}, tickCol);
     }
     ImU32 border = rgb(0x233a52);
     if (pulse) {
@@ -499,12 +508,15 @@ void Game::drawConsole(float dt) {
       glowRect(dl, a, b, alpha(rgb(0xff503c), 0.6f * k), 8 * s);
     }
     dl->AddRect(a, b, border);
-    Txt l = TA(lblPx, IM_COL32(255, 255, 255, 204), true, 1.5f);
-    l.shadow = true;
-    textC(dl, a.x + 7 * s, (a.y + b.y) / 2, label, l);
-    Txt v = TA(valPx, valCol, false, 0, true);
-    v.shadow = true;
-    textC(dl, b.x - 7 * s - textW(val.c_str(), v), (a.y + b.y) / 2, val.c_str(), v);
+    // a dark outline under the drop shadow: white reads on the light amber fill as it does on the green
+    auto outlined = [&](float x, const char* str, const Txt& t) {
+      Txt o = TA(t.px, IM_COL32(0, 0, 0, 170), t.bold, t.spacing, t.mono);
+      const float off[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+      for (auto& d : off) textC(dl, x + d[0] * s, cy + d[1] * s, str, o);
+      textC(dl, x, cy, str, t);
+    };
+    outlined(lx0, label, l);
+    outlined(vx0, val.c_str(), v);
     y += h + 6 * s;
   };
   {
@@ -759,7 +771,12 @@ void Game::drawPortrait(float x0, float y0, float w, float h) {
   unsigned stc = hpLvl_ >= 3 ? 0xffd24a : hpLvl_ >= 1 ? 0x66ddff : 0x44ff88;
   Txt st = T(10, stc, true, 1.5f);
   st.glow = rgb(stc, 0.6f);
-  text(dl, {(a.x + b.x) / 2 - textW(stx, st) / 2, a.y + 3 * s}, stx, st);
+  float stw = textW(stx, st);
+  ImVec2 sp((a.x + b.x) / 2 - stw / 2, a.y + 3 * s);
+  // on a dark plate: the gold hologram (hull 2-3) reaches up into the gold label and swallows its letters
+  dl->AddRectFilled({sp.x - 5 * s, sp.y - s}, {sp.x + stw + 5 * s, sp.y + textH(st) + s}, rgb(0x04101c, 0.9f));
+  dl->AddRect({sp.x - 5 * s, sp.y - s}, {sp.x + stw + 5 * s, sp.y + textH(st) + s}, rgb(0x2e80b4, 0.45f));
+  text(dl, sp, stx, st);
   for (int i = 0; i < 3; i++) {
     ImVec2 c((a.x + b.x) / 2 + (i - 1) * 10 * s, b.y - 7 * s);
     bool on = i < hpLvl_;
@@ -801,6 +818,7 @@ void Game::drawCommandCard(float x0, float y0, float w, float h) {
   float gx = x0 + 6 * s, gy = y0 + th + 5 * s, gw = w - 12 * s, gh = h - th - 11 * s;
   float cw = (gw - 4 * 4 * s) / 5, chh = (gh - 4 * s) / 2;
   hudRect("cmd-grid", gx, gy, gx + gw, gy + gh);
+  hudRect("cmd-card", x0, y0, x0 + w, y0 + h);
   bool anyHover = false;
   bool camp = mode_ == Mode::Campaign;
   (void)camp;
@@ -893,6 +911,9 @@ void Game::drawCommandCard(float x0, float y0, float w, float h) {
     text(dl, {icx - textW(c.label, lt) / 2, iy + iconSz + gap}, c.label, lt);
     Txt kt = TA(10, D(rgb(0xffd27a)), false, 0, true);
     kt.shadow = true;
+    float kw = textW(c.key, kt);
+    if (a.x + 4 * s + kw > icx - iconSz / 2 - 2 * s)   // a long key (HOME) runs over the icon: on a dark tab that covers its corner
+      dl->AddRectFilled({a.x + 3 * s, a.y + 3 * s}, {a.x + 5 * s + kw, a.y + 1 * s + textH(kt)}, D(rgb(0x0b1a2e, 0.94f)), 2 * s);
     text(dl, {a.x + 4 * s, a.y + 2 * s}, c.key, kt);
     if (c.lvl >= 0)
       for (int p = 0; p < 3; p++) {
@@ -1209,6 +1230,7 @@ void Game::drawRoster() {
       if (u == Unit::Ghost) ghostOrd++;
       Txt lt = T(14, tc, true, 0.5f), st = TA(9, tag.empty() ? alpha(rgb(tc), 0.75f) : rgb(tagCol), true, 1);
       const char* sub = tag.empty() ? d.name : tag.c_str();
+      if (textW(sub, st) > tw - 8 * s) st.spacing = 0;   // MARINE filled its 40 px tile: no letter spacing, clear of the border
       float cxm = (tile.a.x + tile.b.x) / 2;
       text(dl, {cxm - textW(d.label, lt) / 2, tile.a.y + 6 * s}, d.label, lt);
       text(dl, {cxm - textW(sub, st) / 2, tile.a.y + 24 * s}, sub, st);
@@ -1739,7 +1761,7 @@ void Game::drawMenu() {
     case 3: {   // CONTROLS: key → action
       static const char* keys[][2] = {
         {"CLICK", "Fire a volley (every unit in the bunker shoots)"}, {"HOLD", "Full auto (empties the magazine fast)"},
-        {"R", "Airstrike + resupply \xE2\x80\x94 when out of ammo"}, {"N", "Nuke (wave 5+)"}, {"T", "Stimpack (six Marines in the bunker; fewer with Super Stimpack's tiers)"},
+        {"R", "Airstrike + resupply \xE2\x80\x94 when out of ammo"}, {"N", "Nuke (wave 5+)"}, {"T", "Stimpack (six Marines in the bunker; fewer with Super Stimpack)"},
         {"B", "Roster: hire units, research (pauses)"}, {"1 2 3 4", "Upgrade damage \xC2\xB7 armor \xC2\xB7 bunker \xC2\xB7 ammo"},
         {"WHEEL  + \xE2\x88\x92", "Zoom in on the bunker / out"}, {"INSERT  DELETE", "Rotate the view 90\xC2\xB0 left / right"},
         {"HOME", "Reset the view"}, {"Q \xC2\xB7 Y \xC2\xB7 K", "Graphics \xC2\xB7 day/night \xC2\xB7 sound"}, {"F3", "Frame times"},
@@ -2166,8 +2188,12 @@ void Game::drawResults() {
             T(13, DANGER, true));
     y += 18 * s + 12 * s;
   }
-  float bw = (iw - 8 * s) / 2, bh = 44 * s;
+  // the row split so both buttons get the same padding (in halves, CONTINUE · ENDLESS filled its button edge to edge)
+  const char* first = resVictory_ ? "CONTINUE \xC2\xB7 ENDLESS" : "PLAY AGAIN";
+  auto contentW = [&](const char* label) { return 26 * s + 14 * s + textW(label, T(17, TEXT, true, 2)); };
+  float bp = std::max(0.f, (iw - 8 * s - contentW(first) - contentW("MAIN MENU")) / 4), bh = 44 * s;
   auto rowBtn = [&](const char* id, float x, const char* svg, const char* label, bool gold) {
+    float bw = contentW(label) + 2 * bp;
     ImGui::SetCursorScreenPos({x, y});
     Btn b = button(id, {bw, bh});
     bool hov = b.hovered;
@@ -2179,9 +2205,9 @@ void Game::drawResults() {
     textC(dl, tx + 40 * s, cy, label, lt);
     return b.clicked;
   };
-  if (resVictory_) { if (rowBtn("##cont", ix0, "endless", "CONTINUE \xC2\xB7 ENDLESS", true)) continueEndless(); }
-  else if (rowBtn("##again", ix0, "restart", "PLAY AGAIN", false)) restart();
-  if (rowBtn("##main", ix0 + bw + 8 * s, "home", "MAIN MENU", false)) showTitle();
+  if (resVictory_) { if (rowBtn("##cont", ix0, "endless", first, true)) continueEndless(); }
+  else if (rowBtn("##again", ix0, "restart", first, false)) restart();
+  if (rowBtn("##main", ix0 + contentW(first) + 2 * bp + 8 * s, "home", "MAIN MENU", false)) showTitle();
   y += bh + 20 * s;
   ch = y - y0;
   ImGui::End();
@@ -2696,7 +2722,10 @@ void Game::drawTutorial() {
   float x0 = (W - bw) / 2, y1 = H - 160 * s;
   if (focus) {
     x0 = std::max(12 * s, std::min(W - bw - 12 * s, (fx0 + fx1) / 2 - bw / 2));
-    y1 = fy0 - 14 * s;
+    // on the command card: above the whole card (just above a button, it lay over the card's header)
+    float cx0, cy0, cx1, cy1;
+    bool onCard = focusRect({"cmd-card"}, cx0, cy0, cx1, cy1) && fx0 >= cx0 && fy0 >= cy0 && fx1 <= cx1 && fy1 <= cy1;
+    y1 = (onCard ? cy0 : fy0) - 14 * s;
   }
   float y0 = std::max(8 * s, y1 - bh);
   y1 = y0 + bh;
