@@ -901,20 +901,32 @@ void Game::updateAcids(float dt) {
 // them, then fly outward burning and tumbling, bounce once, smoulder out and sink.
 void Game::updateCorpses(float dt) {
   int burning = 0;   // the flames share a budget: a nuke over a big wave must not flood the particles
-  for (const Corpse& c : corpses_) burning += c.flung && c.t < c.delay + 2.0f;
+  for (const Corpse& c : corpses_) burning += c.flung && c.t < c.delay + 2.0f;   // (before it is thrown: when it should be)
   const float share = std::min(1.f, 40.f / std::max(1, burning));
   for (size_t i = 0; i < corpses_.size();) {
     Corpse& c = corpses_[i];
     c.t += dt;
     if (c.flung) {
-      const float s = c.t - c.delay;
+      if (!c.thrown) {   // the front reaches it where it has run to: thrown outward from there
+        const glm::vec2 o = glm::vec2(c.pos.x, c.pos.z) - c.zero;
+        const float L = glm::length(o);
+        if (nk::frontR(c.t) >= L) {
+          c.thrown = true;
+          c.delay = c.t;
+          const float h = glm::length(glm::vec2(c.vel.x, c.vel.z));
+          if (L > 1e-3f) c.vel = {o.x / L * h, c.vel.y, o.y / L * h};
+        }
+      }
+      const float s = c.thrown ? c.t - c.delay : -1;
       // the flash's white-out, then orange-hot, charring black within about a second
       c.col = glm::mix(glm::vec3(1, .62f, .38f), glm::vec3(.13f, .11f, .1f), glm::smoothstep(0.f, 1.2f, c.t)) + glm::vec3(1.2f * std::exp(-c.t / 0.12f));
-      if (s < 0) {   // still on its feet: runs on, slowing as it burns, staggering
+      if (s < 0) {   // still on its feet: runs on, slowing as it burns, staggering (no further than the hull)
         const float k = std::exp(-c.t / 0.35f);
-        const glm::vec3 d = c.run * (k * dt);
+        glm::vec3 d = c.run * (k * dt);
+        const float r = std::hypot(c.pos.x, c.pos.z), L = glm::length(d);
+        if (r - L < c.stopR) d *= std::max(0.f, r - c.stopR) / std::max(L, 1e-6f);
         c.pos += d;
-        if (!c.walk.empty()) {
+        if (!c.walk.empty() && glm::length(d) > 0) {
           c.step = std::fmod(c.step + glm::length(d) / c.stride * ANIM_SPEED, 1.f);
           c.pool = c.walk[std::min((int)c.walk.size() - 1, (int)std::floor(c.step * c.walk.size()))];
         }
@@ -1844,6 +1856,7 @@ void Game::doNuke(bool force) {
       float k = 1 - d / 24, j = 0.8f + 0.4f * rnd();
       Fling f;
       f.delay = nk::frontT(d);
+      f.zero = {tx, tz};
       f.vel = {out.x * (3 + 10 * k) * j, 3 + 5 * k * rnd(), out.y * (3 + 10 * k) * j};
       f.spin = (rnd() < .5f ? -1 : 1) * (6 + 6 * rnd());
       killEnemy(e, true, false, &f);
@@ -1862,6 +1875,7 @@ void Game::doNuke(bool force) {
 void Game::killEnemy(const EnemyP& e, bool reward, bool splash, const Fling* fling) {
   if (e->dead) return;
   e->dead = true;
+  const float slowF = e->slowed ? e->slowFactor : 1;   // (a nuke's victim runs on at the pace it had)
   e->slowed = false;
   if (splash) deathFx(*e);
   audio::play(e->type == 'r' ? "rdie" : "zdie");
@@ -1873,11 +1887,17 @@ void Game::killEnemy(const EnemyP& e, bool reward, bool splash, const Fling* fli
       c.vel = fling->vel;
       c.delay = fling->delay;
       c.spin = fling->spin;
-      const float d = std::hypot(e->pos.x, e->pos.z);   // running at the bunker (one at the hull writhes there)
-      if (d >= attackReach(*e) && d > 0.01f) c.run = glm::vec3(-e->pos.x / d, 0, -e->pos.z / d) * (e->speed * (e->slowed ? e->slowFactor : 1) * 60);
-      c.walk = e->walk;
-      c.stride = e->stride;
-      c.step = e->step;
+      c.zero = fling->zero;
+      c.stopR = attackReach(*e);
+      const float d = std::hypot(e->pos.x, e->pos.z);   // running at the bunker (one at the hull writhes there, in its attack pose)
+      if (d >= c.stopR && d > 0.01f) {
+        c.run = glm::vec3(-e->pos.x / d, 0, -e->pos.z / d) * (e->speed * slowF * 60);
+        c.walk = e->walk;
+        c.stride = e->stride;
+        c.step = e->step;
+      }
+      c.fireAcc = rnd();   // (out of step: the bodies' flames must not flicker together)
+      c.smokeAcc = rnd();
     }
     corpses_.push_back(c);
   }

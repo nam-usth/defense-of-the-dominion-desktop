@@ -32,7 +32,8 @@ class PostFx {
   // Resolves the scene, runs the bloom chain and composites into framebuffer 0 at the canvas viewport
   void finish(const PostParams& p, int vpX, int vpY, int vpW, int vpH, bool low);
   // A heat haze for this frame: binds the half-resolution offset target (RG16F, cleared to 0, blend
-  // ONE, ONE, no depth) for its draws; false: no such target. finish() then bends the scene by it
+  // ONE, ONE, no depth test) for its draws, the scene's depth (full resolution, a copy) on texture
+  // unit 5; false: no such target. finish() then bends the scene by it
   bool beginDistort();
   void endDistort();
   const char* format() const { return fmtName_; }
@@ -47,6 +48,7 @@ class PostFx {
   int levels_ = 0;
   GLuint progPre_ = 0, progDown_ = 0, progUp_ = 0, progComp_ = 0, emptyVao_ = 0;
   GLuint distFbo_ = 0, distTex_ = 0;   // the heat haze's uv offsets, half resolution
+  GLuint depthFbo_ = 0, depthTex_ = 0; // a copy of the scene's depth: the haze hides behind what is in front
   int dw_ = 0, dh_ = 0;
   bool distUsed_ = false;              // drawn this frame
   const char* fmtName_ = "";

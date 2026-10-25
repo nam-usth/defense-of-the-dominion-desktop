@@ -45,7 +45,7 @@ uniform mat4 uView, uProj, uModel;
 out vec3 vW; out vec3 vN; out vec2 vUV;
 void main() {
   vec4 w = uModel * vec4(aPos, 1.);
-  vW = w.xyz; vN = mat3(uModel) * aNormal; vUV = aUV;
+  vW = w.xyz; vN = transpose(inverse(mat3(uModel))) * aNormal; vUV = aUV;   // (non-uniform scales)
   gl_Position = uProj * uView * w;
 }
 )";
@@ -188,7 +188,7 @@ uniform mat4 uView, uProj, uModel;
 out vec3 vW; out vec3 vN; out vec3 vO;
 void main() {
   vec4 w = uModel * vec4(aPos, 1.);
-  vW = w.xyz; vN = mat3(uModel) * aNormal; vO = aPos;
+  vW = w.xyz; vN = transpose(inverse(mat3(uModel))) * aNormal; vO = aPos;
   gl_Position = uProj * uView * w;
 }
 )";
@@ -208,18 +208,22 @@ void main() {
 )";
 
 // A heat haze: signed uv offsets (RG) the composite bends the scene by. Its own noise, rising,
-// strongest face-on (SC2's inverted fresnel), or a ripple band on the ground (uRing.y > 0)
+// strongest face-on (SC2's inverted fresnel), fading out toward the ground; or a ripple band on
+// the ground (uRing.y > 0). Nothing in front of it is bent: the scene's depth (full resolution,
+// texture unit 5 in the distortion pass; this target is half) hides it
 const char* HAZE_FS = R"(
 in vec3 vW; in vec3 vN; out vec4 frag;
-uniform vec3 uCamPos, uC; uniform float uS, uTile, uRise; uniform vec2 uRing;
+uniform vec3 uCamPos, uC; uniform float uS, uTile, uRise, uAspectInv; uniform vec2 uRing;
+uniform sampler2D uDepth;
 void main() {
-  if (vW.y < -.05) discard;   // over the ground only
+  ivec2 px = min(ivec2(gl_FragCoord.xy * 2.), textureSize(uDepth, 0) - 1);
+  if (vW.y < -.05 || gl_FragCoord.z > texelFetch(uDepth, px, 0).r + 1e-5) discard;
   vec3 N = normalize(vN), V = normalize(uCamPos - vW);
-  float f = pow(abs(dot(N, V)), .6);
+  float f = pow(abs(dot(N, V)), .6) * smoothstep(-.05, 1., vW.y);
   if (uRing.y > 0.) { float x = (length(vW.xz - uC.xz) - uRing.x) / uRing.y; f = exp(-x * x * 2.); }
   vec3 q = vW * uTile - vec3(0., uRise, 0.);
   vec2 o = vec2(n3(q), n3(q + vec3(17.3, 4.1, 9.7))) - .5 + .5 * (vec2(n3(q * 2.3 + 3.), n3(q * 2.3 + 11.)) - .5);
-  frag = vec4(o * (uS * f * .0019), 0., 1.);   // S 10: about 10 px at 1080p
+  frag = vec4(o * vec2(uAspectInv, 1.) * (uS * f * .0019), 0., 1.);   // S 10: about 10 px at 1080p, alike both ways
 }
 )";
 
@@ -303,6 +307,8 @@ void NukeRenderer::haze(Renderer& R, const FxMesh& m, const glm::mat4& model, fl
     u1(g, "uS", S);
     u1(g, "uTile", tile);
     u1(g, "uRise", rise);
+    u1(g, "uAspectInv", f.proj[0][0] / f.proj[1][1]);   // height / width
+    glUniform1i(U(g, "uDepth"), 5);
     glUniform2f(U(g, "uRing"), ground.z, ground.w);
     glDisable(GL_CULL_FACE);
     drawMesh(m.vao, m.ibo, m.count);
@@ -407,7 +413,7 @@ void NukeRenderer::draw(Renderer& R, const Blast& b) const {
   if (ms >= 633 && ms < 3000) {
     const float R0 = key({{633, 3.8f}, {1700, 9.3f}, {3000, 16}}, ms), K = key({{633, 0}, {933, 1}, {1700, 2}, {3000, 0}}, ms);
     const float w = 0.9f + 0.06f * R0;
-    R.drawCustom(2, c, [=, this](const FrameCtx& f) {
+    R.drawCustom(-49, c, [=, this](const FrameCtx& f) {   // with the ground decals (after the scar): under all smoke
       GLuint g = progBurn_;
       const float side = 2 * (R0 + 3 * w);
       use(g, f, glm::scale(glm::translate(glm::mat4(1), c + glm::vec3(0, 0.06f, 0)), {side, 1, side}));

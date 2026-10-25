@@ -86,9 +86,10 @@ struct Corpse {
   // a nuke's victim: it catches fire in the flash and runs on, burning and slowing, until the front
   // reaches it (delay), then is thrown outward, charred and tumbling (spin: rad/s), bounces once,
   // smoulders out and sinks
-  bool flung = false;
+  bool flung = false, thrown = false;
   glm::vec3 vel{0}, run{0}, col{1};   // run: its pace when it caught fire; col: its tint this frame
-  float delay = 0;
+  float delay = 0, stopR = 0;         // delay: when the front reached it (until then, when it should); stopR: it stops at the hull
+  glm::vec2 zero{0};                  // ground zero
   std::vector<Pool*> walk;            // its walk cycle, on while it runs
   float stride = 1, step = 0;
   float fireAcc = 0, smokeAcc = 0;    // the flames and smoke on it (particles owed)
@@ -96,7 +97,8 @@ struct Corpse {
 // How killEnemy throws a corpse (a nuke victim)
 struct Fling {
   glm::vec3 vel{0};
-  float delay = 0, spin = 0;
+  float delay = 0, spin = 0;   // delay: when the front should reach it (it runs on: the front decides)
+  glm::vec2 zero{0};           // ground zero
 };
 
 struct Bullet {

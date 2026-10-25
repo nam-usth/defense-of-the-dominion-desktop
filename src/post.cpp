@@ -132,9 +132,9 @@ bool PostFx::init() {
 }
 
 void PostFx::release() {
-  for (GLuint* f : {&msaaFbo_, &sceneFbo_, &distFbo_}) if (*f) { glDeleteFramebuffers(1, f); *f = 0; }
+  for (GLuint* f : {&msaaFbo_, &sceneFbo_, &distFbo_, &depthFbo_}) if (*f) { glDeleteFramebuffers(1, f); *f = 0; }
   for (GLuint* r : {&msaaColor_, &msaaDepth_, &sceneDepth_}) if (*r) { glDeleteRenderbuffers(1, r); *r = 0; }
-  for (GLuint* t : {&sceneTex_, &distTex_}) if (*t) { glDeleteTextures(1, t); *t = 0; }
+  for (GLuint* t : {&sceneTex_, &distTex_, &depthTex_}) if (*t) { glDeleteTextures(1, t); *t = 0; }
   for (Level& l : bloom_) {
     if (l.fbo) glDeleteFramebuffers(1, &l.fbo);
     if (l.tex) glDeleteTextures(1, &l.tex);
@@ -205,10 +205,22 @@ bool PostFx::allocate(int w, int h, int samples, GLenum colorFmt) {
     glGenFramebuffers(1, &distFbo_);
     glBindFramebuffer(GL_FRAMEBUFFER, distFbo_);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, distTex_, 0);
-    if (!complete("heat haze")) {
-      glDeleteFramebuffers(1, &distFbo_);
-      glDeleteTextures(1, &distTex_);
-      distFbo_ = distTex_ = 0;
+    bool hz = complete("heat haze");
+    if (hz) {   // the scene's depth, copied for it (same format as the scene's: a blit needs it)
+      glGenTextures(1, &depthTex_);
+      glBindTexture(GL_TEXTURE_2D, depthTex_);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, w, h, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, nullptr);
+      texParams(GL_NEAREST);
+      glGenFramebuffers(1, &depthFbo_);
+      glBindFramebuffer(GL_FRAMEBUFFER, depthFbo_);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, depthTex_, 0);
+      glDrawBuffer(GL_NONE);
+      glReadBuffer(GL_NONE);
+      hz = complete("heat haze depth");
+    }
+    if (!hz) {
+      for (GLuint* f : {&distFbo_, &depthFbo_}) if (*f) { glDeleteFramebuffers(1, f); *f = 0; }
+      for (GLuint* t : {&distTex_, &depthTex_}) if (*t) { glDeleteTextures(1, t); *t = 0; }
     }
   }
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -235,6 +247,12 @@ bool PostFx::ensure(int w, int h, bool msaa) {
 
 bool PostFx::beginDistort() {
   if (!distFbo_) return false;
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, msaaFbo_ ? msaaFbo_ : sceneFbo_);   // (a multisampled depth resolves to its nearest sample)
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, depthFbo_);
+  glBlitFramebuffer(0, 0, w_, h_, 0, 0, w_, h_, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+  glActiveTexture(GL_TEXTURE5);
+  glBindTexture(GL_TEXTURE_2D, depthTex_);
+  glActiveTexture(GL_TEXTURE0);
   glBindFramebuffer(GL_FRAMEBUFFER, distFbo_);
   glViewport(0, 0, dw_, dh_);
   const float zero[4] = {0, 0, 0, 0};
@@ -248,6 +266,9 @@ bool PostFx::beginDistort() {
 }
 void PostFx::endDistort() {
   glDisable(GL_BLEND);
+  glActiveTexture(GL_TEXTURE5);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  glActiveTexture(GL_TEXTURE0);
   distUsed_ = true;
 }
 
