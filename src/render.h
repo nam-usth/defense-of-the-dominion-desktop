@@ -41,6 +41,7 @@ Geometry sphere(float r, int ws = 32, int hs = 16);
 Geometry cylinder(float rTop, float rBottom, float h, int radial = 8);
 Geometry cone(float r, float h, int radial = 8);
 Geometry ring(float inner, float outer, int seg = 32);   // XY plane, normal +Z
+Geometry torus(float radius, float tube, int radial = 48, int tubular = 16);   // round the Y axis; uv.x round the ring, uv.y round the tube
 Geometry plane(float w, float h);                          // XY plane, normal +Z
 Geometry dodecahedron(float r);                            // flat shaded
 Geometry icosahedron(float r, int detail);                 // smooth
@@ -118,6 +119,7 @@ struct GlowLight {
   float radius = 0, reveal = 0;   // reveal: how much of the night it lifts near it (0..1)
 };
 constexpr int MAX_GLOWS = 8;
+constexpr int MAX_POINTS = 5;   // the lit shader's uPt* arrays
 
 struct SceneParams {
   glm::mat4 view{1}, proj{1};
@@ -125,7 +127,7 @@ struct SceneParams {
   glm::vec3 ambientColor{1};
   float ambientIntensity = 0;
   DirLight sun, fill;
-  PointLight points[4];
+  PointLight points[MAX_POINTS];
   SpotLight spot;   // a crate runner's chest lamps at night
   GlowLight glows[MAX_GLOWS];
   int glowCount = 0;
@@ -135,11 +137,12 @@ struct SceneParams {
   int vpX = 0, vpY = 0, vpW = 1, vpH = 1;   // framebuffer pixels, origin bottom-left
   PostParams post;                          // HDR target, bloom, tone curve (post.h)
   // night: how much of the fog is darkness (the field fades to its moonlit value, not to the fog colour),
-  // how much colour the ground and scenery lose; the ground's noise texture (TERRAIN); close-up detail
+  // how much colour the ground and scenery lose; the ground's noise texture (TERRAIN) and its detail
+  // (HD: the fine layers and a finer speckle; SD: softer, the broad layers alone)
   float night = 0, nightDesat = 0;
   glm::vec3 moonTint{0.20f, 0.27f, 0.42f};
   const Texture* terrainTex = nullptr;
-  bool hiDetail = false;
+  bool groundHD = true;
   // the weather (weather.h): how wet the ground is, how full its puddles are, the rain on them now and
   // its clock (their rings); the sky the water mirrors (overhead, at the horizon), its cloud cover and drift
   float wet = 0, puddle = 0, rain = 0, weatherT = 0, cloud = 0;
@@ -192,6 +195,10 @@ class Renderer {
   // sortAt. It sets its own blend, depth mask and cull; it leaves the depth test on (LEQUAL),
   // texture unit 3 (the shadow map) alone and VAO 0 bound.
   void drawCustom(int renderOrder, const glm::vec3& sortAt, CustomDraw fn);
+  // A heat haze: run after the scene into the post's offset target at half resolution (no depth,
+  // blend ONE, ONE); it writes signed uv offsets (RG) by which the composite bends the scene. It
+  // sets its own program and cull; nothing is drawn without post.
+  void drawDistort(CustomDraw fn);
   void render(const SceneParams& sp);
   int drawCount() const { return (int)cmds_.size(); }
   void setGpuParticles(class GpuParticles* g) { gpuParticles_ = g; }   // drawn after the CPU particles (null: none)
@@ -216,6 +223,7 @@ class Renderer {
   std::vector<Cmd> cmds_;
   struct Custom { glm::vec3 at; CustomDraw fn; };
   std::vector<Custom> customs_;
+  std::vector<CustomDraw> distorts_;
   std::vector<Instance> inst_;
   GLuint litProg_ = 0, terrainProg_ = 0, depthProg_ = 0, partProg_ = 0;   // terrainProg_: LIT_FS with TERRAIN (0: the ground falls back to Phong)
   GLuint instVbo_ = 0, shadowFbo_ = 0, shadowTex_ = 0;

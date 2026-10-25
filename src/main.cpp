@@ -31,6 +31,7 @@
 //   --post on|off          HDR post-processing (bloom, tone curve); off: the scene draws straight to a 4x MSAA window
 //   --weather STATE        clear | overcast | rain (a downpour, puddles full) | drizzle | after (a shower just over:
 //                          puddles full, the sun out), at once and held for the run (after --start)
+//   --hp F                 hold the bunker at F (0 < F <= 1) of its max HP: repair and damage leave it there (below 0.5 it burns)
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 
@@ -96,7 +97,7 @@ int main(int argc, char** argv) {
   double shotAfter = 3;
   int zoomIn = 0;
   bool noTutorial = false, postOn = true;
-  float dnAt = -1, holdX = 0, holdY = 0, holdFor = -1;
+  float dnAt = -1, holdX = 0, holdY = 0, holdFor = -1, hpHold = -1;
   struct Later { double at; std::string cheat; int key; bool done; };   // --cheat CODE@S, --key K@S
   std::vector<Later> later;
   for (int i = 1; i < argc; i++) {
@@ -142,6 +143,10 @@ int main(int argc, char** argv) {
         fprintf(stderr, "--weather: clear, overcast, rain, drizzle or after\n");
         return 1;
       }
+    }
+    else if (a == "--hp") {
+      hpHold = std::strtof(next().c_str(), nullptr);
+      if (!(hpHold > 0 && hpHold <= 1)) { fprintf(stderr, "--hp wants a fraction F, 0 < F <= 1\n"); return 1; }
     }
     else if (a == "--hold") {
       std::string v = next();
@@ -270,6 +275,7 @@ int main(int argc, char** argv) {
   game.showPerf(perf);
   game.benchFire(benchFire);
   game.testData(!dataDir.empty());
+  if (hpHold > 0) game.holdHpForRun(hpHold);
   if (noTutorial) game.tutorialForRun(false);
   game.postForRun(postOn);
   if (dnAt >= 0) game.setDayNightTime(dnAt);

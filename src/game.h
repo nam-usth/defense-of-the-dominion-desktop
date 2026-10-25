@@ -84,16 +84,22 @@ struct Corpse {
   Pool* pool;
   float t;
   float spin;
-  // flung by a nuke's shock front: frozen white in the flash until the front reaches it (delay),
-  // then thrown outward, charred, tumbling (spin: rad/s), bouncing once, sinking
-  bool flung = false;
-  glm::vec3 vel{0};
-  float delay = 0, tint = 1;
+  // a nuke's victim: it catches fire in the flash and runs on, burning and slowing, until the front
+  // reaches it (delay), then is thrown outward, charred and tumbling (spin: rad/s), bounces once,
+  // smoulders out and sinks
+  bool flung = false, thrown = false;
+  glm::vec3 vel{0}, run{0}, col{1};   // run: its pace when it caught fire; col: its tint this frame
+  float delay = 0, stopR = 0;         // delay: when the front reached it (until then, when it should); stopR: it stops at the hull
+  glm::vec2 zero{0};                  // ground zero
+  std::vector<Pool*> walk;            // its walk cycle, on while it runs
+  float stride = 1, step = 0;
+  float fireAcc = 0, smokeAcc = 0;    // the flames and smoke on it (particles owed)
 };
 // How killEnemy throws a corpse (a nuke victim)
 struct Fling {
   glm::vec3 vel{0};
-  float delay = 0, spin = 0;
+  float delay = 0, spin = 0;   // delay: when the front should reach it (it runs on: the front decides)
+  glm::vec2 zero{0};           // ground zero
 };
 
 struct Bullet {
@@ -146,7 +152,7 @@ struct NukeBlast {
   glm::vec3 p;
   float t = 0;   // seconds since the blast (game time)
   float tHit = 0, seed = 0;
-  float embers = 0;   // embers due but not yet emitted (a fraction of one)
+  float embers = 0, inrush = 0;   // embers and inrush streaks due but not yet emitted (a fraction of one)
   bool hitDone = false;
 };
 // The scar a nuke leaves on the ground: a burn with glowing cracks that cool, then fade
@@ -260,6 +266,7 @@ class Game {
   void showPerf(bool on) { perfOverlay_ = on; }
   void benchFire(bool on) { benchFire_ = on; }   // test: fire every volley at the nearest enemy, magazine refilled
   void testData(bool on) { testData_ = on; }     // --data: a throwaway profile (test hooks may earn achievements there)
+  void holdHpForRun(float f) { hpHold_ = f; }    // test: the bunker held at f of its max HP (repair and damage leave it there)
   void setGpuInfo(std::vector<display::Gpu> gpus, const std::string& running, bool dedicatedPref);
   bool wantsRelaunch() const { return relaunch_; }   // the graphics card changed: main restarts the game
   void gpuParticlesForRun(bool on) { gpuFxOn_ = on; R.setGpuParticles(gpuFx() ? &gpuFx_ : nullptr); }   // test: not stored
@@ -320,7 +327,8 @@ class Game {
   // lights (three.js parameters)
   glm::vec3 ambCol_{0}, sunCol_{0}, fillCol_{0}, fillPos_{-8, 10, -6};   // fill: the day's sky fill, the moon at night
   float ambI_ = 0.7f, sunI_ = 1.8f, fillI_ = 0.5f, bunkerLightI_ = 0, muzzleI_ = 0, fireI_ = 0;
-  glm::vec3 muzzlePos_{0}, firePos_{0, 1.8f, 0};
+  float gunI_ = 0;   // gunfire's light on the ground (muzzleFlash): the recent shots, mixed
+  glm::vec3 muzzlePos_{0}, firePos_{0, 1.8f, 0}, gunPos_{0};
   glm::vec3 fogCol_{0};
   float fogNear_ = 45, fogFar_ = 90;
   void applyDNLights(float f);
@@ -740,6 +748,7 @@ class Game {
   float uiTime_ = 0;
   // performance overlay (F3): CPU time per frame stage, averaged over ~0.5 s
   bool perfOverlay_ = false, benchFire_ = false, testData_ = false;
+  float hpHold_ = -1;   // test (--hp): the bunker's HP held at this fraction, -1 = off
   struct Perf { double update = 0, render = 0, ui = 0, frame = 0, worst = 0; int frames = 0; } perfAcc_, perfShown_, perfRun_;
   double perfT_ = 0;
   void drawPerf();

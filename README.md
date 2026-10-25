@@ -131,13 +131,23 @@ shrinks geometrically (90 → 9) so the night closes in evenly, the sun turns or
 with the fog, and switching the cycle off lifts the night over 2.5 s, also behind the menu and title. The top bar
 shows the phase and the countdown to the next one (`☀ DAY  DUSK IN 0:42`, then `NIGHT IN`, `DAWN IN`, `DAY IN`).
 
-The field is drawn by the shader from one small tiling noise texture read at three rotated scales (no repeat
-shows): two grass tones, soft dirt patches, a worn ring round the bunker with shade at its foot, and a fine
-pebbly relief for the light (finer still close up on GFX HIGH). Clusters of faceted boulders lie out past the
-Sensor ring, and every Zerg, corpse and unit out of the bunker sits on a soft contact shadow. At night the
-field does not go black: the fog fades it to its own grey, moon-blue value under a cool moon from behind left
-(no shadows), a Zerg in the dark fades to the ground under it, the bunker's light is warm white, and the sky
-turns violet at dusk. Boulders stay paler than the field in the dark, so none reads as a crouching Zerg.
+The field is drawn by the shader from one tiling 512² gradient-noise texture, built at startup with its broad
+octaves domain-warped (no stripes, no straight edges), read at rotated scales of 150, 36 and 6 units (no repeat
+shows): two grass tones in soft patches with lighter and darker swathes, soft dirt patches, a worn ring round
+the bunker with shade at its foot, and a fine pebbly relief for the light. GFX HIGH draws it in HD: closer in,
+by each pixel's footprint, the grass gains relief and a fourth, finer speckle (the overview stays calm, with no
+hatching). GFX LOW draws it in SD: the broad layers alone, a little softer, in the same tones (every fine term
+averages out). Clusters of faceted boulders lie out past the Sensor ring, and every Zerg, corpse and unit out
+of the bunker sits on a soft contact shadow. At night the field does not go black: the fog fades it to its own
+grey, moon-blue value under a cool moon from behind left (no shadows), a Zerg in the dark fades to the ground
+under it, the bunker's light is warm white, and the sky turns violet at dusk. Boulders stay paler than the
+field in the dark, so none reads as a crouching Zerg.
+
+Gunfire lights the ground: each shot from a fire port (or the Shrike on the roof) throws a warm pool of light
+on the grass in front of it, out to about 7, each shot a little stronger or weaker and off to one side, so a
+volley flickers rather than strobes (clear at night and dusk, a light touch by day). A burning bunker (below 50%
+HP) lights the hull, the ground and the Zerg round it out to about 9 in a soft orange flicker on three octaves of
+noise, stronger with the damage. Neither lifts the night: a Zerg in the dark stays hidden.
 
 Shooting in the dark: tracers ignore the fog and burn white-hot in a soft halo over a faint pool of light on the
 ground, so a volley shows where it goes past the lit edge; every round from the bunker and the Shrike draws the
@@ -194,9 +204,14 @@ The nuke: StarCraft II's, rebuilt on one closed-form timeline (src/nuke_fx.h) an
 The flash blows the field out to white through the HDR exposure (the HUD stays clear) while a six-rayed star opens
 flat over the blast; then SC2's glow cards, a soft ball of light, swell round a soft fireball of overlapping fire
 that rises, flattens and rolls into the mushroom cloud. As in SC2 the fire never turns to a grey cloud: it dims and
-is gone by 5.4 s, and small embers keep rising off the crater until 9 s. A ragged shock front races over the
-ground under a fading shock dome; a ring of dust with a burning leading edge rolls out past the kill radius; the
-Zerg freeze white in the flash and are flung out, charred, when the front reaches them, and the shock booms as it
+is gone by 5.4 s, and small embers keep rising off the crater until 9 s. Under the sprites, SC2's three rings of
+fire roll round the cap (1.1-4.7 s), streaks of flame are pulled in toward ground zero (1.4-3 s), and the air
+bends: a shock bubble swells out to the kill radius, a ripple runs over the ground behind it, heat shimmers round
+the cap and over the crater until about 12 s (a distortion pass in the HDR post; none with `--post off`). A ragged
+shock front races over the ground under a fading shock dome, and a slow ring of burning ground spreads behind it
+(0.5-2.9 s); a ring of dust with a burning leading edge rolls out past the kill radius; the
+Zerg catch fire in the flash and run on, slowing and staggering, until the front flings them out, burning and
+charring, to smoulder out where they land; the shock booms as it
 passes the bunker (no camera shake). It leaves a small pit of scorched earth whose cracks glow deep red, cool and
 fade by 16 s. Its light (SC2's curve: full by 0.5 s, held to 1.8 s, out by 3.9 s) lights the field, and at night
 the dark lifts (fog out to ~40) and settles back.
@@ -324,13 +339,15 @@ the tour and hints · `--dn S` day/night on,
 S seconds into the cycle · `--weather clear|overcast|rain|drizzle|after` that weather at once, held for the run
 (rain: a downpour over full puddles; after: a shower just over, full puddles under the sun) ·
 `--hold X,Y,S` holds the fire button at (X, Y) (fractions of the window) for S seconds
-and logs the volleys fired · `--post on|off` the HDR post-processing. Each cleared wave logs how it was resupplied.
+and logs the volleys fired · `--post on|off` the HDR post-processing · `--hp F` holds the bunker at F (0–1) of its
+max HP for the run (below 0.5 it burns). Each cleared wave logs how it was resupplied.
 
 ## Differences from the web version
 
 - Desktop window, native OpenGL: three.js materials re-implemented in one shader (Standard / Lambert / Phong /
   Basic, SC2 team colour, DXT5nm normal maps), PCF sun shadows, radial fog, instanced enemies and particles.
-- GFX LOW turns off shadows and 4× MSAA (the web LOW turned off shadows and HiDPI rendering).
+- GFX LOW turns off shadows and 4× MSAA and draws the field in SD (the web LOW turned off shadows and HiDPI
+  rendering).
 - The ground (grass tones, dirt, boulders, contact shadows) and the moonlit night are desktop-only so far; the
   web field is still flat green with dirt quads and fades to the near-black fog colour at night.
 - The weather is desktop-only, and with it a rule the web version does not have: rounds miss in the rain (5% /
