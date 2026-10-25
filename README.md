@@ -101,7 +101,7 @@ closes it. HOW TO PLAY on the title has the rules on one card. What has been see
 |---|---|
 | Campaign | Boot Camp (finish the HUD tour) · First Blood · Hold the Line (wave 5) · Dig In (wave 10) · The Dominion Stands (win the campaign) |
 | Endless | No End in Sight (wave 20) · The Swarm Grows (25) · Legend of Korhal (30) |
-| Combat | Exterminator (100 kills in a game) · Four Stars (GENERAL in a game) · Veteran (1,000 kills in all) · Hive Breaker (5,000 in all) · Nuclear Option (20 with one nuke) · Air Superiority (10 with one airstrike) · Shrapnel (5 with one Marauder grenade) · One Shot, One Kill (50 snipes in all) |
+| Combat | Exterminator (100 kills in a game) · Four Stars (GENERAL in a game) · Veteran (1,000 kills in all) · Hive Breaker (5,000 in all) · Nuclear Option (10 with one nuke) · Air Superiority (10 with one airstrike) · Shrapnel (5 with one Marauder grenade) · One Shot, One Kill (50 snipes in all) |
 | Command | Fully Upgraded (damage, armor, hull, ammo maxed) · Shrike Online · Overdrive · Combined Arms (a Marine, a Marauder and a Ghost at once) · Super Soldiers (every Super Stimpack tier) · Eyes in the Dark (Sensor Tower 3) |
 | Feats | Untouchable (a wave from 5 on without the Zerg damaging the bunker) · Last Stand (hidden) · Night Watch (a wave at night) · Band of Brothers (win without a Marauder or a Ghost) · No Air Support (win without an airstrike or a nuke) |
 
@@ -217,7 +217,7 @@ night the unit out on a crate run (Marine, Marauder or Ghost) wears a twin white
 two small soft hot spots in one soft glow, and a soft pool of light on the ground ahead of it with no edge anywhere
 (it swells in past its feet, widens and dies away), as the Marines' flashlights in StarCraft II — and a real light:
 the renderer's spot light (a 40° cone, full only within 7°, aimed 12° down, fading fast with distance) lights the
-hull, the Zerg and the rocks it faces.
+hull, the Zerg and the rocks it faces. The bunker blocks it (a cylinder fitted to its walls): a runner coming home lights the hull it faces, not the ground, Zerg or rocks behind it, and the pool on the ground is cut by the same shadow.
 
 ## Weather
 

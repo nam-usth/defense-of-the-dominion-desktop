@@ -85,6 +85,7 @@ struct Material {
   bool fog = true;                        // false: self-lit (tracers, fireballs, blips) — shows through the night fog
   bool scenery = false;                   // rocks and the like: at night the fog leaves their own moonlit, colourless trace
   bool instAlpha = false;                 // soft decals: the instance colour's red is the alpha (the colour is the material's)
+  bool spotMask = false;                  // a decal of the spot light's pool: faded where the spot's occluder shadows the ground
 };
 
 struct Instance {
@@ -107,6 +108,7 @@ struct SpotLight {
   glm::vec3 pos{0}, dir{0, -1, 0};
   glm::vec3 color{1};
   float intensity = 0, distance = 0, decay = 1, cosOuter = 0.8f, cosInner = 0.9f;
+  glm::vec4 occ{0};   // a vertical cylinder that blocks it (the bunker): centre x, z, radius, height; radius 0: none
 };
 
 // A small weak light that also lifts the night fog around it (a Marauder grenade in flight, its

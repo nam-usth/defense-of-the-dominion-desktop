@@ -402,6 +402,8 @@ class Game {
   bool shrikeMounted_ = false;
   std::vector<glm::vec3> bunkerTris_;   // visible hull, world space (firing ports, fire spots)
   void rebuildBunkerTris();
+  glm::vec4 bunkerOcc_{0, 0, 1.5f, 1.6f};   // the bunker as a lamp's occluder: centre x, z, radius, height (fitBunkerOccluder)
+  void fitBunkerOccluder();
   bool rayBunker(const glm::vec3& o, const glm::vec3& d, glm::vec3& hit) const;
   void buildScene();
   void buildBunker();

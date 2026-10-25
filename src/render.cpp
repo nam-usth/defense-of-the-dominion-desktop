@@ -343,6 +343,7 @@ uniform vec3 uCamPos, uAmbient;
 uniform vec3 uDirDir[2], uDirColor[2];
 uniform vec3 uPtPos[4], uPtColor[4]; uniform float uPtDist[4], uPtDecay[4];
 uniform vec3 uSpPos, uSpDir, uSpColor; uniform float uSpDist, uSpDecay; uniform vec2 uSpCos;   // cos outer, inner
+uniform vec4 uSpOcc; uniform bool uSpotMask;   // the spot's occluder (centre xz, radius, height); this decal is its pool
 uniform bool uReceiveShadow, uShadows;
 uniform sampler2DShadow uShadowMap; uniform float uShadowBias, uShadowTexel;
 uniform vec3 uFogColor; uniform float uFogNear, uFogFar; uniform bool uFog;
@@ -354,6 +355,20 @@ uniform float uWet, uPuddle, uRain, uTime, uCloud;              // the weather: 
 uniform vec3 uSkyZen, uSkyHor; uniform vec2 uCloudDrift;        // the sky the water mirrors
 const float PI = 3.141592653589793;
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
+
+// How much of the spot light reaches p past its occluder (the bunker as a vertical cylinder): none
+// where the segment from p to the lamp passes through it below its top. The rim is soft (a lamp is
+// not a point; a hard edge would crawl). On or inside the cylinder (the hull itself) N·L decides;
+// a lamp inside it (a unit stepping out of the bunker) lights nothing outside.
+float spotSeen(vec3 p) {
+  float R = uSpOcc.z;
+  if (R <= 0.0) return 1.0;
+  vec2 a = p.xz - uSpOcc.xy, d = (uSpPos.xz - uSpOcc.xy) - a;
+  if (dot(a, a) <= R * R) return 1.0;
+  float t = clamp(-dot(a, d) / max(dot(d, d), 1e-6), 0.0, 1.0);   // the segment's closest approach to the axis
+  if (mix(p.y, uSpPos.y, t) > uSpOcc.w) return 1.0;               // it passes over the top
+  return smoothstep(R - 0.25, R + 0.15, length(a + d * t));
+}
 
 // The ground at xz, from the noise at three rotated scales that never line up (no tiling shows):
 // two grass tones, soft dirt patches with a darker seam where they meet the grass, a worn ring
@@ -535,7 +550,7 @@ void main() {
         float d = length(lv);
         L = lv / max(d, 1e-5);
         float att = uSpDist > 0.0 ? pow(clamp(1.0 - d / uSpDist, 0.0, 1.0), uSpDecay) : 1.0;
-        col = uSpColor * att * smoothstep(uSpCos.x, uSpCos.y, dot(-L, uSpDir));
+        col = uSpColor * att * smoothstep(uSpCos.x, uSpCos.y, dot(-L, uSpDir)) * spotSeen(vWorld);
       }
       if (dot(col, col) == 0.0) continue;
       float dNL = clamp(dot(N, L), 0.0, 1.0);
@@ -595,6 +610,7 @@ void main() {
       outC = mix(outC, target, k);
     }
   }
+  if (uSpotMask) diffuse.a *= spotSeen(vWorld);   // a lamp's pool: cut by the bunker's shadow as its light is
   fragColor = vec4(outC, diffuse.a);
 }
 )";
@@ -811,6 +827,7 @@ void Renderer::setMaterial(GLuint p, const Material& m, bool receive, bool shado
   glUniform1i(U(p, "uType"), m.type == MatType::Terrain && p != terrainProg_ ? (int)MatType::Phong : (int)m.type);
   glUniform1i(U(p, "uScenery"), m.scenery);
   glUniform1i(U(p, "uInstAlpha"), m.instAlpha);
+  glUniform1i(U(p, "uSpotMask"), m.spotMask);
   glUniform3fv(U(p, "uColor"), 1, glm::value_ptr(m.color));
   glUniform1f(U(p, "uOpacity"), m.transparent ? m.opacity : 1.f);
   glUniform1f(U(p, "uRoughness"), m.roughness);
@@ -937,6 +954,7 @@ void Renderer::render(const SceneParams& sp) {
     glUniform1f(U(p, "uSpDist"), sp.spot.distance);
     glUniform1f(U(p, "uSpDecay"), sp.spot.decay);
     glUniform2f(U(p, "uSpCos"), sp.spot.cosOuter, sp.spot.cosInner);
+    glUniform4fv(U(p, "uSpOcc"), 1, glm::value_ptr(sp.spot.occ));
     glUniform1i(U(p, "uShadows"), shadows);
     glUniform3fv(U(p, "uFogColor"), 1, glm::value_ptr(sp.fogColor));
     glUniform1f(U(p, "uFogNear"), sp.fogNear);

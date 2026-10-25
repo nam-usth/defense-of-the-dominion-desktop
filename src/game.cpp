@@ -536,13 +536,14 @@ void Game::buildNightFx() {
   // a lamp's light on the ground: a soft pool stretched ahead of it, no edge anywhere — across,
   // a Gaussian that widens with distance (0.25 → 0.85 of the half-width); along, it swells in
   // over the first quarter and dies away toward the far end (a fan with a tip and straight
-  // sides read as sharp rays)
+  // sides read as sharp rays). Its rows go top-down like a loaded image's, as the shader samples
+  // v' = 1 - v: written bottom-up, the pool was brightest three quarters of the way out
   {
     const int W = 64, H = 128;
     std::vector<uint8_t> px(W * H * 4);
     for (int j = 0; j < H; j++)
       for (int i = 0; i < W; i++) {
-        float x = (i + .5f) / W * 2 - 1, v = (j + .5f) / H, w = 0.25f + 0.6f * v;
+        float x = (i + .5f) / W * 2 - 1, v = 1 - (j + .5f) / H, w = 0.25f + 0.6f * v;   // v: 0 at the lamp
         float along = glm::smoothstep(0.f, 0.25f, v) * (1 - v) * (1 - v);
         float across = std::exp(-3 * (x / w) * (x / w));
         uint8_t* p = &px[(j * W + i) * 4];
@@ -564,6 +565,7 @@ void Game::buildNightFx() {
   lampBeamMat_.map = beamTex_;
   lampBeamMat_.doubleSide = true;
   lampBeamMat_.color = hexColor(0xf2f6ff);   // white LEDs
+  lampBeamMat_.spotMask = true;               // the bunker's shadow cuts it, as it cuts the lamp's light
   lampFx_.init(16);           // the lamps themselves: soft sprites (spheres had hard rims)
   tracerGlowMat_.map = tracerPoolMat_.map = sensorRingMat_.map = glowTex_;
   blastWashMat_.map = blastTex_;
@@ -660,6 +662,16 @@ void Game::updateBunkerVisual() {
   updatePortraitBunker();
 }
 
+// The cylinder that stands for the bunker when it blocks a lamp (render.cpp's spotSeen): the walls'
+// mean half-width (below 60% of the height: the roof's overhang left out) and the hull's top
+void Game::fitBunkerOccluder() {
+  float top = 0, hx = 0, hz = 0;
+  for (const glm::vec3& p : bunkerTris_) top = std::max(top, p.y);
+  for (const glm::vec3& p : bunkerTris_)
+    if (p.y < 0.6f * top) { hx = std::max(hx, std::abs(p.x)); hz = std::max(hz, std::abs(p.z)); }
+  if (top > 0 && hx > 0 && hz > 0) bunkerOcc_ = {0, 0, 0.5f * (hx + hz), top};
+}
+
 void Game::rebuildBunkerTris() {
   bunkerTris_.clear();
   if (!bunkerModel_) {   // procedural bunker: body box + roof
@@ -667,6 +679,7 @@ void Game::rebuildBunkerTris() {
     Geometry b = geo::box(3, 1.5f, 3).transform(trs({0, .75f, 0})).nonIndexed();
     Geometry r = geo::box(3.4f, .3f, 3.4f).transform(trs({0, 1.55f, 0})).nonIndexed();
     for (auto* g : {&b, &r}) for (const Vertex& v : g->v) bunkerTris_.push_back(v.p);
+    fitBunkerOccluder();
     return;
   }
   glm::mat4 w = bunkerModel_->wrapper();
@@ -675,6 +688,7 @@ void Game::rebuildBunkerTris() {
     for (size_t t = 0; t < p.cpu.triCount(); t++)
       for (int k = 0; k < 3; k++) bunkerTris_.push_back(glm::vec3(w * glm::vec4(p.cpu.corner(t, k), 1)));
   }
+  fitBunkerOccluder();   // (the hull alone: the turret on top blocks nothing at a lamp's height)
   if (shrikeMounted_ && hpLvl_ >= 3) {
     glm::mat4 sm = trs({0, shrikeY_, 0}, {0, shrikeYaw_, 0}) * shrikeModel_->wrapper();
     for (const ModelPart& p : shrikeParts_)
@@ -3078,6 +3092,7 @@ void Game::drawUnitLamps() {
       lampSpot_.decay = 2;   // fading fast with distance
       lampSpot_.cosOuter = std::cos(0.7f);   // 40°: a wide soft rim, so its edge blurs on the ground
       lampSpot_.cosInner = std::cos(0.12f);  // 7°
+      lampSpot_.occ = bunkerOcc_;            // it does not shine through the bunker
     }
     // the two LEDs: small soft hot spots in one soft glow
     for (float side : {-1.f, 1.f}) sprite(glm::vec3(g * glm::vec4(side * LAMP_SPACING, h, f, 1)), 0.12f, 1, 0xffffff);
