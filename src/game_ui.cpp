@@ -166,7 +166,7 @@ void Game::drawOverlayCanvas() {
   // floating damage numbers. A new one takes the lowest of FT_ROWS rows over its spot that no text
   // already up covers; none free (a burst on one Zergling), the row whose texts fade first, and they
   // go at once: the hits stack up instead of running together
-  constexpr int FT_ROWS = 4;
+  constexpr int FT_ROWS = 2;   // more made a tall column over every Zerg under fire
   struct Placed { float cx, cy, w; FloatText* f; };
   std::vector<Placed> placed;
   placed.reserve(floatTexts_.size());

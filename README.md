@@ -352,8 +352,8 @@ max HP for the run (below 0.5 it burns). Each cleared wave logs how it was resup
   web field is still flat green with dirt quads and fades to the near-black fog colour at night.
 - The weather is desktop-only, and with it a rule the web version does not have: rounds miss in the rain (5% /
   10%), and the `rain` cheat.
-- Damage numbers ride above their Zerg's HP bar and stack in up to four rows (a fifth replaces the row that fades
-  first); the web draws each where the round hit, so a burst on one Zergling runs together.
+- Damage numbers ride above their Zerg's HP bar, two rows at most (a third replaces the row that fades first);
+  the web draws each where the round hit, so a burst on one Zergling runs together.
 - `help` in the cheat console lists the codes in the console itself (the web printed them to the browser console).
 - Achievements (desktop only so far; a cheat code turns them off for that game).
 - Saves are `key=value` files in `%APPDATA%` (Linux: `~/.local/share`) instead of `localStorage`, so web saves
