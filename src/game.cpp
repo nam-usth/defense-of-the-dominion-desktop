@@ -2196,6 +2196,11 @@ float Game::rainMiss() const {
   const float r = weather_.rain;
   return r < 0.05f ? 0.f : RAIN_MISS[0] + (RAIN_MISS[1] - RAIN_MISS[0]) * glm::smoothstep(0.35f, 0.7f, r);
 }
+// Anchored on the enemy's HP bar, lifted clear of it (a Roach's: of its HP figure too), following it while it lives
+void Game::hitText(const EnemyP& e, std::string txt, uint32_t color) {
+  if (floatTexts_.size() >= 60) floatTexts_.erase(floatTexts_.begin());   // late waves: ~60 numbers/s
+  floatTexts_.push_back({e->pos + glm::vec3(0, e->barY(), 0), std::move(txt), 0.9f, 0.9f, color, e->type == 'r' ? 9.f : 2.f, -1, e});
+}
 // Test: a state at once, held (no random change) for the run
 void Game::weatherForRun(const std::string& s) {
   const bool rains = s == "rain" || s == "drizzle";
@@ -2760,8 +2765,7 @@ void Game::update(float dt) {
     EnemyP hitE = ci >= 0 ? enemyList[ci] : nullptr;
     if (hitE && b.unit != Unit::Marauder && rnd() < rainMiss()) {   // the rain spoils the aim: it flies on past
       b.passed = hitE.get();
-      if (floatTexts_.size() >= 60) floatTexts_.erase(floatTexts_.begin());
-      floatTexts_.push_back({{hitE->pos.x, hitE->pos.y + 1.2f, hitE->pos.z}, "MISS", 0.9f, 0.9f, 0x9fb4c8u});
+      hitText(hitE, "MISS", 0x8cd8ffu);   // rain blue: apart from the white and orange hits
       hitE = nullptr;
     }
     if (hitE) {
@@ -2774,8 +2778,7 @@ void Game::update(float dt) {
       e.hp -= dmg;
       e.flash = 0.08f;
       audio::play("hit");
-      if (floatTexts_.size() >= 60) floatTexts_.erase(floatTexts_.begin());   // late waves: ~60 numbers/s
-      floatTexts_.push_back({{e.pos.x, e.pos.y + 1.2f, e.pos.z}, std::to_string((int)std::round(dmg)), 0.9f, 0.9f, bonus > 1 ? 0xff6600u : 0xffffffu});
+      hitText(hitE, std::to_string((int)std::round(dmg)), bonus > 1 ? 0xff6600u : 0xffffffu);
       if (b.unit == Unit::Marauder) marauderBlast(b.pos, hitE, baseDmg, enemyList);   // the rest of the blast, and the slow
       float vl = std::max(1e-6f, std::hypot(b.vx, b.vz));
       bloodFx(e, b.pos, b.vx / vl, b.vz / vl);
@@ -2827,7 +2830,11 @@ void Game::update(float dt) {
   updateDayNight(dt);
   updateNukes(dt);
   tutorialTick();
-  for (FloatText& f : floatTexts_) { f.life -= dt; f.p.y += dt * 0.8f; }
+  for (FloatText& f : floatTexts_) {
+    f.life -= dt;
+    f.p.y += dt * 0.8f;
+    if (EnemyP e = f.on.lock(); e && !e->dead) { f.p.x = e->pos.x; f.p.z = e->pos.z; }   // a running Zergling would pass under it
+  }
   floatTexts_.erase(std::remove_if(floatTexts_.begin(), floatTexts_.end(), [](const FloatText& f) { return f.life <= 0; }), floatTexts_.end());
 }
 
