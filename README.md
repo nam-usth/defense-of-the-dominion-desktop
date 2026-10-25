@@ -206,7 +206,8 @@ flat over the blast; then SC2's glow cards, a soft ball of light, swell round a 
 that rises, flattens and rolls into the mushroom cloud. As in SC2 the fire never turns to a grey cloud: it dims and
 is gone by 5.4 s, and small embers keep rising off the crater until 9 s. A ragged shock front races over the
 ground under a fading shock dome; a ring of dust with a burning leading edge rolls out past the kill radius; the
-Zerg freeze white in the flash and are flung out, charred, when the front reaches them, and the shock booms as it
+Zerg catch fire in the flash and run on, slowing and staggering, until the front flings them out, burning and
+charring, to smoulder out where they land; the shock booms as it
 passes the bunker (no camera shake). It leaves a small pit of scorched earth whose cracks glow deep red, cool and
 fade by 16 s. Its light (SC2's curve: full by 0.5 s, held to 1.8 s, out by 3.9 s) lights the field, and at night
 the dark lifts (fog out to ~40) and settles back.

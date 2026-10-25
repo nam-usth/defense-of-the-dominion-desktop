@@ -83,11 +83,15 @@ struct Corpse {
   Pool* pool;
   float t;
   float spin;
-  // flung by a nuke's shock front: frozen white in the flash until the front reaches it (delay),
-  // then thrown outward, charred, tumbling (spin: rad/s), bouncing once, sinking
+  // a nuke's victim: it catches fire in the flash and runs on, burning and slowing, until the front
+  // reaches it (delay), then is thrown outward, charred and tumbling (spin: rad/s), bounces once,
+  // smoulders out and sinks
   bool flung = false;
-  glm::vec3 vel{0};
-  float delay = 0, tint = 1;
+  glm::vec3 vel{0}, run{0}, col{1};   // run: its pace when it caught fire; col: its tint this frame
+  float delay = 0;
+  std::vector<Pool*> walk;            // its walk cycle, on while it runs
+  float stride = 1, step = 0;
+  float fireAcc = 0, smokeAcc = 0;    // the flames and smoke on it (particles owed)
 };
 // How killEnemy throws a corpse (a nuke victim)
 struct Fling {

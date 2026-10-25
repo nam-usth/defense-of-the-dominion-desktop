@@ -897,23 +897,51 @@ void Game::updateAcids(float dt) {
 }
 
 // Dying enemies: pop, roll onto their side, then sink into the ground (~1.2 s). A nuke's
-// victims stand frozen, white in the flash, until its front reaches them, then fly outward
-// charred and tumbling, bounce once and sink.
+// victims catch fire in the flash and run on, slowing and staggering, until its front reaches
+// them, then fly outward burning and tumbling, bounce once, smoulder out and sink.
 void Game::updateCorpses(float dt) {
+  int burning = 0;   // the flames share a budget: a nuke over a big wave must not flood the particles
+  for (const Corpse& c : corpses_) burning += c.flung && c.t < c.delay + 2.0f;
+  const float share = std::min(1.f, 40.f / std::max(1, burning));
   for (size_t i = 0; i < corpses_.size();) {
     Corpse& c = corpses_[i];
     c.t += dt;
     if (c.flung) {
       const float s = c.t - c.delay;
-      if (s < 0) c.tint = 1 + 1.2f * std::exp(-c.t / 0.12f);
-      else {
-        c.tint = 0.12f + 0.5f * std::exp(-s / 0.08f);
+      // the flash's white-out, then orange-hot, charring black within about a second
+      c.col = glm::mix(glm::vec3(1, .62f, .38f), glm::vec3(.13f, .11f, .1f), glm::smoothstep(0.f, 1.2f, c.t)) + glm::vec3(1.2f * std::exp(-c.t / 0.12f));
+      if (s < 0) {   // still on its feet: runs on, slowing as it burns, staggering
+        const float k = std::exp(-c.t / 0.35f);
+        const glm::vec3 d = c.run * (k * dt);
+        c.pos += d;
+        if (!c.walk.empty()) {
+          c.step = std::fmod(c.step + glm::length(d) / c.stride * ANIM_SPEED, 1.f);
+          c.pool = c.walk[std::min((int)c.walk.size() - 1, (int)std::floor(c.step * c.walk.size()))];
+        }
+        c.rotZ = 0.14f * (1 - k) * std::sin(c.t * 15 + 3 * c.spin);
+      } else {
         if (s < 1.6f) {
           c.vel.y -= 20 * dt;
           c.pos += c.vel * dt;
           if (c.pos.y < 0) { c.pos.y = 0; c.vel *= glm::vec3(0.5f, -0.25f, 0.5f); c.spin *= 0.5f; }
           c.rotZ += c.spin * dt;
         } else c.pos.y = std::min(c.pos.y, 0.f) - 0.8f * dt;
+      }
+      // flames on the body until about a second after it lands, then smoke as it smoulders out
+      const float fire = 1 - glm::smoothstep(0.9f, 1.9f, s), smoke = 1 - glm::smoothstep(1.4f, 2.4f, s);
+      const glm::vec3 drift = s >= 0 && s < 1.6f ? c.vel * 0.25f : glm::vec3(0);   // trailing as it flies
+      c.fireAcc += dt * 16 * fire * share;
+      while (c.fireAcc >= 1) {
+        c.fireAcc--;
+        emit(glow_, c.pos.x + (rnd() - .5f) * .5f, c.pos.y + .2f + rnd() * .25f, c.pos.z + (rnd() - .5f) * .5f, drift.x + (rnd() - .5f) * .4f,
+             drift.y + .8f + rnd() * .8f, drift.z + (rnd() - .5f) * .4f, .3f + rnd() * .25f, (.3f + .15f * rnd()) * (.6f + .4f * fire), .08f, .55f,
+             0xffb347, 0xff2a00, -1.5f, 1.0f, 0);
+      }
+      c.smokeAcc += dt * 4 * smoke * share;
+      while (c.smokeAcc >= 1) {
+        c.smokeAcc--;
+        emit(smoke_, c.pos.x + (rnd() - .5f) * .3f, c.pos.y + .45f, c.pos.z + (rnd() - .5f) * .3f, drift.x * .5f + (rnd() - .5f) * .3f, .5f + rnd() * .4f,
+             drift.z * .5f + (rnd() - .5f) * .3f, 1.4f + rnd() * .8f, .3f, 1.1f, .3f, 0x1c1a18, 0x55514c, -.2f, .4f, 1);
       }
       // gone once sunk (or as it comes at the close-up camera's lens)
       if (s < 2.4f && glm::length(c.pos - camPos_) > 1.5f) i++;
@@ -1811,7 +1839,7 @@ void Game::doNuke(bool force) {
       if (d > NUKE_RADIUS) continue;
       killed++;
       if (d < NUKE_VAPOR_R) { e->visible = false; killEnemy(e, true, false); continue; }   // vaporised: nothing left
-      // the rest freeze white in the flash, then the front flings them outward, charred
+      // the rest catch fire in the flash and run on until the front flings them outward, burning
       glm::vec2 out = glm::vec2(dx, dz) / d;
       float k = 1 - d / 24, j = 0.8f + 0.4f * rnd();
       Fling f;
@@ -1845,6 +1873,11 @@ void Game::killEnemy(const EnemyP& e, bool reward, bool splash, const Fling* fli
       c.vel = fling->vel;
       c.delay = fling->delay;
       c.spin = fling->spin;
+      const float d = std::hypot(e->pos.x, e->pos.z);   // running at the bunker (one at the hull writhes there)
+      if (d >= attackReach(*e) && d > 0.01f) c.run = glm::vec3(-e->pos.x / d, 0, -e->pos.z / d) * (e->speed * (e->slowed ? e->slowFactor : 1) * 60);
+      c.walk = e->walk;
+      c.stride = e->stride;
+      c.step = e->step;
     }
     corpses_.push_back(c);
   }
@@ -3207,7 +3240,7 @@ void Game::render() {
       else if (e->slowed) c = {0.6f, 0.8f, 1.5f};        // concussive slow: icy blue
       addInst(e->pool, e->pos, e->rotY, e->rotZ, c);
     }
-  for (const Corpse& c : corpses_) addInst(c.pool, c.pos, c.rotY, c.rotZ, glm::vec3(c.flung ? c.tint : std::max(0.25f, 1 - c.t * 1.4f)));
+  for (const Corpse& c : corpses_) addInst(c.pool, c.pos, c.rotY, c.rotZ, c.flung ? c.col : glm::vec3(std::max(0.25f, 1 - c.t * 1.4f)));
   for (auto& [k, pool] : pools_)
     if (!pool->inst.empty())
       for (const BakedPart& p : pool->parts) R.drawInstanced(p.mesh, p.mat, pool->inst.data(), (int)pool->inst.size(), p.cast, false);
