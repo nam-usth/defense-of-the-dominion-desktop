@@ -90,9 +90,13 @@ endif()
 target_include_directories(glfw PUBLIC third_party/glfw/include third_party/glfw/deps)
 
 # ─── The game ────────────────────────────────────────────────────────────────
+# the achievement rules' unit test: cmake --build build/linux --target ach_test && build/linux/ach_test
+add_executable(ach_test EXCLUDE_FROM_ALL tests/ach_test.cpp src/achievements.cpp src/storage.cpp src/log.cpp)
+target_include_directories(ach_test PRIVATE src)
+
 add_executable(dotd
   src/main.cpp src/game.cpp src/game_ui.cpp src/game_save.cpp src/render.cpp src/assets.cpp
-  src/audio.cpp src/storage.cpp src/ui.cpp src/log.cpp src/jobs.cpp src/display.cpp src/gpu_particles.cpp src/post.cpp src/nuke_fx.cpp src/third_party_impl.c
+  src/audio.cpp src/storage.cpp src/achievements.cpp src/ui.cpp src/log.cpp src/jobs.cpp src/display.cpp src/gpu_particles.cpp src/post.cpp src/nuke_fx.cpp src/weather.cpp src/third_party_impl.c
   third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp third_party/imgui/imgui_tables.cpp
   third_party/imgui/imgui_widgets.cpp third_party/imgui/backends/imgui_impl_glfw.cpp
   third_party/imgui/backends/imgui_impl_opengl3.cpp)

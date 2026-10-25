@@ -351,6 +351,8 @@ uniform sampler2D uTerrainTex;                                  // the ground's 
 uniform float uNight, uNightDesat; uniform vec3 uMoonTint;      // how much of the fog is night; colour the ground loses
 uniform bool uGroundHD;                                         // GFX HIGH: the ground's fine layers (else SD)
 uniform bool uScenery, uInstAlpha;
+uniform float uWet, uPuddle, uRain, uTime, uCloud;              // the weather: the ground's wetness, its puddles, rain now, its clock, cloud cover
+uniform vec3 uSkyZen, uSkyHor; uniform vec2 uCloudDrift;        // the sky the water mirrors
 const float PI = 3.141592653589793;
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
 
@@ -367,8 +369,9 @@ const vec3 LUMA = vec3(0.299, 0.587, 0.114);
 //  - lod >= 0: blurred mips without derivatives (a unit's fog target, in a per-pixel branch): mip 2.5
 //    blurs over about 1.7 units (a) and 0.4 (b).
 const mat2 ROT1 = mat2(0.825, 0.565, -0.565, 0.825), ROT2 = mat2(-0.320, 0.947, -0.947, -0.320), ROT3 = mat2(0.199, -0.980, 0.980, 0.199), ROT4 = mat2(0.545, 0.839, -0.839, 0.545);
+const mat2 ROT5 = mat2(0.454, 0.891, -0.891, 0.454);   // the puddles' read
 const vec3 GRASS_LUSH = vec3(.184, .290, .102), GRASS_DRY = vec3(.290, .310, .133), DIRT_DARK = vec3(.290, .224, .141), DIRT_LIGHT = vec3(.431, .353, .227);
-struct Ground { vec3 alb; vec3 N; float ao; };
+struct Ground { vec3 alb, dry; vec3 N; float ao; float wet, water; };   // dry: alb before the rain; wet: how wet (0..1); water: standing water (a puddle)
 Ground ground(vec2 xz, float lod, float detail) {
   vec2 u1 = ROT1 * xz / 150.0 + vec2(0.89, 0.85), u2 = ROT2 * xz / 36.0, u3 = ROT3 * xz / 6.0;
   vec4 a, b, c = vec4(0.5);
@@ -391,7 +394,50 @@ Ground ground(vec2 xz, float lod, float detail) {
   vec2 g = transpose(ROT3) * (c.ba * 2.0 - 1.0) * mix(mix(0.3, 0.45, detail), 0.75, dirt);
   G.N = normalize(vec3(-g.x, 1.0, -g.y));
   G.ao = mix(0.55, 1.0, smoothstep(1.4, 2.8, r));
+  // the weather: water stands where the ground is low (a fourth read: the R noise on a 22-unit tile), in the
+  // dirt and the worn ring, never on the lush grass; it rises with the rain that has fallen (uPuddle)
+  // and seeps away after, the soil soaked round it. The whole field darkens as it wets, the dirt most
+  // (not its moonlit value in the dark: the night stays as readable)
+  G.dry = G.alb;
+  G.wet = uWet;
+  G.water = 0.0;
+  if (uWet > 0.0 || uPuddle > 0.0) {
+    float p = lod < 0.0 ? texture(uTerrainTex, ROT5 * xz / 21.9).r : textureLod(uTerrainTex, ROT5 * xz / 21.9, lod).r;
+    float low = p * (0.55 + 0.45 * dirt), T = 1.0 - 0.36 * uPuddle;
+    G.water = smoothstep(T, T + max(0.015, lod < 0.0 ? 1.5 * fwidth(low) : 0.05), low);   // a crisp shore, never a jagged one
+    G.wet = max(uWet, smoothstep(T - 0.1, T, low) * min(1.0, 4.0 * uPuddle));
+    G.alb *= 1.0 - G.wet * mix(0.3, 0.45, dirt) - 0.2 * G.water;
+  }
   return G;
+}
+// What the water mirrors: the sky, brighter toward the horizon, under a cloud deck 40 up drifting
+// with the wind (the ground's macro noise, read large). A traced reflection would return the scene
+// where the reflected ray hits it, and this where it escapes to the sky
+vec3 skyMirror(vec3 P, vec3 R) {
+  float up = max(R.y, 0.0);
+  vec2 c = (P.xz + R.xz * (40.0 / max(up, 0.2)) + uCloudDrift) / 480.0;
+  float cl = textureLod(uTerrainTex, c, 1.0).r;
+  return mix(uSkyHor, uSkyZen, sqrt(up)) * (1.0 + uCloud * (cl - 0.5));
+}
+// The rain's rings on standing water: in each 0.45 m cell a drop may land every ~0.6 s (in a
+// downpour nearly always, in a drizzle about one time in three) and a ring spreads from it (out to 0.3 m,
+// so the 3x3 cells round a point hold every ring that reaches it), dying away. Returns the slope
+// of the surface
+vec2 h22(vec2 p) { vec3 q = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973)); q += dot(q, q.yzx + 33.33); return fract((q.xx + q.yz) * q.zy); }
+vec2 ripples(vec2 p) {
+  const float CELL = 0.45, K = 78.0, S2 = 0.0025;   // the ring's wavenumber (8 cm waves), its band (sigma 5 cm, squared)
+  vec2 c0 = floor(p / CELL), g = vec2(0.0);
+  for (int j = -1; j <= 1; j++)
+    for (int i = -1; i <= 1; i++) {
+      vec2 c = c0 + vec2(i, j), h = h22(c);
+      float cyc = uTime * (1.3 + 0.7 * h.y) + 7.3 * h.x, life = fract(cyc);
+      vec2 q = h22(c + 1.618 * floor(cyc));
+      if (fract(q.x * 13.7 + q.y * 7.1) > 0.1 + 0.9 * uRain) continue;   // no drop here this time
+      vec2 d = p - (c + 0.25 + 0.5 * q) * CELL;   // somewhere else in the cell each time
+      float r = length(d), u = r - 0.3 * life, e = (1.0 - life) * (1.0 - life) * exp(-u * u / S2);
+      g += d / max(r, 1e-4) * (0.003 * e * (K * cos(K * u) - 2.0 * u / S2 * sin(K * u)));   // d/dr of 3 mm waves
+    }
+  return g;
 }
 // a surface's moonlit value at night: its brightness, moon-blue, lit by the moon (the fill light)
 vec3 nightOf(vec3 alb, vec3 N) { return dot(alb, LUMA) * uMoonTint * (0.45 + 0.55 * max(dot(N, uDirDir[1]), 0.0)); }
@@ -455,7 +501,7 @@ void main() {
       diffuse.rgb *= mix(t.rgb, tc, m);
     } else diffuse *= t;
   }
-  if (uScenery) diffuse.rgb = mix(diffuse.rgb, vec3(dot(diffuse.rgb, LUMA)), uNightDesat);
+  if (uScenery) diffuse.rgb = mix(diffuse.rgb, vec3(dot(diffuse.rgb, LUMA)), uNightDesat) * (1.0 - 0.3 * uWet);   // (wet stone darkens)
   vec3 outC, Nn = vec3(0.0, 1.0, 0.0);
   if (uType == 3) {
     outC = diffuse.rgb;
@@ -464,6 +510,13 @@ void main() {
     vec3 N = length(vNormal) > 0.0 ? normalize(vNormal) : vec3(0.0, 1.0, 0.0);
 #ifdef TERRAIN
     N = G.N;
+    if (G.water > 0.0) {   // standing water lies flat, but for the rain's rings on it
+      vec3 Nw = vec3(0.0, 1.0, 0.0);
+      if (uRain > 0.0) { vec2 g = ripples(vWorld.xz) * min(1.0, 0.4 + uRain); Nw = normalize(vec3(-g.x, 1.0, -g.y)); }
+      N = normalize(mix(N, Nw, G.water));
+    }
+    // wet ground takes a dull sheen, the water sharp glints of every light (a sun, a lamp, a grenade)
+    float wetRough = mix(0.5, 0.07, G.water), wetSpec = G.wet * mix(0.3, 1.0, G.water);
 #endif
     if (uType == 0 && uHasNormalMap) {   // DXT5nm: X in alpha, Y in green, Z rebuilt
       vec4 nt = texture(uNormalMap, vUV);
@@ -509,6 +562,9 @@ void main() {
       direct += irr;
       if (uType == 0) spec += irr * PI * specGGX(L, V, N, f0, rough);
       else if (uType == 2) spec += irr * PI * specBlinn(L, V, N, f0, uShininess);
+#ifdef TERRAIN
+      if (wetSpec > 0.0) spec += irr * PI * specGGX(L, V, N, vec3(0.02), wetRough) * wetSpec;
+#endif
     }
     if (uType == 1) direct *= sh;   // Lambert: the shadow mask darkens all direct light
     for (int i = 0; i < uGlCount; i++) {   // small lights: soft (half-wrapped), no highlight
@@ -516,11 +572,20 @@ void main() {
       float d = length(lv);
       float att = pow(clamp(1.0 - d / uGlPos[i].w, 0.0, 1.0), 2.0);
       direct += uGlColor[i].rgb * att * (0.5 + 0.5 * dot(N, lv / max(d, 1e-5)));
+#ifdef TERRAIN
+      vec3 gL = lv / max(d, 1e-5);
+      if (wetSpec > 0.0) spec += uGlColor[i].rgb * att * max(dot(N, gL), 0.0) * PI * specGGX(gL, V, N, vec3(0.02), wetRough) * wetSpec;
+#endif
     }
     // the lit term is clamped as the 8-bit target clamped it: lit surfaces look as before and never
     // bloom (smoke over a brightly lit hull stays as dense); only emitters exceed 1 in the HDR target
 #ifdef TERRAIN
     outC = min(dif * (uAmbient * G.ao + direct * mix(1.0, G.ao, 0.35)), vec3(1.0));
+    if (G.water > 0.0) {   // the water mirrors the sky: by day far brighter than the lit ground, so even from overhead it
+      float F = 0.02 + 0.98 * pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0);   // shows; at night, under a lamp, the mud below it does
+      outC = mix(outC, skyMirror(vWorld, reflect(-V, N)), G.water * min(1.0, mix(0.55, 0.25, uNight) + F));
+    }
+    outC += min(spec, vec3(1.5));   // a glint off the water mirrors its light: past 1, it blooms a little
 #else
     outC = min(dif * (uAmbient + direct) + spec, vec3(1.0)) + uEmissive * (uHasEmissiveMap ? texture(uEmissiveMap, vUV).rgb : vec3(1.0));
 #endif
@@ -538,11 +603,11 @@ void main() {
       vec3 target = uFogColor;
       if (uNight > 0.0) {
 #ifdef TERRAIN
-        vec3 dark = nightOf(G.alb, G.N) * G.ao;
+        vec3 dark = nightOf(G.dry, G.N) * G.ao;
 #else
         vec3 dark;
         if (uScenery) dark = nightOf(1.5 * diffuse.rgb, Nn);   // paler than the field: a boulder in the dark reads as a stone, not a crouching Zerg
-        else { Ground U = ground(vWorld.xz, 2.5, 0.0); dark = nightOf(U.alb, vec3(0.0, 1.0, 0.0)) * U.ao; }
+        else { Ground U = ground(vWorld.xz, 2.5, 0.0); dark = nightOf(U.dry, vec3(0.0, 1.0, 0.0)) * U.ao; }
 #endif
         target = mix(uFogColor, dark, uNight);
       }
@@ -899,6 +964,14 @@ void Renderer::render(const SceneParams& sp) {
     glUniform1f(U(p, "uNightDesat"), sp.nightDesat);
     glUniform3fv(U(p, "uMoonTint"), 1, glm::value_ptr(sp.moonTint));
     glUniform1i(U(p, "uGroundHD"), sp.groundHD);
+    glUniform1f(U(p, "uWet"), sp.terrainTex ? sp.wet : 0.f);   // (no texture: no puddles to read)
+    glUniform1f(U(p, "uPuddle"), sp.terrainTex ? sp.puddle : 0.f);
+    glUniform1f(U(p, "uRain"), sp.rain);
+    glUniform1f(U(p, "uTime"), sp.weatherT);
+    glUniform1f(U(p, "uCloud"), sp.cloud);
+    glUniform3fv(U(p, "uSkyZen"), 1, glm::value_ptr(sp.skyZenith));
+    glUniform3fv(U(p, "uSkyHor"), 1, glm::value_ptr(sp.skyHorizon));
+    glUniform2fv(U(p, "uCloudDrift"), 1, glm::value_ptr(sp.cloudDrift));
     glowUniforms(p);
     glUniform1i(U(p, "uMap"), 0);
     glUniform1i(U(p, "uEmissiveMap"), 1);
@@ -948,6 +1021,7 @@ void Renderer::render(const SceneParams& sp) {
   ctx.fogNear = sp.fogNear;
   ctx.fogFar = sp.fogFar;
   ctx.hdr = postActive_;
+  ctx.vpH = sp.vpH;
   for (auto& [z, c] : tr) {
     if (c->custom >= 0) {
       customs_[c->custom].fn(ctx);

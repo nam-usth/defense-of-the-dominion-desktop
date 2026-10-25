@@ -135,8 +135,11 @@ bool Game::init(GLFWwindow* win) {
   gpuFx_.init(131072, 32768);   // false without OpenGL 4.3: the CPU particles stay
   gpuFxOn_ = storage::get("gpuParticles", "1") != "0";
   R.setGpuParticles(gpuFx() ? &gpuFx_ : nullptr);
+  weatherFx_.init();   // false: no rain drawn (the ground still wets)
+  weatherOn_ = storage::get("weather", "1") != "0";
   applyDNLights(0);
   tutLoad();
+  ach_.load();
   roster_ = {Unit::Marine, Unit::Marine};
   syncMarines();
   showTitle();
@@ -882,6 +885,7 @@ void Game::updateAcids(float dt) {
       emit(glow_, a.p.x, a.p.y, a.p.z, (rnd() - .5f) * .6f, (rnd() - .5f) * .6f, (rnd() - .5f) * .6f, .3f, .26f, .05f, .85f, 0xb8ff40, 0x2c8a10, 2, 0, 0);
     if (a.t < roach_acid::flight) { i++; continue; }
     bunkerHp_ = std::max(0.f, bunkerHp_ - a.dmg * arm);
+    waveHurt_ = true;
     for (int k = 0; k < 9; k++)   // splash + a puff of corrosive smoke
       emit(glow_, a.p.x, a.p.y, a.p.z, (rnd() - .5f) * 5, rnd() * 4 + 1, (rnd() - .5f) * 5, .45f + rnd() * .25f, .24f, .06f, 1, 0xc8ff50, 0x3a9a12, 18, .8f, 0);
     emit(smoke_, a.p.x, a.p.y, a.p.z, 0, .8f, 0, 1.0f, .5f, 1.3f, .45f, 0x6a8a3a, 0x3a4a2a, -.2f, .5f, 1);
@@ -976,6 +980,7 @@ void Game::updateShrike(float dt) {
   bool od = shrikeOverdrive();
   if (od != shrikeOD_) {
     shrikeOD_ = od;
+    if (od) achState();
     if (od) setStatus("Six Marines \xE2\x80\x94 Shrike overdrive: rate of fire \xC3\x97" "2.5!");
   }
   if (hpLvl_ < 3) { shrikeTgt_.reset(); return; }
@@ -1238,6 +1243,7 @@ void Game::marauderBlast(const glm::vec3& at, const EnemyP& struck, float dmg0, 
   }
   audio::play("mblast");
   for (const EnemyP& o : killed) killEnemy(o, true);
+  ach_.multiKill(run_, "grenade", (int)killed.size() + (struck && !struck->dead && struck->hp <= 0 ? 1 : 0));   // + the one it hit
 }
 
 // This frame's small lights: the bursts of the last MG_BURST_LIGHT s first (brighter, wider: the
@@ -1489,11 +1495,13 @@ void Game::strikeAt(float tx, float tz, uint32_t col, float r) {
   audio::play("boom");
   spawnParts({tx, .5f, tz}, col, 22);
   explosionFx({tx, .5f, tz}, col, 1);
+  int n = 0;
   for (auto& e : allEnemies()) {
     if (e->dead) continue;
     float dx = e->pos.x - tx, dz = e->pos.z - tz;
-    if (std::sqrt(dx * dx + dz * dz) < r) killEnemy(e, true);
+    if (std::sqrt(dx * dx + dz * dz) < r) { killEnemy(e, true); n++; }
   }
+  if (n) ach_.multiKill(run_, "strike", airRunKills_ += n);   // the airstrike's missiles so far
 }
 
 void Game::randPos(float& x, float& z) {
@@ -1508,6 +1516,8 @@ void Game::doAirstrike() {
   if (vikingActive_) { setStatus("Viking already inbound!"); return; }
   airCD_ = strikeCooldown();
   waveAirs_++;
+  run_.usedSupport = true;
+  airRunKills_ = 0;   // its missiles' kills add up (AIR SUPERIORITY)
   std::vector<EnemyP> alive;
   for (auto& e : allEnemies()) if (!e->dead) alive.push_back(e);
   // one missile per enemy cluster (enemies within 3 of each other)
@@ -1627,6 +1637,7 @@ void Game::doNuke(bool force) {
     }
     if (nukeInFlight_) { setStatus("Nuclear launch already in progress!"); return; }
     nukeCD_ = nukeCooldown();
+    run_.usedSupport = true;
   }
   waveNukes_++;
   nukeInFlight_ = true;
@@ -1800,6 +1811,7 @@ void Game::doNuke(bool force) {
       f.spin = (rnd() < .5f ? -1 : 1) * (6 + 6 * rnd());
       killEnemy(e, true, false, &f);
     }
+    ach_.multiKill(run_, "nuke", killed);
     setStatus("Nuclear detonation \xE2\x80\x94 " + std::to_string(killed) + " unit" + (killed != 1 ? "s" : "") + " annihilated. Bunker intact.");
     return false;
   }, [=, this]() {
@@ -1833,6 +1845,7 @@ void Game::killEnemy(const EnemyP& e, bool reward, bool splash, const Fling* fli
     waveKills_++;
     minerals_ += e->rMin;
     gas_ += e->rGas;
+    ach_.kill(run_, kills_);
   }
 }
 
@@ -1994,6 +2007,7 @@ void Game::ghostSnipeTick(float) {
     beam->m = m;
     beams_.push_back({beam, .3f, .3f, 0, tp * 0.5f});
     killEnemy(target, true);
+    ach_.snipe(run_);
     spawnParts(tp, 0xcc44ff, 18);
     setStatus(std::string("Ghost snipe \xE2\x80\x94 ") + (target->type == 'r' ? "Roach" : "Zergling") + " eliminated!");
     audio::play("snipe");
@@ -2102,25 +2116,39 @@ static const GfxLights GFX_HIGH = {0x99aabb, 0.7f, 1.8f, 0.5f}, GFX_LOW = {0xaaa
 void Game::applyDNLights(float f) {
   dnLightF_ = f;
   const GfxLights& b = gfxHigh_ ? GFX_HIGH : GFX_LOW;
-  ambCol_ = lerp3(hexColor(b.ambCol), hexColor(0x223459), f);
-  ambI_ = b.amb * (1 - f) + 0.26f * f;
+  // the weather: clouds dim the sun and flatten the day's light toward grey, and at night hide part
+  // of the moon; a downpour darkens the day further; rain hazes the distance by day (the night's
+  // fog, which what the player can see follows, is left as it is). A clear sky changes nothing
+  const float cl = weather_.cloud, cd = cl * (1 - f), rn = weather_.rain, haze = std::max(0.35f * cl, rn);
+  auto grey = [](const glm::vec3& c, float k) { return lerp3(c, glm::vec3(glm::dot(c, glm::vec3(0.299f, 0.587f, 0.114f))), k); };
+  ambCol_ = grey(lerp3(hexColor(b.ambCol), hexColor(0x223459), f), 0.5f * cd);
+  ambI_ = (b.amb * (1 - f) + 0.26f * f) * (1 + 0.3f * cd) * (1 - 0.15f * rn * (1 - f));
   // sun: day full → night off, through a warm low sun at dusk / dawn
-  sunCol_ = f < 0.45f ? lerp3(hexColor(0xfff4cc), hexColor(0xff9a55), f / 0.45f) : lerp3(hexColor(0xff9a55), hexColor(0x001122), (f - 0.45f) / 0.55f);
-  sunI_ = b.sun * (1 - f);
+  sunCol_ = grey(f < 0.45f ? lerp3(hexColor(0xfff4cc), hexColor(0xff9a55), f / 0.45f) : lerp3(hexColor(0xff9a55), hexColor(0x001122), (f - 0.45f) / 0.55f), 0.4f * cl);
+  sunI_ = b.sun * (1 - f) * (1 - 0.6f * cl) * (1 - 0.35f * rn);
   // the day's fill light becomes a cool moon from behind left (no shadows: cheaper, and a shadow
   // could give a hidden Zerg away)
   fillCol_ = lerp3(hexColor(0x4488cc), hexColor(0x8fa8e8), f);
   fillPos_ = glm::mix(glm::vec3(-8, 10, -6), glm::vec3(-9, 16, -12), f);
-  fillI_ = b.fill * (1 - f) + 0.32f * f;
+  fillI_ = (b.fill * (1 - f) + 0.32f * f) * (1 - 0.4f * cl * f);
   bunkerLightI_ = f * 4.4f;
   // Fog: the radius shrinks by the same ratio every second (geometric blend).
   // Blended linearly, it stayed outside the battlefield for the first 60% of
   // dusk, then closed in on the bunker all at once.
-  fogNear_ = DN_DAY_FOG_NEAR * std::pow(DN_NIGHT_FOG_NEAR / DN_DAY_FOG_NEAR, f);
-  fogFar_ = DN_DAY_FOG_FAR * std::pow(DN_NIGHT_FOG_FAR / DN_DAY_FOG_FAR, f);
+  const float dayNear = DN_DAY_FOG_NEAR * (1 - 0.45f * haze), dayFar = DN_DAY_FOG_FAR * (1 - 0.35f * haze);
+  fogNear_ = dayNear * std::pow(DN_NIGHT_FOG_NEAR / dayNear, f);
+  fogFar_ = dayFar * std::pow(DN_NIGHT_FOG_FAR / dayFar, f);
   // the sky: violet at dusk against the low orange sun, night blue (the fogged field itself fades
-  // to its own moonlit value: SceneParams::night)
+  // to its own moonlit value: SceneParams::night); a grey rain haze by day
   fogCol_ = f < 0.5f ? lerp3(hexColor(0x2a3a18), hexColor(0x1d1f33), f / 0.5f) : lerp3(hexColor(0x1d1f33), hexColor(0x070c18), (f - 0.5f) / 0.5f);
+  fogCol_ = lerp3(fogCol_, hexColor(0x3c4648), 0.6f * cd);
+  // the sky the puddles mirror: blue, or the clouds' grey (dark under a downpour), a violet dusk,
+  // night blue
+  const glm::vec3 zen = lerp3(hexColor(0x5a7cab), hexColor(0x6c747a) * (1 - 0.4f * rn), cl),
+                  hor = lerp3(hexColor(0x9db2c6), hexColor(0x858c90) * (1 - 0.3f * rn), cl);
+  const float dusk = 4 * f * (1 - f);
+  skyZen_ = lerp3(lerp3(zen, hexColor(0x141c30), f), hexColor(0x3a2f58), 0.5f * dusk);
+  skyHor_ = lerp3(lerp3(hor, hexColor(0x222a40), f), hexColor(0x7a5060), 0.5f * dusk);
 }
 
 // Night factor at time t of the cycle: 0 through the day, eased up through dusk,
@@ -2142,9 +2170,9 @@ void Game::updateDayNight(float dt) {
   // the cycle on / off is blended (the night lifts over DN_SLEW s, not at once)
   float step = dt / DN_SLEW;
   dnFactor_ = std::max(dnFactor_ - step, std::min(dnFactor_ + step, target));
-  // the lights follow the factor lifted by a flare: re-applied also as one lights up or burns out
-  float lit = dnLit();
-  if (lit != dnLightF_) applyDNLights(lit);
+  // the lights follow the factor lifted by a flare (re-applied also as one lights up or burns out)
+  // and the weather
+  applyDNLights(dnLit());
 }
 
 // Top-bar label (a night still lifting after the cycle restarted at day reads DAWN)
@@ -2187,6 +2215,41 @@ void Game::setDayNightTime(float t) {   // test: the cycle on at t seconds, ligh
   dnTime_ = std::fmod(std::max(0.f, t), DN_CYCLE);
   dnFactor_ = dnCycleFactor(dnTime_);
   applyDNLights(dnLit());
+}
+
+// ─── Weather ─────────────────────────────────────────────────────────────────
+void Game::setWeatherOn(bool on) {
+  weatherOn_ = on;
+  storage::set("weather", on ? "1" : "0");
+  setStatus(on ? "Weather ON \xE2\x80\x94 clear skies, clouds, now and then rain" : "Weather OFF \xE2\x80\x94 the sky clears");
+}
+// The cheat, in turn: a downpour now (out of clouds already in: it starts at once), it eases to a
+// drizzle, the sky clears
+void Game::rainCheat() {   // (the status line follows: update)
+  if (!weatherOn_) { setStatus("Weather is off \xE2\x80\x94 Menu \xE2\x86\x92 Settings"); return; }
+  if (weather_.sky != Weather::Sky::Rain) {
+    weather_.set(Weather::Sky::Rain, rng_, false);
+    weather_.pour(true, rng_);
+    weather_.cloud = std::max(weather_.cloud, 0.8f);
+  } else if (weather_.heavy()) weather_.pour(false, rng_);
+  else weather_.set(Weather::Sky::Clear, rng_, false);
+}
+// 5% in a drizzle, 10% in a downpour, between the two as the rain grows (none in the last of it)
+float Game::rainMiss() const {
+  const float r = weather_.rain;
+  return r < 0.05f ? 0.f : RAIN_MISS[0] + (RAIN_MISS[1] - RAIN_MISS[0]) * glm::smoothstep(0.35f, 0.7f, r);
+}
+// Test: a state at once, held (no random change) for the run
+void Game::weatherForRun(const std::string& s) {
+  const bool rains = s == "rain" || s == "drizzle";
+  const Weather::Sky sky = rains ? Weather::Sky::Rain : s == "overcast" ? Weather::Sky::Overcast : Weather::Sky::Clear;
+  weather_.set(sky, rng_, true);
+  if (rains) weather_.rain = weather_.showerMax = s == "rain" ? 0.9f : 0.25f;
+  weather_.wet = rains ? 1.f : s == "after" ? 0.6f : 0.f;   // after: a shower just over, the sun out
+  weather_.puddle = s == "rain" || s == "after" ? 1.f : s == "drizzle" ? 0.3f : 0.f;
+  weather_.held = true;
+  applyDNLights(dnLit());
+  logInfo("weather for this run: %s (wet %.1f, puddles %.1f)", s.c_str(), weather_.wet, weather_.puddle);
 }
 
 // ─── Viking flare (night airstrikes) ─────────────────────────────────────────
@@ -2298,6 +2361,7 @@ void Game::startWave() {
   spawnTimer_ = 0;
   wavePhase_ = WavePhase::Combat;
   waveKills_ = waveNukes_ = waveAirs_ = waveCrates_ = 0;
+  waveHurt_ = false;
   std::string roachMsg = rc > 0 ? " + " + std::to_string(rc) + " Roach" + (rc > 1 ? "es" : "") : "";
   std::string boostMsg = wave_ == cfg::metabolic_wave ? " \xE2\x80\x94 Metabolic Boost: Zerglings run faster!"
                          : endlessWaves() ? " \xE2\x80\x94 bunker reinforced \xC3\x97" + std::to_string(endlessWaves()) : "";
@@ -2308,6 +2372,7 @@ void Game::startWave() {
 
 void Game::waveCleared() {
   wavePhase_ = WavePhase::Cleared;
+  ach_.waveCleared(run_, mode_ == Mode::Endless, wave_, waveHurt_, maxHp_ > 0 ? bunkerHp_ / maxHp_ : 0, dnEnabled_ && dnFactor_ >= 0.5f);
   int bm = 40 + wave_ * 15, bg = 10 + wave_ * 5;
   minerals_ += bm;
   gas_ += bg;
@@ -2427,6 +2492,7 @@ void Game::buy(const std::string& type) {
   } else s = "Unknown";
   setStatus(s);
   audio::play(minerals_ + gas_ < spent0 ? "buy" : "deny");
+  achState();
 }
 
 void Game::buyArmory(int k) {
@@ -2462,9 +2528,11 @@ std::string Game::hireUnit(Unit u) {
   minerals_ -= d.cost[0];
   gas_ -= d.cost[1];
   roster_.push_back(u);
+  if (u != Unit::Marine) run_.hiredOther = true;   // BAND OF BROTHERS: Marines only
   if (u == Unit::Ghost) snipeReady_.push_back(0);   // a new ghost may snipe at once
   if (u == Unit::Marauder) marauderReady_.push_back(0);   // ... and a new Marauder fire
   syncMarines();
+  achState();
   return std::string(d.name) + " hired! (" + std::to_string(slotsUsed()) + "/6 slots)";
 }
 
@@ -2519,6 +2587,7 @@ void Game::researchUpgrade(const std::string& key, int tier) {
     char r[16];
     snprintf(r, sizeof r, "%g", (double)cfg::sensor_range[sensorLvl_]);
     setStatus("Sensor Tower lv." + std::to_string(sensorLvl_) + " \xE2\x80\x94 blips out to " + r);
+    achState();
     return;
   }
   const UD* d = nullptr;
@@ -2547,6 +2616,17 @@ void Game::researchUpgrade(const std::string& key, int tier) {
     if (key == "superstim") superStimLvl_ = tier + 1;
     setStatus(t.desc);
   }
+  achState();
+}
+
+void Game::achState() {
+  ach::State s;
+  s.dmg = dmgLvl_; s.armor = armorLvl_; s.hull = hpLvl_; s.ammo = ammoLvl_;
+  for (Unit u : roster_) (u == Unit::Marine ? s.marines : u == Unit::Marauder ? s.marauders : s.ghosts)++;
+  s.overdrive = shrikeOverdrive();
+  s.superStim = superStimLvl_;
+  s.sensor = sensorLvl_;
+  ach_.state(run_, s);
 }
 
 void Game::resetRoster() {
@@ -2634,6 +2714,7 @@ void Game::update(float dt) {
       if (e.type == 'r') roachAttack(e, dt, ex, ez);   // ranged: acid, damage on impact
       else {                                          // melee: bites the hull
         bunkerHp_ = std::max(0.f, bunkerHp_ - e.dmg * dt * arm);
+        waveHurt_ = true;
         bool bite;
         if (!e.attack.empty()) {   // SC2 Attack animation on a loop; bites as the jaws close
           float t0 = e.atkT;
@@ -2693,7 +2774,7 @@ void Game::update(float dt) {
     tBest = 2;
     for (int k = 0; k < (int)enemyList.size(); k++) {
       const Enemy& c = *enemyList[k];
-      if (c.dead) continue;
+      if (c.dead || &c == b.passed) continue;
       float ex = c.pos.x - px, ez = c.pos.z - pz;
       float t = glm::clamp((ex * sx + ez * sz) / sLen2, 0.f, 1.f);   // closest point on the segment
       float dx = ex - sx * t, dz = ez - sz * t, hitR = c.type == 'r' ? .75f : .5f;
@@ -2720,6 +2801,12 @@ void Game::update(float dt) {
       while (b.trail.size() > 2 && gameT_ - b.trail.front().w > MG_STREAK) b.trail.erase(b.trail.begin());
     }
     EnemyP hitE = ci >= 0 ? enemyList[ci] : nullptr;
+    if (hitE && b.unit != Unit::Marauder && rnd() < rainMiss()) {   // the rain spoils the aim: it flies on past
+      b.passed = hitE.get();
+      if (floatTexts_.size() >= 60) floatTexts_.erase(floatTexts_.begin());
+      floatTexts_.push_back({{hitE->pos.x, hitE->pos.y + 1.2f, hitE->pos.z}, "MISS", 0.9f, 0.9f, 0x9fb4c8u});
+      hitE = nullptr;
+    }
     if (hitE) {
       Enemy& e = *hitE;
       b.pos = {px + sx * tBest, b.pos.y, pz + sz * tBest};
@@ -2768,6 +2855,18 @@ void Game::update(float dt) {
   updateCorpses(dt);
   updateFlare(dt);      // before the lights: they follow its strength (and the nuke light's)
   if (nukeLightT_ >= 0 && (nukeLightT_ += dt) >= NUKE_LIGHT_DUR) nukeLightT_ = -1;
+  const char* sky0 = weather_.name();
+  const bool rained = weather_.sky == Weather::Sky::Rain;
+  weather_.update(dt, rng_, weatherOn_);   // likewise: the light under the clouds
+  if (strcmp(weather_.name(), sky0)) {     // the player is told what the rain does to the aim
+    logInfo("weather: %s", weather_.name());
+    if (weather_.sky == Weather::Sky::Rain) {
+      const bool hard = weather_.heavy();
+      char buf[64];
+      snprintf(buf, sizeof buf, "%s \xE2\x80\x94 %d%% of rounds miss", hard ? "DOWNPOUR" : "DRIZZLE", (int)std::lround(100 * RAIN_MISS[hard]));
+      setStatus(buf);
+    } else if (rained) setStatus("The rain stops");
+  }
   updateDayNight(dt);
   updateNukes(dt);
   tutorialTick();
@@ -3342,6 +3441,14 @@ void Game::render() {
   }
   R.drawParticles(&smoke_, Blend::Normal, 2);   // glow over smoke
   R.drawParticles(&glow_, Blend::Additive, 3);
+  {   // the rain (weather.h): lit by the sky, the sun through the clouds and the moon, warm near the bunker's light
+    WeatherRenderer::Look lk;
+    lk.light = ambCol_ * ambI_ + sunCol_ * (0.25f * sunI_) + fillCol_ * (0.3f * fillI_);
+    lk.lampPos = {0, 2.6f, 0};
+    lk.lampCol = hexColor(0xffd2a0) * (0.3f * bunkerLightI_);
+    lk.lampR = 15;
+    weatherFx_.draw(R, weather_, lk);
+  }
 
   SceneParams sp;
   sp.view = view_;
@@ -3373,6 +3480,14 @@ void Game::render() {
   sp.nightDesat = 0.55f * dnLightF_;
   sp.terrainTex = terrainTex_;
   sp.groundHD = gfxHigh_;
+  sp.wet = weather_.wet;
+  sp.puddle = weather_.puddle;
+  sp.rain = weather_.rain;
+  sp.weatherT = (float)std::fmod(weather_.t, 2048.0);
+  sp.cloud = weather_.cloud;
+  sp.skyZenith = skyZen_;
+  sp.skyHorizon = skyHor_;
+  sp.cloudDrift = glm::mod(weather_.drift, glm::vec2(480));   // (the cloud deck the puddles mirror repeats every 480)
   sp.fogColor = fogCol_ + glm::vec3(1, 0.95f, 0.85f) * (0.9f * nkFlash) + glm::vec3(1, 0.45f, 0.15f) * (0.12f * nukeLightK() * dnFactor_);
   sp.fogNear = fogNear_;
   sp.fogFar = fogFar_;
@@ -3418,6 +3533,7 @@ void Game::frame(float dt) {
   double t0 = glfwGetTime();
   layout();
   update(dt);
+  audio::setRain(phase_ == Phase::Playing ? weather_.rain : 0);   // (not under the title and results: their music alone)
   double t1 = glfwGetTime();
   gpuFx_.update(phase_ == Phase::Playing && !isPaused() ? dt : 0);   // spawn this frame's bursts, move the GPU particles
   updateSensorRing(dt);
@@ -3479,6 +3595,7 @@ void Game::clearEntities() {
   glowCount_ = 0;
   nukeLightT_ = -1;
   endFlare();   // the flare and the nuke light go with the scene: the lights return to the true day / night
+  weather_.reset(rng_);   // a new game (and the title) under a clear sky, on dry ground
   applyDNLights(dnFactor_);
   props_.clear();
 }
@@ -3487,8 +3604,14 @@ void Game::start(Mode m) {
   if (m == Mode::Endless && mode_ != Mode::Endless && !endlessUnlocked()) return;   // replaying Endless never needs the flag
   mode_ = m;
   audio::music("battle");
+  ach_.flush();   // the last game's lifetime stats
   clearEntities();
   newGameState();
+  run_ = {};   // a new game (loadGame restores a saved one's after this)
+  run_.cheated = benchFire_ && !testData_;   // --bench-fire plays for you: not on the real profile
+  runAch_.clear();
+  waveHurt_ = false;
+  airRunKills_ = 0;
   tutDismiss();   // a box left open (Restart / Load from the menu) goes with the old game
   tutNext_ = 0;
   overlay_ = Overlay::None;
@@ -3518,6 +3641,7 @@ void Game::newGameState() {
 }
 
 void Game::gameOver() {
+  ach_.flush();
   if (phase_ != Phase::Playing) return;   // several biters can drop the hull to 0 in one frame
   phase_ = Phase::GameOver;
   bool record = false;
@@ -3537,6 +3661,7 @@ void Game::campaignVictory() {
   if (victoryAchieved_ || phase_ != Phase::Playing) return;
   victoryAchieved_ = true;
   score_ += 5000;   // victory bonus
+  ach_.victory(run_);
   bool newly = !endlessUnlocked();
   storage::set("endless_unlocked", "1");
   // checkpoint = "Continue · Endless": CONTINUE on the title resumes in Endless
@@ -3589,6 +3714,7 @@ bool Game::bestEndless(int& wave, int& score) const {
 }
 
 void Game::shutdown() {
+  ach_.flush();
   const Perf& p = perfShown_;
   if (p.frames)
     logInfo("perf (last 0.5 s): %.0f FPS, frame %.2f ms, worst %.1f ms; CPU update %.2f, render %.2f, UI %.2f ms; %d draws, %d particles",

@@ -2,6 +2,7 @@
 // menus, saving. game.cpp holds the simulation and the 3D scene, game_ui.cpp
 // the HUD and menus (Dear ImGui), game_save.cpp saving and the cheat codes.
 #pragma once
+#include <algorithm>
 #include <cstdlib>
 #include <functional>
 #include <map>
@@ -10,12 +11,14 @@
 #include <string>
 #include <vector>
 
+#include "achievements.h"
 #include "assets.h"
 #include "display.h"
 #include "gpu_particles.h"
 #include "nuke_fx.h"
 #include "render.h"
 #include "storage.h"
+#include "weather.h"
 
 struct GLFWwindow;
 struct ImFont;
@@ -104,7 +107,12 @@ struct Bullet {
   float range = 18;               // flies this far; a Marauder's grenade bursts there (its target point)
   glm::vec2 aim{0};               // a Marauder grenade's target point (on the ground)
   std::vector<glm::vec4> trail;   // a Marauder grenade's light streak: recent nozzle positions, w = game time
+  const Enemy* passed = nullptr;  // in the rain: the Zerg this round missed and flies past (not rolled for again)
 };
+
+// In the rain the bunker's rounds (and the Shrike's) miss now and then: in a drizzle, in a downpour
+// (between the two as the rain grows). Grenades still burst, snipes and missiles still strike
+inline constexpr float RAIN_MISS[2] = {0.05f, 0.10f};
 
 // A Marauder grenade's blast radius: base, then per Concussive Shell AOE tier
 inline constexpr float MG_RADIUS[4] = {1.5f, 2.0f, 2.6f, 3.2f};
@@ -208,6 +216,11 @@ class Game {
   void runCheat(const std::string& code) {   // also the test actions hire:<unit>, research:<key>[:<tier>] (paid for: mng first)
     if (code == "autocast:stim") toggleStimAuto();   // and autocast:stim (the STIM button's right-click),
     else if (code.rfind("runner:", 0) == 0) electRunner(std::atoi(code.c_str() + 7));   // runner:<roster index>
+    else if (code.rfind("grant:", 0) == 0) {   // grant:<minerals>,<gas> — test money: not a cheat under --data, else one
+      if (!testData_) run_.cheated = true;      // (the real profile must not earn from it)
+      minerals_ += (float)std::atof(code.c_str() + 6);
+      if (size_t c = code.find(','); c != std::string::npos) gas_ += (float)std::atof(code.c_str() + c + 1);
+    }
     else if (code.rfind("hire:", 0) == 0) {
       for (int k = 0; k < 3; k++) if (code.substr(5) == unitDef((Unit)k).key) hireUnit((Unit)k);
     } else if (code.rfind("research:", 0) == 0) {
@@ -228,8 +241,13 @@ class Game {
       if (p.size() > 5) tourPage(std::atoi(p.c_str() + 5));   // (clamped to the pages)
     }
     else if (p == "howto") showHowTo();
+    else if (p.rfind("achievements", 0) == 0) {   // "achievements" or "achievements:<category tab 0-4>"
+      showAchievements();
+      if (p.size() > 13) achTab_ = std::clamp(std::atoi(p.c_str() + 13), 0, 4);
+    }
   }
   void setDayNightTime(float t);                    // test: the cycle on, t seconds into it
+  void weatherForRun(const std::string& s);         // test: clear | overcast | rain | drizzle | after (a shower just over), held
   void tutorialForRun(bool on) { tutRun_ = on; }    // test: no tour / hints this run (the stored setting is kept)
   void postForRun(bool on) { postRun_ = on; }       // HDR post-processing (main sets the window's samples to match)
   void testPress(bool down) { onMouseButton(0, down ? 1 : 0); }   // test: the left button (GLFW_MOUSE_BUTTON_LEFT, PRESS / RELEASE)
@@ -237,6 +255,7 @@ class Game {
   void testKey(int key) { onKey(key, 1, 0); }
   void showPerf(bool on) { perfOverlay_ = on; }
   void benchFire(bool on) { benchFire_ = on; }   // test: fire every volley at the nearest enemy, magazine refilled
+  void testData(bool on) { testData_ = on; }     // --data: a throwaway profile (test hooks may earn achievements there)
   void setGpuInfo(std::vector<display::Gpu> gpus, const std::string& running, bool dedicatedPref);
   bool wantsRelaunch() const { return relaunch_; }   // the graphics card changed: main restarts the game
   void gpuParticlesForRun(bool on) { gpuFxOn_ = on; R.setGpuParticles(gpuFx() ? &gpuFx_ : nullptr); }   // test: not stored
@@ -271,6 +290,14 @@ class Game {
   void startFlare();
   void updateFlare(float dt);
   void endFlare();
+  // weather (weather.h): clear, overcast, now and then rain; the ground wets, puddles fill and dry
+  Weather weather_;
+  WeatherRenderer weatherFx_;
+  bool weatherOn_ = true;               // Menu → Settings (stored)
+  glm::vec3 skyZen_{0}, skyHor_{0};     // the sky the puddles mirror (applyDNLights)
+  void setWeatherOn(bool on);
+  void rainCheat();                     // the "rain" code, in turn: a downpour now, a drizzle, the sky clears
+  float rainMiss() const;               // the chance a round misses in the rain now (RAIN_MISS)
   // nuke fireball light: lights the field (and lifts a night) for NUKE_LIGHT_DUR s of game time
   float nukeLightT_ = -1;   // seconds since the blast, -1 = none
   glm::vec3 nukeLightPos_{0};
@@ -336,6 +363,14 @@ class Game {
   float stimT_ = 0;
   int stimVolley_ = 0;
   int waveKills_ = 0, waveNukes_ = 0, waveAirs_ = 0, waveCrates_ = 0;   // waveCrates_: crates carried in this wave
+  // achievements: what has been earned (stored), this game's facts (saved with it; a cheat code
+  // sets run_.cheated and the game earns nothing), and what the rules need from the current wave
+  ach::Book ach_;
+  ach::Run run_;
+  bool waveHurt_ = false;            // the Zerg damaged the bunker this wave (bites, acid)
+  int airRunKills_ = 0;              // kills by the current airstrike's missiles
+  std::vector<std::string> runAch_;  // earned in this game (the results screen)
+  void achState();                   // the state rules: upgrades, squad, overdrive, research
   std::vector<char> spawnQueue_;
   float spawnTimer_ = 0, spawnInterval_ = 1.2f;
   bool nukeInFlight_ = false;
@@ -606,16 +641,24 @@ class Game {
   float popMin_ = 0, popGas_ = 0;
   std::string tipCmd_;
   // menu tabs (the last one chosen opens again)
-  static constexpr int MENU_TAB_COUNT = 6;
+  static constexpr int MENU_TAB_COUNT = 7;
   static const char* menuTabKey(int i) {
-    static const char* k[MENU_TAB_COUNT] = {"game", "settings", "display", "controls", "tutorial", "cheats"};
+    static const char* k[MENU_TAB_COUNT] = {"game", "settings", "display", "controls", "tutorial", "achievements", "cheats"};
     return k[i];
   }
   int menuTab_ = 0;
   // overlay (title / results / HOW TO PLAY)
-  enum class Overlay { None, Title, Results, HowTo } overlay_ = Overlay::Title;
+  enum class Overlay { None, Title, Results, HowTo, Achievements } overlay_ = Overlay::Title;
   void showHowTo();
   void drawHowTo();
+  // achievements: the title's full list, the toasts as they are earned
+  void showAchievements() { if (phase_ == Phase::Menu) overlay_ = Overlay::Achievements; }
+  void drawAchievements();
+  struct Toast { std::string id; float t0; };   // t0: uiTime_ it showed (queued: -1)
+  std::vector<Toast> toasts_;
+  void drawToasts();
+  int achHover_ = -1;   // the menu's icon grid: the achievement under the cursor
+  int achTab_ = 0;      // the full list's category tab
 
   // tutorial: the HUD tour, then hints the first time a mechanic matters (game_ui.cpp)
   struct TutStep {
@@ -689,7 +732,7 @@ class Game {
   void drawFlashes();
   float uiTime_ = 0;
   // performance overlay (F3): CPU time per frame stage, averaged over ~0.5 s
-  bool perfOverlay_ = false, benchFire_ = false;
+  bool perfOverlay_ = false, benchFire_ = false, testData_ = false;
   struct Perf { double update = 0, render = 0, ui = 0, frame = 0, worst = 0; int frames = 0; } perfAcc_, perfShown_, perfRun_;
   double perfT_ = 0;
   void drawPerf();
