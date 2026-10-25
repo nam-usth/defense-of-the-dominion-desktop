@@ -256,6 +256,7 @@ class Game {
   void showPerf(bool on) { perfOverlay_ = on; }
   void benchFire(bool on) { benchFire_ = on; }   // test: fire every volley at the nearest enemy, magazine refilled
   void testData(bool on) { testData_ = on; }     // --data: a throwaway profile (test hooks may earn achievements there)
+  void holdHpForRun(float f) { hpHold_ = f; }    // test: the bunker held at f of its max HP (repair and damage leave it there)
   void setGpuInfo(std::vector<display::Gpu> gpus, const std::string& running, bool dedicatedPref);
   bool wantsRelaunch() const { return relaunch_; }   // the graphics card changed: main restarts the game
   void gpuParticlesForRun(bool on) { gpuFxOn_ = on; R.setGpuParticles(gpuFx() ? &gpuFx_ : nullptr); }   // test: not stored
@@ -316,7 +317,8 @@ class Game {
   // lights (three.js parameters)
   glm::vec3 ambCol_{0}, sunCol_{0}, fillCol_{0}, fillPos_{-8, 10, -6};   // fill: the day's sky fill, the moon at night
   float ambI_ = 0.7f, sunI_ = 1.8f, fillI_ = 0.5f, bunkerLightI_ = 0, muzzleI_ = 0, fireI_ = 0;
-  glm::vec3 muzzlePos_{0}, firePos_{0, 1.8f, 0};
+  float gunI_ = 0;   // gunfire's light on the ground (muzzleFlash): the recent shots, mixed
+  glm::vec3 muzzlePos_{0}, firePos_{0, 1.8f, 0}, gunPos_{0};
   glm::vec3 fogCol_{0};
   float fogNear_ = 45, fogFar_ = 90;
   void applyDNLights(float f);
@@ -733,6 +735,7 @@ class Game {
   float uiTime_ = 0;
   // performance overlay (F3): CPU time per frame stage, averaged over ~0.5 s
   bool perfOverlay_ = false, benchFire_ = false, testData_ = false;
+  float hpHold_ = -1;   // test (--hp): the bunker's HP held at this fraction, -1 = off
   struct Perf { double update = 0, render = 0, ui = 0, frame = 0, worst = 0; int frames = 0; } perfAcc_, perfShown_, perfRun_;
   double perfT_ = 0;
   void drawPerf();

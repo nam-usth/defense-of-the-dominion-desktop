@@ -341,7 +341,7 @@ uniform sampler2D uMap, uEmissiveMap, uNormalMap;
 uniform vec2 uNormalScale; uniform vec3 uTeamColor;
 uniform vec3 uCamPos, uAmbient;
 uniform vec3 uDirDir[2], uDirColor[2];
-uniform vec3 uPtPos[4], uPtColor[4]; uniform float uPtDist[4], uPtDecay[4];
+uniform vec3 uPtPos[5], uPtColor[5]; uniform float uPtDist[5], uPtDecay[5];   // MAX_POINTS (render.h)
 uniform vec3 uSpPos, uSpDir, uSpColor; uniform float uSpDist, uSpDecay; uniform vec2 uSpCos;   // cos outer, inner
 uniform bool uReceiveShadow, uShadows;
 uniform sampler2DShadow uShadowMap; uniform float uShadowBias, uShadowTexel;
@@ -535,13 +535,14 @@ void main() {
       rough = clamp(max(uRoughness, 0.0525), 0.0, 1.0);
     }
     vec3 direct = vec3(0.0), spec = vec3(0.0);
-    for (int i = 0; i < 7; i++) {   // 2 directional, 4 point, 1 spot
+    for (int i = 0; i < 8; i++) {   // 2 directional, 5 point, 1 spot
       vec3 L, col;
       if (i < 2) {
         L = uDirDir[i]; col = uDirColor[i];
         if (i == 0 && uType != 1) col *= sh;
-      } else if (i < 6) {
+      } else if (i < 7) {
         int k = i - 2;
+        if (dot(uPtColor[k], uPtColor[k]) == 0.0) continue;   // off: skipped whole (a uniform branch)
         vec3 lv = uPtPos[k] - vWorld;
         float d = length(lv);
         L = lv / max(d, 1e-5);
@@ -912,9 +913,9 @@ void Renderer::render(const SceneParams& sp) {
   glm::vec3 amb = sp.ambientColor * sp.ambientIntensity;
   glm::vec3 dd[2] = {sunDir, glm::normalize(sp.fill.pos)};
   glm::vec3 dc[2] = {sp.sun.color * sp.sun.intensity, sp.fill.color * sp.fill.intensity};
-  glm::vec3 pp[4], pc[4];
-  float pd[4], pdec[4];
-  for (int i = 0; i < 4; i++) {
+  glm::vec3 pp[MAX_POINTS], pc[MAX_POINTS];
+  float pd[MAX_POINTS], pdec[MAX_POINTS];
+  for (int i = 0; i < MAX_POINTS; i++) {
     pp[i] = sp.points[i].pos;
     pc[i] = sp.points[i].color * sp.points[i].intensity;
     pd[i] = sp.points[i].distance;
@@ -946,10 +947,10 @@ void Renderer::render(const SceneParams& sp) {
     glUniform3fv(U(p, "uAmbient"), 1, glm::value_ptr(amb));
     glUniform3fv(U(p, "uDirDir"), 2, glm::value_ptr(dd[0]));
     glUniform3fv(U(p, "uDirColor"), 2, glm::value_ptr(dc[0]));
-    glUniform3fv(U(p, "uPtPos"), 4, glm::value_ptr(pp[0]));
-    glUniform3fv(U(p, "uPtColor"), 4, glm::value_ptr(pc[0]));
-    glUniform1fv(U(p, "uPtDist"), 4, pd);
-    glUniform1fv(U(p, "uPtDecay"), 4, pdec);
+    glUniform3fv(U(p, "uPtPos"), MAX_POINTS, glm::value_ptr(pp[0]));
+    glUniform3fv(U(p, "uPtColor"), MAX_POINTS, glm::value_ptr(pc[0]));
+    glUniform1fv(U(p, "uPtDist"), MAX_POINTS, pd);
+    glUniform1fv(U(p, "uPtDecay"), MAX_POINTS, pdec);
     glUniform3fv(U(p, "uSpPos"), 1, glm::value_ptr(sp.spot.pos));
     glUniform3fv(U(p, "uSpDir"), 1, glm::value_ptr(spd));
     glUniform3fv(U(p, "uSpColor"), 1, glm::value_ptr(spc));

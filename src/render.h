@@ -116,6 +116,7 @@ struct GlowLight {
   float radius = 0, reveal = 0;   // reveal: how much of the night it lifts near it (0..1)
 };
 constexpr int MAX_GLOWS = 8;
+constexpr int MAX_POINTS = 5;   // the lit shader's uPt* arrays
 
 struct SceneParams {
   glm::mat4 view{1}, proj{1};
@@ -123,7 +124,7 @@ struct SceneParams {
   glm::vec3 ambientColor{1};
   float ambientIntensity = 0;
   DirLight sun, fill;
-  PointLight points[4];
+  PointLight points[MAX_POINTS];
   SpotLight spot;   // a crate runner's chest lamps at night
   GlowLight glows[MAX_GLOWS];
   int glowCount = 0;

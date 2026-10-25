@@ -1301,6 +1301,15 @@ void Game::muzzleFlash(float x, float y, float z, float dx, float dz, uint32_t c
   emit(smoke_, x + dx * .2f, y + .05f, z + dz * .2f, dx * .6f, .5f, dz * .6f, .5f + rnd() * .3f, .18f * k, .55f * k, .22f, 0x6a6a6a, 0x9a9a9a, -.3f, 1.2f, 1);
   muzzlePos_ = {x + dx * .3f, y + .1f, z + dz * .3f};
   muzzleI_ = std::max(muzzleI_, big ? 3.2f : 2.2f);
+  // and its light on the ground: low and a little out in front of the port (the Shrike's off its roof:
+  // higher, further out), each shot a little stronger or weaker and off to one side so sustained fire
+  // flickers; the shots of a volley mix, each weighted by its strength
+  const bool roof = y > 1.2f;
+  float out = (roof ? 1.1f : 0.7f) + (rnd() - .5f) * .2f, side = (rnd() - .5f) * .3f;
+  glm::vec3 p(x + dx * out - dz * side, roof ? 1.3f : 0.75f, z + dz * out + dx * side);
+  float w = (big ? 3.4f : 2.6f) * (0.7f + 0.6f * rnd());
+  gunPos_ = gunI_ > 0.05f ? (gunPos_ * gunI_ + p * w) / (gunI_ + w) : p;
+  gunI_ = std::min(4.5f, std::max(gunI_, w) + 0.15f * std::min(gunI_, w));
 }
 
 // ─── Crates, beams, units ────────────────────────────────────────────────────
@@ -2015,6 +2024,18 @@ void Game::ghostSnipeTick(float) {
 }
 
 // ─── Bunker fire (HP < 50%) ──────────────────────────────────────────────────
+// Smooth value noise in [0, 1] (integer hashes, eased): a flicker with no beat
+static float flickerNoise(float t) {
+  auto h = [](int32_t i) {
+    uint32_t x = (uint32_t)i * 0x9E3779B1u;
+    x ^= x >> 15; x *= 0x85EBCA77u; x ^= x >> 13;
+    return (x & 0xffffu) / 65535.f;
+  };
+  float i = std::floor(t), f = t - i;
+  f = f * f * (3 - 2 * f);
+  return h((int32_t)i) + (h((int32_t)i + 1) - h((int32_t)i)) * f;
+}
+
 // Damage spots on the hull ignite one after another as HP falls: flame tongues,
 // embers and a smoke plume that thickens with damage; a flickering light.
 void Game::updateBunkerFire(float dt) {
@@ -2057,8 +2078,14 @@ void Game::updateBunkerFire(float dt) {
            0xff3000, -.3f, .6f, 0);
     }
   }
-  firePos_ = {lx / lit, 1.8f, lz / lit};
-  fireI_ = (0.6f + 2.2f * sev) * (0.8f + 0.2f * std::sin(gameT_ * 23) * std::sin(gameT_ * 7.3f));
+  // the light: just over the flames, reaching the ground all round (render: a wide soft falloff), stronger
+  // with the damage; it flickers on three octaves of noise (a slow swell, licks, a fast shimmer) and
+  // sways with the flames, so it never beats
+  const float t = gameT_;
+  float fl = 0.6f + 0.24f * flickerNoise(t * 2.1f) + 0.12f * flickerNoise(t * 6.7f + 17) + 0.07f * flickerNoise(t * 15.3f + 41);
+  firePos_ = {lx / lit + 0.3f * (flickerNoise(t * 2.9f + 5) - .5f), 2.0f + 0.25f * (flickerNoise(t * 4.1f + 9) - .5f),
+              lz / lit + 0.3f * (flickerNoise(t * 3.3f + 23) - .5f)};
+  fireI_ = (0.5f + 2.3f * sev) * fl;
 }
 
 // ─── Camera rig ──────────────────────────────────────────────────────────────
@@ -2644,6 +2671,7 @@ void Game::resetRoster() {
 void Game::update(float dt) {
   updateCamera(dt);   // also while paused: the player can look around
   muzzleI_ = std::max(0.f, muzzleI_ - dt * 45);   // the flash decays in ~60 ms
+  gunI_ *= std::exp(-dt * 11);                     // its pool on the ground: a quarter left by the next volley (sustained fire glows)
   if (phase_ != Phase::Playing || isPaused()) {   // game clock, timers and events are frozen
     // A night switched off still lifts behind the menu, title and results (it is
     // not game time: with the cycle off nothing else moves). Left frozen, the
@@ -2838,6 +2866,7 @@ void Game::update(float dt) {
 
   float rr = repairRate();   // Lv3 self-repair + Super Stimpack, stacked
   if (rr > 0 && bunkerHp_ < maxHp_) bunkerHp_ = std::min(maxHp_, bunkerHp_ + rr * dt);
+  if (hpHold_ > 0) bunkerHp_ = maxHp_ * hpHold_;   // test (--hp): held there
   updateBunkerFire(dt);
 
   // wave clear (acid still in the air lands first: its damage belongs to this wave)
@@ -3471,8 +3500,11 @@ void Game::render() {
   sp.fill = {fillPos_, fillCol_, fillI_};
   sp.points[0] = {{0, 2.6f, 0}, hexColor(0xffd2a0), bunkerLightI_, 15, 2};   // night glow: warm white (on the greyed grass: khaki, not lime)
   sp.points[1] = {muzzlePos_, hexColor(0xffb060), muzzleI_, 4.5f, 2};        // muzzle flash on the hull
-  sp.points[2] = {firePos_, hexColor(0xff6a1a), fireI_, 6, 2};              // the bunker burns
+  // the bunker burns: the hull round the flames, the ground and the Zerg out to ~7 (softer at night, where it shows most). Neither
+  // this nor the gunfire lifts the night: a Zerg in the dark stays hidden (nightDark)
+  sp.points[2] = {firePos_, hexColor(0xff6a1a), fireI_ * (0.7f - 0.1f * dnLightF_), 9.5f, 1.5f};
   sp.points[3] = {nkPos, nkCol, 30 * nkFlash + 1.3f * nukeLightK() * (1 + 3 * dnFactor_), 24, 1.5f};   // a nuke's fireball (strongest at night)
+  sp.points[4] = {gunPos_, hexColor(0xffa055), gunI_ * (0.4f + 0.6f * dnLightF_), 7, 1.5f};   // gunfire on the ground: warm white-orange (lime on the grass if yellower), a light touch by day
   sp.spot = lampSpot_;   // a crate runner's chest lamps
   std::copy(glows_, glows_ + glowCount_, sp.glows);   // Marauder grenades and their bursts
   sp.glowCount = glowCount_;

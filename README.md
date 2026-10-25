@@ -143,6 +143,12 @@ grey, moon-blue value under a cool moon from behind left (no shadows), a Zerg in
 under it, the bunker's light is warm white, and the sky turns violet at dusk. Boulders stay paler than the
 field in the dark, so none reads as a crouching Zerg.
 
+Gunfire lights the ground: each shot from a fire port (or the Shrike on the roof) throws a warm pool of light
+on the grass in front of it, out to about 7, each shot a little stronger or weaker and off to one side, so a
+volley flickers rather than strobes (clear at night and dusk, a light touch by day). A burning bunker (below 50%
+HP) lights the hull, the ground and the Zerg round it out to about 9 in a soft orange flicker on three octaves of
+noise, stronger with the damage. Neither lifts the night: a Zerg in the dark stays hidden.
+
 Shooting in the dark: tracers ignore the fog and burn white-hot in a soft halo over a faint pool of light on the
 ground, so a volley shows where it goes past the lit edge; every round from the bunker and the Shrike draws the
 same streak (1.8 × the tracer mesh), so both are as bright. Self-lit things (the nuke's laser, trail, reticle and
@@ -328,7 +334,8 @@ the tour and hints · `--dn S` day/night on,
 S seconds into the cycle · `--weather clear|overcast|rain|drizzle|after` that weather at once, held for the run
 (rain: a downpour over full puddles; after: a shower just over, full puddles under the sun) ·
 `--hold X,Y,S` holds the fire button at (X, Y) (fractions of the window) for S seconds
-and logs the volleys fired · `--post on|off` the HDR post-processing. Each cleared wave logs how it was resupplied.
+and logs the volleys fired · `--post on|off` the HDR post-processing · `--hp F` holds the bunker at F (0–1) of its
+max HP for the run (below 0.5 it burns). Each cleared wave logs how it was resupplied.
 
 ## Differences from the web version
 
