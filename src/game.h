@@ -167,7 +167,7 @@ struct FloatText {
   float life, maxLife;
   uint32_t color;
   float lift = 0;   // px (UI scale 1) from p up to the text: clears the HP bar of the enemy it is anchored on
-  int row = -1;     // its row in the stack over that spot (drawOverlayCanvas picks it on its first frame)
+  int row = 0;      // its place in its enemy's queue: 0 the newest, just over the bar (hitText moves the older up)
   std::weak_ptr<Enemy> on;   // that enemy: the text rides over it while it lives
 };
 
@@ -400,6 +400,7 @@ class Game {
   std::vector<Beam> beams_;
   std::vector<PropP> props_;    // transient visuals owned by tickers
   std::vector<FloatText> floatTexts_;
+  bool dmgNumbersOn_ = true;    // hits and MISSes over the Zerg: Menu → Settings (stored)
 
   // scene
   Mesh *groundMesh_ = nullptr, *rockMesh_[3] = {};

@@ -75,8 +75,8 @@ page on the right, the same height on every tab. ↑ ↓ switch tabs; the last t
 screen, SETTINGS (beside HOW TO PLAY) opens it on the Settings tab, and M / Esc open it there too.
 
 - **Game** — save / load (one slot; the game also autosaves after every cleared wave).
-- **Settings** — quality HIGH / LOW, GPU particles, mute, music, volume, day/night cycle, weather (stored, on by
-  default).
+- **Settings** — quality HIGH / LOW, GPU particles, mute, music, volume, damage numbers (stored, on by default),
+  day/night cycle, weather (stored, on by default).
 - **Display** (desktop only) — windowed or fullscreen, resolution (window presets that fit the monitor, or the
   monitor's video modes), applied at once: the HUD keeps its 1600×900 layout scaled to the height (its fonts are
   rebuilt). The graphics card on hybrid laptops, dedicated (e.g. NVIDIA) or integrated (Intel): the driver picks it
@@ -90,8 +90,8 @@ screen, SETTINGS (beside HOW TO PLAY) opens it on the Settings tab, and M / Esc 
 As in the web version: the first game opens with a HUD tour that spotlights the HP and ammo bars, minerals and
 gas, the command card and each of its ten buttons (BACK / NEXT, OK, LET'S ROLL; Enter / Space / ← → step, Esc
 ends it). After it, a hint pauses the game the first time a mechanic matters (out of ammo, wave cleared, upgrades,
-roster, Roaches, nuke, hull, Stimpack); Enter / Space / Esc, the key it names, or a click elsewhere (after 0.8 s)
-closes it. HOW TO PLAY on the title has the rules on one card. What has been seen is stored with the settings.
+roster, Roaches, nuke, hull, Stimpack, and with Super Stimpack its right-click autocast); Enter / Space / Esc, the
+key it names, or a click elsewhere (after 0.8 s) closes it (the autocast hint: a right-click on STIM too). HOW TO PLAY on the title has the rules on one card. What has been seen is stored with the settings.
 
 ## Achievements
 
@@ -352,8 +352,9 @@ max HP for the run (below 0.5 it burns). Each cleared wave logs how it was resup
   web field is still flat green with dirt quads and fades to the near-black fog colour at night.
 - The weather is desktop-only, and with it a rule the web version does not have: rounds miss in the rain (5% /
   10%), and the `rain` cheat.
-- Damage numbers ride above their Zerg's HP bar, two rows at most (a third replaces the row that fades first);
-  the web draws each where the round hit, so a burst on one Zergling runs together.
+- Damage numbers ride above their Zerg's HP bar as a two-row queue: a new one comes in just over the bar and
+  pushes the older up, and the one pushed out fades; the web draws each where the round hit, so a burst on one
+  Zergling runs together. Menu → Settings → Damage numbers hides them (and MISS); the HP bars stay.
 - `help` in the cheat console lists the codes in the console itself (the web printed them to the browser console).
 - Achievements (desktop only so far; a cheat code turns them off for that game).
 - Saves are `key=value` files in `%APPDATA%` (Linux: `~/.local/share`) instead of `localStorage`, so web saves

@@ -163,34 +163,13 @@ void Game::drawOverlayCanvas() {
         }
       }
   }
-  // floating damage numbers. A new one takes the lowest of FT_ROWS rows over its spot that no text
-  // already up covers; none free (a burst on one Zergling), the row whose texts fade first, and they
-  // go at once: the hits stack up instead of running together
-  constexpr int FT_ROWS = 2;   // more made a tall column over every Zerg under fire
-  struct Placed { float cx, cy, w; FloatText* f; };
-  std::vector<Placed> placed;
-  placed.reserve(floatTexts_.size());
-  for (FloatText& f : floatTexts_) {   // oldest first: a new one sees all the others placed
+  for (const FloatText& f : floatTexts_) {   // floating damage numbers, queued over each enemy (hitText)
     float sx, sy;
     if (!project(f.p, sx, sy)) continue;
     float a = std::min(1.f, f.life / f.maxLife * 2);
     Txt t = TA(15, alpha(rgb(f.color), a), false, 0, true);
-    float w = textW(f.txt.c_str(), t), h = textH(t), step = 0.8f * h;   // digits fill ~0.8 of the line
-    float cy0 = sy - f.lift * s - h / 2;   // row 0's centre
-    if (f.row < 0) {
-      auto covers = [&](const Placed& q, int k) { return std::abs(q.cx - sx) < (q.w + w) / 2 + 2 * s && std::abs(q.cy - (cy0 - k * step)) < step; };
-      float best = INFINITY;
-      for (int k = 0; k < FT_ROWS; k++) {
-        float taken = 0;
-        for (const Placed& q : placed)
-          if (covers(q, k)) taken = std::max(taken, q.f->life);
-        if (taken < best) { best = taken; f.row = k; }
-      }
-      for (const Placed& q : placed)
-        if (covers(q, f.row)) q.f->life = std::min(q.f->life, 0.1f);
-    }
-    ImVec2 p(sx - w / 2, cy0 - f.row * step - h / 2);
-    placed.push_back({sx, p.y + h / 2, w, &f});
+    float w = textW(f.txt.c_str(), t), h = textH(t), step = 0.8f * h;   // a row: digits fill ~0.8 of the line
+    ImVec2 p(sx - w / 2, sy - f.lift * s - h - f.row * step);
     Txt o = TA(15, IM_COL32(0, 0, 0, (int)(178 * a)), false, 0, true);
     for (int i = 0; i < 8; i++) {
       float an = i * 3.14159f / 4;
@@ -973,7 +952,10 @@ void Game::drawCommandCard(float x0, float y0, float w, float h) {
     }
     bool stimBtn = !strcmp(c.id, "stim");
     if (stimBtn && stimAuto_) autocastBorder(dl, a, e, 7 * s, uiTime_, rgb(0xffd040));
-    if (stimBtn && b.hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) toggleStimAuto();   // SC2: right-click = autocast
+    if (stimBtn && b.hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {   // SC2: right-click = autocast
+      if (tutOpen_ && tutStep_.id == "autostim") tutDismiss();   // the hint that asks for it
+      toggleStimAuto();
+    }
     if (b.clicked) {
       std::string id = c.id;
       if (id == "air") doAirstrike();
@@ -1686,6 +1668,13 @@ void Game::drawMenu() {
         y = sy + 18 * s;
       }
       note("[K] mutes during play.");
+      section("HUD");
+      {
+        bool dn = dmgNumbersOn_;
+        if (check("##dmgnum", bx0, dn, "DAMAGE NUMBERS")) { dmgNumbersOn_ = dn; storage::set("dmgNumbers", dn ? "1" : "0"); }
+        y += 18 * s;
+      }
+      note("The hits and MISSes over the Zerg. Off, their HP bars still show the damage.");
       section("EXPERIMENTAL");
       {
         bool dn = dnEnabled_, we = weatherOn_;
@@ -2472,6 +2461,8 @@ static const std::vector<HintDef>& hintDefs() {
      "Below half HP the bunker burns \xE2\x80\x94 if it falls, the game is lost. Armor reduces the damage; bunker hull level 3 mounts a Shrike turret and repairs itself."},
     {"stim", nullptr, {"cmd-stim"}, "t", "STIMPACK",
      fmt("Your squad can stim: press <kbd>T</kbd> or click STIM. For %d s the Marines and Marauders fire 50%% faster, for %d HP per Marine and %d per Marauder from the bunker (free with the Super Stimpack research).", (int)cfg::stim_duration, (int)cfg::stim_hp, (int)cfg::stim_hp_marauder)},
+    {"autostim", "stim", {"cmd-stim"}, "", "STIMPACK AUTOCAST",
+     "Super Stimpack makes the stim free, so it can run itself: <b>right-click</b> STIM for autocast, as in StarCraft II. It stims whenever you fire, and a gold light runs round the button. Right-click it again to turn it off."},
   };
   return h;
 }
@@ -2550,6 +2541,7 @@ bool Game::tutWhen(const std::string& id) {
   if (id == "nuke") return wave_ >= cfg::nuke_wave && combat && nukeCD_ <= 0 && !nukeInFlight_;
   if (id == "hull") return combat && bunkerHp_ < maxHp_ * 0.5f;
   if (id == "stim") return combat && stimUnlocked() && stimT_ <= 0;
+  if (id == "autostim") return combat && superStimUnlocked_ && stimUnlocked() && !stimAuto_;
   if (id == "marauder") return combat && std::count(roster_.begin(), roster_.end(), Unit::Marauder);   // its first wave
   if (id == "ghost") return combat && std::count(roster_.begin(), roster_.end(), Unit::Ghost);
   return false;

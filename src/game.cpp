@@ -137,6 +137,7 @@ bool Game::init(GLFWwindow* win) {
   R.setGpuParticles(gpuFx() ? &gpuFx_ : nullptr);
   weatherFx_.init();   // false: no rain drawn (the ground still wets)
   weatherOn_ = storage::get("weather", "1") != "0";
+  dmgNumbersOn_ = storage::get("dmgNumbers", "1") != "0";
   applyDNLights(0);
   tutLoad();
   ach_.load();
@@ -2333,10 +2334,23 @@ float Game::rainMiss() const {
   const float r = weather_.rain;
   return r < 0.05f ? 0.f : RAIN_MISS[0] + (RAIN_MISS[1] - RAIN_MISS[0]) * glm::smoothstep(0.35f, 0.7f, r);
 }
-// Anchored on the enemy's HP bar, lifted clear of it (a Roach's: of its HP figure too), following it while it lives
+// A queue over each enemy: a new hit (or MISS) comes in just over its HP bar (a Roach's: over its HP figure
+// too) and moves the older ones up a row; the one pushed out fades in the row above in FT_OUT s, and goes
+// at the next push. It follows the enemy while it lives
+static constexpr int FT_ROWS = 2;
+static constexpr float FT_OUT = 0.25f;
 void Game::hitText(const EnemyP& e, std::string txt, uint32_t color) {
+  if (!dmgNumbersOn_) return;   // switched off: the HP bars tell the damage
+  for (FloatText& f : floatTexts_) {
+    if (f.on.owner_before(e) || e.owner_before(f.on)) continue;   // another enemy's
+    if (++f.row > FT_ROWS) f.life = 0;
+    else if (f.row == FT_ROWS && f.life > FT_OUT) {
+      f.life = FT_OUT;
+      f.maxLife = 2 * FT_OUT;   // from full to nothing: the alpha is life / maxLife * 2
+    }
+  }
   if (floatTexts_.size() >= 60) floatTexts_.erase(floatTexts_.begin());   // late waves: ~60 numbers/s
-  floatTexts_.push_back({e->pos + glm::vec3(0, e->barY(), 0), std::move(txt), 0.9f, 0.9f, color, e->type == 'r' ? 9.f : 2.f, -1, e});
+  floatTexts_.push_back({e->pos + glm::vec3(0, e->barY(), 0), std::move(txt), 0.9f, 0.9f, color, e->type == 'r' ? 9.f : 2.f, 0, e});
 }
 // Test: a state at once, held (no random change) for the run
 void Game::weatherForRun(const std::string& s) {
