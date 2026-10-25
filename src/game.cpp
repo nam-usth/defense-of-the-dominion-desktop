@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <deque>
+#include <thread>
 
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -272,70 +273,112 @@ void Game::buildScene() {
   rebuildBunkerTris();
 }
 
-// The ground's noise (render.cpp LIT_FS, TERRAIN, reads it at three rotated scales): 256² of
-// value-noise fbm that tiles. R the macro tone, G the mid tone and the dirt, BA the slope of a
-// fine pebbly height (a quintic fade: no lattice creases under a low light)
+// The ground's noise (render.cpp LIT_FS, TERRAIN, reads it at rotated scales): 512² of
+// gradient-noise fbm that tiles. Many cells to the tile (no low harmonic to repeat as bands), each
+// octave's lattice offset (no lattice lines in common) and the broad octaves warped (no straight
+// edges). R and G two unrelated fields (tone, brightness, dirt; the fine clumps close up), BA the
+// slope of a fine pebbly height, creased for the dirt
 void Game::buildTerrainTex() {
-  const int N = 256;
-  auto latt = [](int x, int y, int P, uint32_t seed) {
-    x = ((x % P) + P) % P;
-    y = ((y % P) + P) % P;
+  const int N = 512;
+  auto latt = [](int x, int y, uint32_t seed) {   // a hash of a lattice point
     uint32_t h = (uint32_t)x * 0x8da6b343u ^ (uint32_t)y * 0xd8163841u ^ seed * 0xcb1ab31fu;
     h ^= h >> 13;
     h *= 0x5bd1e995u;
     h ^= h >> 15;
-    return (h & 0xffffff) / 16777215.f;
+    return h & 0xffffff;
   };
-  auto noise = [&](float u, float v, int P, uint32_t seed) {   // one period over u, v in [0, 1)
-    float x = u * P, y = v * P;
-    int ix = (int)std::floor(x), iy = (int)std::floor(y);
-    float fx = x - ix, fy = y - iy;
-    fx = fx * fx * fx * (fx * (fx * 6 - 15) + 10);
-    fy = fy * fy * fy * (fy * (fy * 6 - 15) + 10);
-    float a = latt(ix, iy, P, seed), b = latt(ix + 1, iy, P, seed), c = latt(ix, iy + 1, P, seed), d = latt(ix + 1, iy + 1, P, seed);
-    return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
-  };
-  auto fbm = [&](float u, float v, int P0, int oct, uint32_t seed) {
-    float s = 0, w = 0, amp = 1;
-    for (int o = 0; o < oct; o++, amp *= .5f) {
-      s += amp * noise(u, v, P0 << o, seed + 101 * o);
-      w += amp;
+  glm::vec2 dirs[256];
+  for (int i = 0; i < 256; i++) dirs[i] = {std::cos(i * 6.2831853f / 256), std::sin(i * 6.2831853f / 256)};
+  struct Oct { int P; float ox, oy; std::vector<glm::vec2> g; };   // a P x P lattice of unit gradients, offset
+  auto octaves = [&](int P0, int n, uint32_t seed) {
+    std::vector<Oct> os;
+    for (int o = 0; o < n; o++) {
+      int P = P0 << o;
+      uint32_t s = seed + 101 * o;
+      Oct k{P, (1 + latt(1, 2, s) / 16777215.f) * P, (1 + latt(3, 4, s) / 16777215.f) * P, std::vector<glm::vec2>(P * P)};   // (+P: x stays > 0)
+      for (int y = 0; y < P; y++)
+        for (int x = 0; x < P; x++) k.g[y * P + x] = dirs[latt(x, y, s) >> 16];
+      os.push_back(std::move(k));
     }
-    return s / w;
+    return os;
   };
+  auto noise = [](const Oct& k, float u, float v) {   // one period over u, v in [0, 1) (and a little past): about -0.7..0.7
+    const int P = k.P;
+    float x = u * P + k.ox, y = v * P + k.oy;
+    int i0 = (int)x, j0 = (int)y;
+    float fx = x - i0, fy = y - j0;
+    while (i0 >= P) i0 -= P;
+    while (j0 >= P) j0 -= P;
+    int i1 = i0 + 1 == P ? 0 : i0 + 1, j1 = j0 + 1 == P ? 0 : j0 + 1;
+    const glm::vec2 *r0 = &k.g[j0 * P], *r1 = &k.g[j1 * P];
+    float n00 = r0[i0].x * fx + r0[i0].y * fy, n10 = r0[i1].x * (fx - 1) + r0[i1].y * fy;
+    float n01 = r1[i0].x * fx + r1[i0].y * (fy - 1), n11 = r1[i1].x * (fx - 1) + r1[i1].y * (fy - 1);
+    float sx = fx * fx * fx * (fx * (fx * 6 - 15) + 10), sy = fy * fy * fy * (fy * (fy * 6 - 15) + 10);
+    float a = n00 + (n10 - n00) * sx, b = n01 + (n11 - n01) * sx;
+    return a + (b - a) * sy;
+  };
+  // fbm; the first `warped` octaves read at (u, v) + w
+  auto fbm = [&](const std::vector<Oct>& os, float u, float v, glm::vec2 w = {}, int warped = 0) {
+    float s = 0, sum = 0, amp = 1;
+    for (int o = 0; o < (int)os.size(); o++, amp *= .5f) {
+      s += amp * (o < warped ? noise(os[o], u + w.x, v + w.y) : noise(os[o], u, v));
+      sum += amp;
+    }
+    return s / sum;
+  };
+  const int P0 = 12;
+  auto wx = octaves(4, 2, 3), wy = octaves(4, 2, 5), oR = octaves(P0, 4, 1), oG = octaves(P0, 4, 7);
+  auto oH = octaves(32, 3, 13), oK = octaves(48, 2, 29);
   std::vector<float> R(N * N), G(N * N), H(N * N);
-  for (int y = 0; y < N; y++)
-    for (int x = 0; x < N; x++) {
-      float u = (x + .5f) / N, v = (y + .5f) / N;
-      int i = y * N + x;
-      R[i] = fbm(u, v, 4, 4, 1);
-      G[i] = fbm(u, v, 6, 4, 7);
-      H[i] = fbm(u, v, 16, 3, 13) + 0.35f * (1 - std::abs(2 * fbm(u, v, 24, 2, 29) - 1));
-    }
-  auto stretch = [](std::vector<float>& c) {   // to the full range: the shader's thresholds then hit their coverage
-    auto [lo, hi] = std::minmax_element(c.begin(), c.end());
-    float a = *lo, d = std::max(1e-6f, *hi - *lo);
-    for (float& v : c) v = (v - a) / d;
+  auto rows = [&](int y0, int y1) {
+    for (int y = y0; y < y1; y++)
+      for (int x = 0; x < N; x++) {
+        float u = (x + .5f) / N, v = (y + .5f) / N;
+        int i = y * N + x;
+        glm::vec2 w = glm::vec2(fbm(wx, u, v), fbm(wy, u, v)) * (0.6f / P0);   // the warp: a little over half a cell
+        R[i] = fbm(oR, u, v, w, 2);
+        G[i] = fbm(oG, u, v, glm::vec2(-w.y, w.x), 2);
+        H[i] = fbm(oH, u, v) + 0.35f * (1 - std::abs(2 * fbm(oK, u, v)));
+      }
   };
-  stretch(R);
-  stretch(G);
-  std::vector<glm::vec2> slope(N * N);
-  float most = 1e-6f;
-  for (int y = 0; y < N; y++)
-    for (int x = 0; x < N; x++) {
-      auto h = [&](int a, int b) { return H[((b + N) % N) * N + (a + N) % N]; };
-      glm::vec2 g(h(x + 1, y) - h(x - 1, y), h(x, y + 1) - h(x, y - 1));
-      slope[y * N + x] = g;
-      most = std::max({most, std::abs(g.x), std::abs(g.y)});
-    }
-  std::vector<uint8_t> px((size_t)N * N * 4);
-  for (int i = 0; i < N * N; i++) {
-    px[i * 4] = (uint8_t)std::lround(255 * R[i]);
-    px[i * 4 + 1] = (uint8_t)std::lround(255 * G[i]);
-    px[i * 4 + 2] = (uint8_t)std::lround(128 + 127 * glm::clamp(slope[i].x / most, -1.f, 1.f));
-    px[i * 4 + 3] = (uint8_t)std::lround(128 + 127 * glm::clamp(slope[i].y / most, -1.f, 1.f));
+  {   // in bands on up to 4 threads (at startup: 45-100 ms of work on one)
+    int T = std::clamp((int)std::thread::hardware_concurrency(), 1, 4);
+    std::vector<std::thread> ts;
+    for (int t = 1; t < T; t++) ts.emplace_back(rows, N * t / T, N * (t + 1) / T);
+    rows(0, N / T);
+    for (auto& t : ts) t.join();
   }
-  terrainTex_ = Texture::create(N, N, px.data(), true, 4);
+  auto normalise = [](std::vector<float>& c, float sd) {   // mean 0.5 and a set spread: the shader's thresholds then hit their coverage
+    double m = 0, q = 0;
+    for (float v : c) m += v;
+    m /= c.size();
+    for (float v : c) q += (v - m) * (v - m);
+    float k = sd / (float)std::sqrt(std::max(1e-12, q / c.size()));
+    for (float& v : c) v = glm::clamp(0.5f + (v - (float)m) * k, 0.f, 1.f);
+  };
+  normalise(R, 0.2f);
+  normalise(G, 0.165f);
+  std::vector<glm::vec2> slope(N * N);
+  double ss = 0;
+  for (int y = 0; y < N; y++) {   // Sobel: the slope of a slightly smoothed height (no texel-sized grain)
+    const float *p = &H[(y + N - 1) % N * N], *q = &H[y * N], *r = &H[(y + 1) % N * N];
+    for (int x = 0; x < N; x++) {
+      int a = x ? x - 1 : N - 1, b = x + 1 < N ? x + 1 : 0;
+      glm::vec2 g(p[b] + 2 * q[b] + r[b] - p[a] - 2 * q[a] - r[a], r[a] + 2 * r[x] + r[b] - p[a] - 2 * p[x] - p[b]);
+      slope[y * N + x] = g;
+      ss += glm::dot(g, g);
+    }
+  }
+  const float sk = 0.3056f / (float)std::sqrt(std::max(1e-12, ss / (N * N)));   // to main's RMS slope (no single texel sets it)
+  std::vector<uint8_t> px((size_t)N * N * 4);
+  for (int i = 0; i < N * N; i++) {   // (+0.5, truncated: rounded, all positive)
+    glm::vec2 g = glm::clamp(slope[i] * sk, -1.f, 1.f);
+    px[i * 4] = (uint8_t)(255 * R[i] + .5f);
+    px[i * 4 + 1] = (uint8_t)(255 * G[i] + .5f);
+    px[i * 4 + 2] = (uint8_t)(128.5f + 127 * g.x);
+    px[i * 4 + 3] = (uint8_t)(128.5f + 127 * g.y);
+  }
+  terrainTex_ = Texture::create(N, N, px.data(), true, 8);   // (anisotropy clamped to the card's most)
 }
 
 // The night effects' textures (drawn here: no art for them), shapes and materials
@@ -854,23 +897,63 @@ void Game::updateAcids(float dt) {
 }
 
 // Dying enemies: pop, roll onto their side, then sink into the ground (~1.2 s). A nuke's
-// victims stand frozen, white in the flash, until its front reaches them, then fly outward
-// charred and tumbling, bounce once and sink.
+// victims catch fire in the flash and run on, slowing and staggering, until its front reaches
+// them, then fly outward burning and tumbling, bounce once, smoulder out and sink.
 void Game::updateCorpses(float dt) {
+  int burning = 0;   // the flames share a budget: a nuke over a big wave must not flood the particles
+  for (const Corpse& c : corpses_) burning += c.flung && c.t < c.delay + 2.0f;   // (before it is thrown: when it should be)
+  const float share = std::min(1.f, 40.f / std::max(1, burning));
   for (size_t i = 0; i < corpses_.size();) {
     Corpse& c = corpses_[i];
     c.t += dt;
     if (c.flung) {
-      const float s = c.t - c.delay;
-      if (s < 0) c.tint = 1 + 1.2f * std::exp(-c.t / 0.12f);
-      else {
-        c.tint = 0.12f + 0.5f * std::exp(-s / 0.08f);
+      if (!c.thrown) {   // the front reaches it where it has run to: thrown outward from there
+        const glm::vec2 o = glm::vec2(c.pos.x, c.pos.z) - c.zero;
+        const float L = glm::length(o);
+        if (nk::frontR(c.t) >= L) {
+          c.thrown = true;
+          c.delay = c.t;
+          const float h = glm::length(glm::vec2(c.vel.x, c.vel.z));
+          if (L > 1e-3f) c.vel = {o.x / L * h, c.vel.y, o.y / L * h};
+        }
+      }
+      const float s = c.thrown ? c.t - c.delay : -1;
+      // the flash's white-out, then orange-hot, charring black within about a second
+      c.col = glm::mix(glm::vec3(1, .62f, .38f), glm::vec3(.13f, .11f, .1f), glm::smoothstep(0.f, 1.2f, c.t)) + glm::vec3(1.2f * std::exp(-c.t / 0.12f));
+      if (s < 0) {   // still on its feet: runs on, slowing as it burns, staggering (no further than the hull)
+        const float k = std::exp(-c.t / 0.35f);
+        glm::vec3 d = c.run * (k * dt);
+        const float r = std::hypot(c.pos.x, c.pos.z), L = glm::length(d);
+        if (r - L < c.stopR) d *= std::max(0.f, r - c.stopR) / std::max(L, 1e-6f);
+        c.pos += d;
+        if (!c.walk.empty() && glm::length(d) > 0) {
+          c.step = std::fmod(c.step + glm::length(d) / c.stride * ANIM_SPEED, 1.f);
+          c.pool = c.walk[std::min((int)c.walk.size() - 1, (int)std::floor(c.step * c.walk.size()))];
+        }
+        c.rotZ = 0.14f * (1 - k) * std::sin(c.t * 15 + 3 * c.spin);
+      } else {
         if (s < 1.6f) {
           c.vel.y -= 20 * dt;
           c.pos += c.vel * dt;
           if (c.pos.y < 0) { c.pos.y = 0; c.vel *= glm::vec3(0.5f, -0.25f, 0.5f); c.spin *= 0.5f; }
           c.rotZ += c.spin * dt;
         } else c.pos.y = std::min(c.pos.y, 0.f) - 0.8f * dt;
+      }
+      // flames on the body until about a second after it lands, then smoke as it smoulders out
+      const float fire = 1 - glm::smoothstep(0.9f, 1.9f, s), smoke = 1 - glm::smoothstep(1.4f, 2.4f, s);
+      const glm::vec3 drift = s >= 0 && s < 1.6f ? c.vel * 0.25f : glm::vec3(0);   // trailing as it flies
+      c.fireAcc += dt * 16 * fire * share;
+      while (c.fireAcc >= 1) {
+        c.fireAcc--;
+        emit(glow_, c.pos.x + (rnd() - .5f) * .5f, c.pos.y + .2f + rnd() * .25f, c.pos.z + (rnd() - .5f) * .5f, drift.x + (rnd() - .5f) * .4f,
+             drift.y + .8f + rnd() * .8f, drift.z + (rnd() - .5f) * .4f, .3f + rnd() * .25f, (.3f + .15f * rnd()) * (.6f + .4f * fire), .08f, .55f,
+             0xffb347, 0xff2a00, -1.5f, 1.0f, 0);
+      }
+      c.smokeAcc += dt * 4 * smoke * share;
+      while (c.smokeAcc >= 1) {
+        c.smokeAcc--;
+        emit(smoke_, c.pos.x + (rnd() - .5f) * .3f, c.pos.y + .45f, c.pos.z + (rnd() - .5f) * .3f, drift.x * .5f + (rnd() - .5f) * .3f, .5f + rnd() * .4f,
+             drift.z * .5f + (rnd() - .5f) * .3f, 1.4f + rnd() * .8f, .3f, 1.1f, .3f, 0x1c1a18, 0x55514c, -.2f, .4f, 1);
       }
       // gone once sunk (or as it comes at the close-up camera's lens)
       if (s < 2.4f && glm::length(c.pos - camPos_) > 1.5f) i++;
@@ -1258,6 +1341,15 @@ void Game::muzzleFlash(float x, float y, float z, float dx, float dz, uint32_t c
   emit(smoke_, x + dx * .2f, y + .05f, z + dz * .2f, dx * .6f, .5f, dz * .6f, .5f + rnd() * .3f, .18f * k, .55f * k, .22f, 0x6a6a6a, 0x9a9a9a, -.3f, 1.2f, 1);
   muzzlePos_ = {x + dx * .3f, y + .1f, z + dz * .3f};
   muzzleI_ = std::max(muzzleI_, big ? 3.2f : 2.2f);
+  // and its light on the ground: low and a little out in front of the port (the Shrike's off its roof:
+  // higher, further out), each shot a little stronger or weaker and off to one side so sustained fire
+  // flickers; the shots of a volley mix, each weighted by its strength
+  const bool roof = y > 1.2f;
+  float out = (roof ? 1.1f : 0.7f) + (rnd() - .5f) * .2f, side = (rnd() - .5f) * .3f;
+  glm::vec3 p(x + dx * out - dz * side, roof ? 1.3f : 0.75f, z + dz * out + dx * side);
+  float w = (big ? 3.4f : 2.6f) * (0.7f + 0.6f * rnd());
+  gunPos_ = gunI_ > 0.05f ? (gunPos_ * gunI_ + p * w) / (gunI_ + w) : p;
+  gunI_ = std::min(4.5f, std::max(gunI_, w) + 0.15f * std::min(gunI_, w));
 }
 
 // ─── Crates, beams, units ────────────────────────────────────────────────────
@@ -1759,11 +1851,12 @@ void Game::doNuke(bool force) {
       if (d > NUKE_RADIUS) continue;
       killed++;
       if (d < NUKE_VAPOR_R) { e->visible = false; killEnemy(e, true, false); continue; }   // vaporised: nothing left
-      // the rest freeze white in the flash, then the front flings them outward, charred
+      // the rest catch fire in the flash and run on until the front flings them outward, burning
       glm::vec2 out = glm::vec2(dx, dz) / d;
       float k = 1 - d / 24, j = 0.8f + 0.4f * rnd();
       Fling f;
       f.delay = nk::frontT(d);
+      f.zero = {tx, tz};
       f.vel = {out.x * (3 + 10 * k) * j, 3 + 5 * k * rnd(), out.y * (3 + 10 * k) * j};
       f.spin = (rnd() < .5f ? -1 : 1) * (6 + 6 * rnd());
       killEnemy(e, true, false, &f);
@@ -1782,6 +1875,7 @@ void Game::doNuke(bool force) {
 void Game::killEnemy(const EnemyP& e, bool reward, bool splash, const Fling* fling) {
   if (e->dead) return;
   e->dead = true;
+  const float slowF = e->slowed ? e->slowFactor : 1;   // (a nuke's victim runs on at the pace it had)
   e->slowed = false;
   if (splash) deathFx(*e);
   audio::play(e->type == 'r' ? "rdie" : "zdie");
@@ -1793,6 +1887,17 @@ void Game::killEnemy(const EnemyP& e, bool reward, bool splash, const Fling* fli
       c.vel = fling->vel;
       c.delay = fling->delay;
       c.spin = fling->spin;
+      c.zero = fling->zero;
+      c.stopR = attackReach(*e);
+      const float d = std::hypot(e->pos.x, e->pos.z);   // running at the bunker (one at the hull writhes there, in its attack pose)
+      if (d >= c.stopR && d > 0.01f) {
+        c.run = glm::vec3(-e->pos.x / d, 0, -e->pos.z / d) * (e->speed * slowF * 60);
+        c.walk = e->walk;
+        c.stride = e->stride;
+        c.step = e->step;
+      }
+      c.fireAcc = rnd();   // (out of step: the bodies' flames must not flicker together)
+      c.smokeAcc = rnd();
     }
     corpses_.push_back(c);
   }
@@ -1972,6 +2077,18 @@ void Game::ghostSnipeTick(float) {
 }
 
 // ─── Bunker fire (HP < 50%) ──────────────────────────────────────────────────
+// Smooth value noise in [0, 1] (integer hashes, eased): a flicker with no beat
+static float flickerNoise(float t) {
+  auto h = [](int32_t i) {
+    uint32_t x = (uint32_t)i * 0x9E3779B1u;
+    x ^= x >> 15; x *= 0x85EBCA77u; x ^= x >> 13;
+    return (x & 0xffffu) / 65535.f;
+  };
+  float i = std::floor(t), f = t - i;
+  f = f * f * (3 - 2 * f);
+  return h((int32_t)i) + (h((int32_t)i + 1) - h((int32_t)i)) * f;
+}
+
 // Damage spots on the hull ignite one after another as HP falls: flame tongues,
 // embers and a smoke plume that thickens with damage; a flickering light.
 void Game::updateBunkerFire(float dt) {
@@ -2014,8 +2131,14 @@ void Game::updateBunkerFire(float dt) {
            0xff3000, -.3f, .6f, 0);
     }
   }
-  firePos_ = {lx / lit, 1.8f, lz / lit};
-  fireI_ = (0.6f + 2.2f * sev) * (0.8f + 0.2f * std::sin(gameT_ * 23) * std::sin(gameT_ * 7.3f));
+  // the light: just over the flames, reaching the ground all round (render: a wide soft falloff), stronger
+  // with the damage; it flickers on three octaves of noise (a slow swell, licks, a fast shimmer) and
+  // sways with the flames, so it never beats
+  const float t = gameT_;
+  float fl = 0.6f + 0.24f * flickerNoise(t * 2.1f) + 0.12f * flickerNoise(t * 6.7f + 17) + 0.07f * flickerNoise(t * 15.3f + 41);
+  firePos_ = {lx / lit + 0.3f * (flickerNoise(t * 2.9f + 5) - .5f), 2.0f + 0.25f * (flickerNoise(t * 4.1f + 9) - .5f),
+              lz / lit + 0.3f * (flickerNoise(t * 3.3f + 23) - .5f)};
+  fireI_ = (0.5f + 2.3f * sev) * fl;
 }
 
 // ─── Camera rig ──────────────────────────────────────────────────────────────
@@ -2606,6 +2729,7 @@ void Game::resetRoster() {
 void Game::update(float dt) {
   updateCamera(dt);   // also while paused: the player can look around
   muzzleI_ = std::max(0.f, muzzleI_ - dt * 45);   // the flash decays in ~60 ms
+  gunI_ *= std::exp(-dt * 11);                     // its pool on the ground: a quarter left by the next volley (sustained fire glows)
   if (phase_ != Phase::Playing || isPaused()) {   // game clock, timers and events are frozen
     // A night switched off still lifts behind the menu, title and results (it is
     // not game time: with the cycle off nothing else moves). Left frozen, the
@@ -2798,6 +2922,7 @@ void Game::update(float dt) {
 
   float rr = repairRate();   // Lv3 self-repair + Super Stimpack, stacked
   if (rr > 0 && bunkerHp_ < maxHp_) bunkerHp_ = std::min(maxHp_, bunkerHp_ + rr * dt);
+  if (hpHold_ > 0) bunkerHp_ = maxHp_ * hpHold_;   // test (--hp): held there
   updateBunkerFire(dt);
 
   // wave clear (acid still in the air lands first: its damage belongs to this wave)
@@ -2847,6 +2972,20 @@ void Game::updateNukes(float dt) {
     if (n.embers >= 1) {
       nukeEmberFx(n.p, (int)n.embers, ms);
       n.embers -= (int)n.embers;
+    }
+    // SC2's fire inrush: 200 streaks a second (1.4-3 s) pulled in from a ring round ground zero
+    // toward a point over it, slowing as they go; each is three sprites along its path (they fly
+    // together: a streak, stretched by its speed)
+    n.inrush += nk::key({{1533, 0}, {1540, 200}, {3100, 200}, {3110, 0}}, ms) * dt;
+    for (; n.inrush >= 1; n.inrush--) {
+      const float a = rnd() * 2 * PI_F, r = 1.6f + 3.6f * rnd();
+      const glm::vec3 p = n.p + glm::vec3(std::cos(a) * r, 0.3f + 0.9f * rnd(), std::sin(a) * r);
+      const glm::vec3 v = glm::normalize(n.p + glm::vec3(0, 1, 0) - p) * (5 + 2 * rnd());
+      const float life = 0.45f + 0.2f * rnd();
+      for (int k = 0; k < 3; k++) {
+        const glm::vec3 q = p - v * (0.03f * k);
+        emit(glow_, q.x, q.y, q.z, v.x, v.y, v.z, life, 0.22f - 0.05f * k, 0.05f, 0.5f - 0.12f * k, 0xffc46a, 0xff4a10, 0, 4, 0);
+      }
     }
     if (!n.hitDone && n.t >= n.tHit) {   // the shock front reaches the bunker: the boom, then a long rumble
       n.hitDone = true;
@@ -2900,7 +3039,7 @@ static void mushroomSprites(const NukeBlast& mc, float lit, bool hdr, std::vecto
   const float t = mc.t, g = 1 - std::exp(-t / 0.9f);
   const float heat = std::exp(-t / 3.6f);   // the cloud's temperature, 1 → 0
   const float fr = nk::fireR(t), gF = nk::ss(0.6f, 2.6f, t), sxz = 1 + 0.22f * gF;
-  const float capH = nk::fireY(t) + 0.25f * std::max(0.f, t - 2), capR = 0.8f * fr * sxz + 0.1f * t, tube = 0.42f * fr, puff = 1.3f + 1.6f * g;
+  const float capH = nk::capH(t), capR = nk::capR(t), tube = nk::capTube(t), puff = 1.3f + 1.6f * g;   // (the fire tori share the cap)
   const float fade = std::min(1.f, t / 0.15f) * (1 - glm::smoothstep(MUSH_DUR - 2.5f, MUSH_DUR, t));
   const float burn = 1 - nk::ss(nk::FIRE_OUT0, nk::FIRE_OUT1, t);   // the fire's own end
   const float capIn = nk::ss(1.5f, 3.0f, t) * burn, stemIn = nk::ss(0.4f, 1.4f, t) * burn;   // they roll in as the fireball burns out
@@ -3142,7 +3281,7 @@ void Game::render() {
       else if (e->slowed) c = {0.6f, 0.8f, 1.5f};        // concussive slow: icy blue
       addInst(e->pool, e->pos, e->rotY, e->rotZ, c);
     }
-  for (const Corpse& c : corpses_) addInst(c.pool, c.pos, c.rotY, c.rotZ, glm::vec3(c.flung ? c.tint : std::max(0.25f, 1 - c.t * 1.4f)));
+  for (const Corpse& c : corpses_) addInst(c.pool, c.pos, c.rotY, c.rotZ, c.flung ? c.col : glm::vec3(std::max(0.25f, 1 - c.t * 1.4f)));
   for (auto& [k, pool] : pools_)
     if (!pool->inst.empty())
       for (const BakedPart& p : pool->parts) R.drawInstanced(p.mesh, p.mat, pool->inst.data(), (int)pool->inst.size(), p.cast, false);
@@ -3435,15 +3574,18 @@ void Game::render() {
   sp.fill = {fillPos_, fillCol_, fillI_};
   sp.points[0] = {{0, 2.6f, 0}, hexColor(0xffd2a0), bunkerLightI_, 15, 2};   // night glow: warm white (on the greyed grass: khaki, not lime)
   sp.points[1] = {muzzlePos_, hexColor(0xffb060), muzzleI_, 4.5f, 2};        // muzzle flash on the hull
-  sp.points[2] = {firePos_, hexColor(0xff6a1a), fireI_, 6, 2};              // the bunker burns
+  // the bunker burns: the hull round the flames, the ground and the Zerg out to ~7 (softer at night, where it shows most). Neither
+  // this nor the gunfire lifts the night: a Zerg in the dark stays hidden (nightDark)
+  sp.points[2] = {firePos_, hexColor(0xff6a1a), fireI_ * (0.7f - 0.1f * dnLightF_), 9.5f, 1.5f};
   sp.points[3] = {nkPos, nkCol, 30 * nkFlash + 1.3f * nukeLightK() * (1 + 3 * dnFactor_), 24, 1.5f};   // a nuke's fireball (strongest at night)
+  sp.points[4] = {gunPos_, hexColor(0xffa055), gunI_ * (0.4f + 0.6f * dnLightF_), 7, 1.5f};   // gunfire on the ground: warm white-orange (lime on the grass if yellower), a light touch by day
   sp.spot = lampSpot_;   // a crate runner's chest lamps
   std::copy(glows_, glows_ + glowCount_, sp.glows);   // Marauder grenades and their bursts
   sp.glowCount = glowCount_;
   sp.night = dnLightF_;
   sp.nightDesat = 0.55f * dnLightF_;
   sp.terrainTex = terrainTex_;
-  sp.hiDetail = gfxHigh_ && zoom_ > 0.5f;   // the finest ground detail is sub-pixel from the overview
+  sp.groundHD = gfxHigh_;
   sp.wet = weather_.wet;
   sp.puddle = weather_.puddle;
   sp.rain = weather_.rain;
@@ -3451,7 +3593,7 @@ void Game::render() {
   sp.cloud = weather_.cloud;
   sp.skyZenith = skyZen_;
   sp.skyHorizon = skyHor_;
-  sp.cloudDrift = glm::mod(weather_.drift, glm::vec2(160));   // (the cloud deck the puddles mirror repeats every 160)
+  sp.cloudDrift = glm::mod(weather_.drift, glm::vec2(480));   // (the cloud deck the puddles mirror repeats every 480)
   sp.fogColor = fogCol_ + glm::vec3(1, 0.95f, 0.85f) * (0.9f * nkFlash) + glm::vec3(1, 0.45f, 0.15f) * (0.12f * nukeLightK() * dnFactor_);
   sp.fogNear = fogNear_;
   sp.fogFar = fogFar_;

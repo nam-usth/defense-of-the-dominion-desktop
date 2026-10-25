@@ -45,7 +45,7 @@ uniform mat4 uView, uProj, uModel;
 out vec3 vW; out vec3 vN; out vec2 vUV;
 void main() {
   vec4 w = uModel * vec4(aPos, 1.);
-  vW = w.xyz; vN = mat3(uModel) * aNormal; vUV = aUV;
+  vW = w.xyz; vN = transpose(inverse(mat3(uModel))) * aNormal; vUV = aUV;   // (non-uniform scales)
   gl_Position = uProj * uView * w;
 }
 )";
@@ -160,6 +160,73 @@ void main() {
 }
 )";
 
+// SC2's burn ring: a band of burning ground spreading slowly at a steady pace, torn along the ring
+// and across it. Premultiplied: it glows over the grass without tinting it lime
+const char* BURN_FS = R"(
+in vec3 vW; out vec4 frag;
+uniform vec3 uC; uniform float uR, uW, uK, uTime, uSeed; uniform bool uHdr;
+void main() {
+  vec2 dv = vW.xz - uC.xz; float r = length(dv);
+  vec2 dir = dv / max(r, 1e-4);
+  float x = (r - uR) / uW;
+  if (abs(x) > 3.) discard;
+  float tear = fbm2(dir * 5. + vec2(uSeed, r * .35 - uTime * .4), 3);   // (periodic: sampled round the circle)
+  float band = exp(-x * x * 2.2) * smoothstep(.25, .6, tear) + .3 * exp(-x * x * 7.) * tear;
+  float T = .6 + .25 * n2(dir * 13. + vec2(r * 1.3, uTime * 2.));
+  float k = uK * band;
+  frag = vec4(fireCol(T, uHdr) * (uHdr ? .3 : 1.) * k, clamp(.35 * k, 0., .7));
+}
+)";
+
+// The fire tori (SC2's cap: three nested fat rings of fire): a fire texture that rolls round the
+// tube, faint, bright face-on and gone at the silhouette (the soft sprites over it keep the cloud
+// soft). The mesh: ring 1, tube 0.5; vO is the vertex before the model matrix
+const char* TORUS_VS = R"(
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNormal;
+uniform mat4 uView, uProj, uModel;
+out vec3 vW; out vec3 vN; out vec3 vO;
+void main() {
+  vec4 w = uModel * vec4(aPos, 1.);
+  vW = w.xyz; vN = transpose(inverse(mat3(uModel))) * aNormal; vO = aPos;
+  gl_Position = uProj * uView * w;
+}
+)";
+const char* TORUS_FS = R"(
+in vec3 vW; in vec3 vN; in vec3 vO; out vec4 frag;
+uniform vec3 uCamPos; uniform float uB, uTime, uSeed; uniform bool uHdr;
+void main() {
+  float phi = atan(vO.z, vO.x);
+  vec2 cs = vec2(length(vO.xz) - 1., vO.y);
+  float th = atan(cs.y, cs.x) + uTime * 2.9;   // rolling round the tube
+  vec3 q = vec3(cos(phi) * (3. + cos(th)), sin(phi) * (3. + cos(th)), sin(th)) * 1.3 + uSeed;   // seamless both ways
+  float T = .62 * n3(q) + .38 * n3(q * 2.3 + 7.);
+  vec3 N = normalize(vN), V = normalize(uCamPos - vW);
+  float a = uB * smoothstep(.25, .8, T) * pow(abs(dot(N, V)), .4);
+  frag = vec4(fireCol(.45 + .5 * T, uHdr), clamp(.22 * a, 0., 1.));   // blend SRC_ALPHA, ONE
+}
+)";
+
+// A heat haze: signed uv offsets (RG) the composite bends the scene by. Its own noise, rising,
+// strongest face-on (SC2's inverted fresnel), fading out toward the ground; or a ripple band on
+// the ground (uRing.y > 0). Nothing in front of it is bent: the scene's depth (full resolution,
+// texture unit 5 in the distortion pass; this target is half) hides it
+const char* HAZE_FS = R"(
+in vec3 vW; in vec3 vN; out vec4 frag;
+uniform vec3 uCamPos, uC; uniform float uS, uTile, uRise, uAspectInv; uniform vec2 uRing;
+uniform sampler2D uDepth;
+void main() {
+  ivec2 px = min(ivec2(gl_FragCoord.xy * 2.), textureSize(uDepth, 0) - 1);
+  if (vW.y < -.05 || gl_FragCoord.z > texelFetch(uDepth, px, 0).r + 1e-5) discard;
+  vec3 N = normalize(vN), V = normalize(uCamPos - vW);
+  float f = pow(abs(dot(N, V)), .6) * smoothstep(-.05, 1., vW.y);
+  if (uRing.y > 0.) { float x = (length(vW.xz - uC.xz) - uRing.x) / uRing.y; f = exp(-x * x * 2.); }
+  vec3 q = vW * uTile - vec3(0., uRise, 0.);
+  vec2 o = vec2(n3(q), n3(q + vec3(17.3, 4.1, 9.7))) - .5 + .5 * (vec2(n3(q * 2.3 + 3.), n3(q * 2.3 + 11.)) - .5);
+  frag = vec4(o * vec2(uAspectInv, 1.) * (uS * f * .0019), 0., 1.);   // S 10: about 10 px at 1080p, alike both ways
+}
+)";
+
 GLuint program(const char* vs, const char* fs, const char* name) {
   std::string v = std::string("#version 330 core\n") + COMMON + vs, f = std::string("#version 330 core\n") + COMMON + fs;
   return compileProgram(v.c_str(), f.c_str(), name);
@@ -217,13 +284,35 @@ bool NukeRenderer::init() {
   progFront_ = program(MESH_VS, FRONT_FS, "nuke front");
   progDome_ = program(MESH_VS, DOME_FS, "nuke dome");
   progStar_ = program(MESH_VS, STAR_FS, "nuke star");
-  ok_ = progScar_ && progFront_ && progDome_ && progStar_;
+  progBurn_ = program(MESH_VS, BURN_FS, "nuke burn ring");
+  progTorus_ = program(TORUS_VS, TORUS_FS, "nuke fire tori");
+  progHaze_ = program(MESH_VS, HAZE_FS, "nuke heat haze");
+  ok_ = progScar_ && progFront_ && progDome_ && progStar_ && progBurn_ && progTorus_ && progHaze_;
   if (!ok_) { logWarn("nuke effect shaders unavailable: the sprite cloud alone shows the blast"); return false; }
   const glm::mat4 flat = glm::rotate(glm::mat4(1), -PI_F / 2, {1, 0, 0});   // XY → XZ, facing up
   quad_ = build(geo::plane(1, 1).transform(flat));
   ring_ = build(geo::ring(0.5f, 1.12f, 192).transform(flat));
   dome_ = build(geo::sphere(1, 48, 24));
+  torus_ = build(geo::torus(1, 0.5f, 48, 16));
   return true;
+}
+
+void NukeRenderer::haze(Renderer& R, const FxMesh& m, const glm::mat4& model, float S, float tile, float rise, glm::vec4 ground) const {
+  if (S <= 0.01f) return;
+  R.drawDistort([=, this](const FrameCtx& f) {
+    GLuint g = progHaze_;
+    use(g, f, model);
+    u3(g, "uCamPos", f.camPos);
+    u3(g, "uC", glm::vec3(ground.x, 0, ground.y));
+    u1(g, "uS", S);
+    u1(g, "uTile", tile);
+    u1(g, "uRise", rise);
+    u1(g, "uAspectInv", f.proj[0][0] / f.proj[1][1]);   // height / width
+    glUniform1i(U(g, "uDepth"), 5);
+    glUniform2f(U(g, "uRing"), ground.z, ground.w);
+    glDisable(GL_CULL_FACE);
+    drawMesh(m.vao, m.ibo, m.count);
+  });
 }
 
 void NukeRenderer::drawScar(Renderer& R, glm::vec2 p, float age, float seed, float front) const {
@@ -249,6 +338,10 @@ void NukeRenderer::drawScar(Renderer& R, glm::vec2 p, float age, float seed, flo
     glDepthMask(GL_FALSE);
     drawMesh(quad_.vao, quad_.ibo, quad_.count);
   });
+  // the heat shimmering over the crater (SC2's: up by 2.4 s, held, gone by 12.3 s), swelling, then settling
+  const float S = nk::key({{1.9f, 0}, {1.97f, 3}, {2.44f, 5}, {9.74f, 6}, {12.3f, 0}}, age);
+  const float rad = nk::key({{1.9f, 2.3f}, {2.64f, 8.9f}, {5.4f, 5.1f}}, age), hgt = nk::key({{1.9f, 1.2f}, {2.64f, 3.4f}, {5.4f, 1.6f}}, age);
+  haze(R, dome_, glm::scale(glm::translate(glm::mat4(1), glm::vec3(p.x, 0, p.y)), {rad, hgt, rad}), S * k, 0.9f, 0.45f * age);
 }
 
 void NukeRenderer::draw(Renderer& R, const Blast& b) const {
@@ -303,7 +396,7 @@ void NukeRenderer::draw(Renderer& R, const Blast& b) const {
   const float ms = seqMs(t);
   if (ms >= 133 && ms < 566) {
     const float side = key({{133, 1.27f}, {300, 7.3f}, {400, 13.5f}, {566, 19.6f}}, ms), K = key({{133, 1}, {366, 0.8f}, {566, 0}}, ms);
-    R.drawCustom(4, c, [=, this](const FrameCtx& f) {
+    R.drawCustom(4, c, [=, this](const FrameCtx& f) {   // (key: SC2's ms)
       GLuint g = progStar_;
       use(g, f, glm::scale(glm::rotate(glm::translate(glm::mat4(1), c + glm::vec3(0, 0.87f, 0)), 0.532f, {0, 1, 0}), {side, 1, side}));   // turned 30.5 deg
       u3(g, "uCol", glm::vec3(1, 0.96f, 0.85f) * (f.hdr ? 6 * K : K));   // (it shows through the flash's white-out)
@@ -315,4 +408,75 @@ void NukeRenderer::draw(Renderer& R, const Blast& b) const {
     });
   }
 
+  // SC2's burn ring: a band of burning ground spreading at a steady pace well behind the front,
+  // brightest at 1.7 s, gone by 2.9 s (its half-width × 1.83: our blast's footprint)
+  if (ms >= 633 && ms < 3000) {
+    const float R0 = key({{633, 3.8f}, {1700, 9.3f}, {3000, 16}}, ms), K = key({{633, 0}, {933, 1}, {1700, 2}, {3000, 0}}, ms);
+    const float w = 0.9f + 0.06f * R0;
+    R.drawCustom(-49, c, [=, this](const FrameCtx& f) {   // with the ground decals (after the scar): under all smoke
+      GLuint g = progBurn_;
+      const float side = 2 * (R0 + 3 * w);
+      use(g, f, glm::scale(glm::translate(glm::mat4(1), c + glm::vec3(0, 0.06f, 0)), {side, 1, side}));
+      u3(g, "uC", c);
+      u1(g, "uR", R0);
+      u1(g, "uW", w);
+      u1(g, "uK", K);
+      u1(g, "uTime", t);
+      u1(g, "uSeed", b.seed);
+      glUniform1i(U(g, "uHdr"), f.hdr);
+      glDisable(GL_CULL_FACE);
+      glEnable(GL_BLEND);
+      glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+      glDepthMask(GL_FALSE);
+      drawMesh(quad_.vao, quad_.ibo, quad_.count);
+    });
+  }
+
+  // the fire tori: SC2's cap is three nested fat rings of rolling fire (the main ring, a smaller
+  // one over it, a narrow tall core), here a faint layer under the soft sprites
+  if (ms >= 1100 && ms < 4700) {
+    const float B = key({{1100, 0}, {1433, 3}, {3566, 1.6f}, {4700, 0}}, ms);
+    const float h = capH(t), cr = capR(t), tb = capTube(t);
+    const glm::mat4 tori[3] = {
+        glm::scale(glm::translate(glm::mat4(1), c + glm::vec3(0, h, 0)), {cr, 2 * tb, cr}),
+        glm::scale(glm::translate(glm::mat4(1), c + glm::vec3(0, h + 1.2f, 0)), {0.7f * cr, 1.4f * tb, 0.7f * cr}),
+        glm::scale(glm::translate(glm::mat4(1), c + glm::vec3(0, h - 0.4f * tb, 0)), {0.35f * cr, 3.2f * tb, 0.35f * cr})};
+    for (int i = 0; i < 3; i++) {
+      const glm::mat4 m = tori[i];
+      R.drawCustom(1, c + glm::vec3(0, h, 0), [=, this](const FrameCtx& f) {
+        GLuint g = progTorus_;
+        use(g, f, m);
+        u3(g, "uCamPos", f.camPos);
+        u1(g, "uB", B * (i == 2 ? 0.7f : 1));
+        u1(g, "uTime", t);
+        u1(g, "uSeed", b.seed + 3.1f * i);
+        glUniform1i(U(g, "uHdr"), f.hdr);
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+        glDepthMask(GL_FALSE);
+        drawMesh(torus_.vao, torus_.ibo, torus_.count);
+      });
+    }
+  }
+
+  // the heat haze: the shock bubble swelling out to the kill radius (gone by 1.5 s), a ripple
+  // running over the ground behind it (to 1.8 s), the shimmer round the cap (0.7-5 s); SC2's
+  // keys, its sizes × 1.83 on the ground (× 1.1 for the cap)
+  if (ms < 1600) {
+    const float rr = 1.83f * 0.5f * key({{130, 1}, {500, 7.6f}, {900, 15.6f}, {1300, 21.8f}, {1600, 23.6f}}, ms);
+    const float S = key({{130, 0}, {233, 10}, {733, 9}, {1233, 5}, {1300, 6}, {1600, 0}}, ms);
+    haze(R, dome_, glm::scale(glm::translate(glm::mat4(1), c), {rr, 0.9f * rr, rr}), S, 0.35f, 1.5f * t);
+  }
+  if (ms >= 300 && ms < 1966) {
+    const float rr = 1.83f * 0.5f * key({{666, 2.3f}, {1700, 17.1f}, {1966, 18.9f}}, ms), w = 0.8f + 0.06f * rr;
+    const float S = key({{300, 0}, {700, 10}, {1466, 6}, {1966, 0}}, ms);
+    haze(R, quad_, glm::scale(glm::translate(glm::mat4(1), c + glm::vec3(0, 0.05f, 0)), glm::vec3(2 * (rr + 2.5f * w), 1, 2 * (rr + 2.5f * w))), S, 0.5f,
+         0, glm::vec4(c.x, c.z, rr, w));
+  }
+  if (ms >= 666 && ms < 5166) {
+    const float S = key({{666, 0}, {1366, 7}, {4233, 7}, {5166, 0}}, ms), rr = 1.1f * 3.6f + 0.3f * capR(t);
+    haze(R, dome_, glm::scale(glm::translate(glm::mat4(1), c + glm::vec3(0, capH(t), 0)), glm::vec3(rr)), S, 0.6f, 2.2f * t);
+  }
 }
