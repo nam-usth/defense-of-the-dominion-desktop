@@ -204,8 +204,12 @@ The nuke: StarCraft II's, rebuilt on one closed-form timeline (src/nuke_fx.h) an
 The flash blows the field out to white through the HDR exposure (the HUD stays clear) while a six-rayed star opens
 flat over the blast; then SC2's glow cards, a soft ball of light, swell round a soft fireball of overlapping fire
 that rises, flattens and rolls into the mushroom cloud. As in SC2 the fire never turns to a grey cloud: it dims and
-is gone by 5.4 s, and small embers keep rising off the crater until 9 s. A ragged shock front races over the
-ground under a fading shock dome; a ring of dust with a burning leading edge rolls out past the kill radius; the
+is gone by 5.4 s, and small embers keep rising off the crater until 9 s. Under the sprites, SC2's three rings of
+fire roll round the cap (1.1-4.7 s), streaks of flame are pulled in toward ground zero (1.4-3 s), and the air
+bends: a shock bubble swells out to the kill radius, a ripple runs over the ground behind it, heat shimmers round
+the cap and over the crater until about 12 s (a distortion pass in the HDR post; none with `--post off`). A ragged
+shock front races over the ground under a fading shock dome, and a slow ring of burning ground spreads behind it
+(0.5-2.9 s); a ring of dust with a burning leading edge rolls out past the kill radius; the
 Zerg catch fire in the flash and run on, slowing and staggering, until the front flings them out, burning and
 charring, to smoulder out where they land; the shock booms as it
 passes the bunker (no camera shake). It leaves a small pit of scorched earth whose cracks glow deep red, cool and

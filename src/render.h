@@ -41,6 +41,7 @@ Geometry sphere(float r, int ws = 32, int hs = 16);
 Geometry cylinder(float rTop, float rBottom, float h, int radial = 8);
 Geometry cone(float r, float h, int radial = 8);
 Geometry ring(float inner, float outer, int seg = 32);   // XY plane, normal +Z
+Geometry torus(float radius, float tube, int radial = 48, int tubular = 16);   // round the Y axis; uv.x round the ring, uv.y round the tube
 Geometry plane(float w, float h);                          // XY plane, normal +Z
 Geometry dodecahedron(float r);                            // flat shaded
 Geometry icosahedron(float r, int detail);                 // smooth
@@ -192,6 +193,10 @@ class Renderer {
   // sortAt. It sets its own blend, depth mask and cull; it leaves the depth test on (LEQUAL),
   // texture unit 3 (the shadow map) alone and VAO 0 bound.
   void drawCustom(int renderOrder, const glm::vec3& sortAt, CustomDraw fn);
+  // A heat haze: run after the scene into the post's offset target at half resolution (no depth,
+  // blend ONE, ONE); it writes signed uv offsets (RG) by which the composite bends the scene. It
+  // sets its own program and cull; nothing is drawn without post.
+  void drawDistort(CustomDraw fn);
   void render(const SceneParams& sp);
   int drawCount() const { return (int)cmds_.size(); }
   void setGpuParticles(class GpuParticles* g) { gpuParticles_ = g; }   // drawn after the CPU particles (null: none)
@@ -216,6 +221,7 @@ class Renderer {
   std::vector<Cmd> cmds_;
   struct Custom { glm::vec3 at; CustomDraw fn; };
   std::vector<Custom> customs_;
+  std::vector<CustomDraw> distorts_;
   std::vector<Instance> inst_;
   GLuint litProg_ = 0, terrainProg_ = 0, depthProg_ = 0, partProg_ = 0;   // terrainProg_: LIT_FS with TERRAIN (0: the ground falls back to Phong)
   GLuint instVbo_ = 0, shadowFbo_ = 0, shadowTex_ = 0;

@@ -149,7 +149,7 @@ struct NukeBlast {
   glm::vec3 p;
   float t = 0;   // seconds since the blast (game time)
   float tHit = 0, seed = 0;
-  float embers = 0;   // embers due but not yet emitted (a fraction of one)
+  float embers = 0, inrush = 0;   // embers and inrush streaks due but not yet emitted (a fraction of one)
   bool hitDone = false;
 };
 // The scar a nuke leaves on the ground: a burn with glowing cracks that cool, then fade

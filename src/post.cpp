@@ -26,13 +26,16 @@ void main() {
 // threshold — the scene is display-referred, so only emitters exceed 1.
 const char* PRE_FS = R"(#version 330 core
 in vec2 vUV; out vec4 o;
-uniform sampler2D uSrc; uniform vec2 uTexel; uniform vec4 uThr;   // T, T-K, 2K, 0.25/K
+uniform sampler2D uSrc, uDist; uniform vec2 uTexel; uniform vec4 uThr;   // T, T-K, 2K, 0.25/K
+uniform bool uDistOn;   // a heat haze bends the scene (its glows too)
+vec2 uv0;
 vec3 S(vec2 d) {
-  vec3 c = min(texture(uSrc, vUV + d * uTexel).rgb, vec3(64.0));
+  vec3 c = min(texture(uSrc, uv0 + d * uTexel).rgb, vec3(64.0));
   return any(isnan(c)) ? vec3(0.0) : c;
 }
 float W(vec3 c) { return 1.0 / (1.0 + 0.25 * dot(c, vec3(0.2126, 0.7152, 0.0722))); }
 void main() {
+  uv0 = uDistOn ? vUV + texture(uDist, vUV).rg : vUV;
   vec3 A = S(vec2(-1, -1)), B = S(vec2(1, -1)), C = S(vec2(-1, 1)), D = S(vec2(1, 1));
   vec3 E = S(vec2(-2, -2)), F = S(vec2(0, -2)), G = S(vec2(2, -2)), H = S(vec2(-2, 0)), I = S(vec2(0, 0));
   vec3 J = S(vec2(2, 0)), K = S(vec2(-2, 2)), L = S(vec2(0, 2)), M = S(vec2(2, 2));
@@ -77,13 +80,13 @@ void main() {
 // ratio, so fire stays orange; only very hot light (> ~4) runs on to white.
 const char* COMP_FS = R"(#version 330 core
 in vec2 vUV; out vec4 o;
-uniform sampler2D uScene, uBloom; uniform vec2 uBloomTexel;
+uniform sampler2D uScene, uBloom, uDist; uniform vec2 uBloomTexel; uniform bool uDistOn;
 uniform float uBloomStrength, uExposure, uKnee, uAspect;
 uniform vec3 uFlashColor; uniform vec2 uFlashPos; uniform float uFlashRadius, uFlashGlobal;
 uniform float uSaturation, uContrast, uVignette; uniform vec3 uLift;
 float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
 void main() {
-  vec3 c = texture(uScene, vUV).rgb;
+  vec3 c = texture(uScene, uDistOn ? vUV + texture(uDist, vUV).rg : vUV).rgb;   // bent by a heat haze
   vec2 bt = uBloomTexel * 0.5;   // four bilinear taps: a tent over the half-resolution level
   vec3 b = texture(uBloom, vUV - bt).rgb + texture(uBloom, vUV + bt).rgb
          + texture(uBloom, vUV + vec2(bt.x, -bt.y)).rgb + texture(uBloom, vUV + vec2(-bt.x, bt.y)).rgb;
@@ -129,9 +132,9 @@ bool PostFx::init() {
 }
 
 void PostFx::release() {
-  for (GLuint* f : {&msaaFbo_, &sceneFbo_}) if (*f) { glDeleteFramebuffers(1, f); *f = 0; }
+  for (GLuint* f : {&msaaFbo_, &sceneFbo_, &distFbo_}) if (*f) { glDeleteFramebuffers(1, f); *f = 0; }
   for (GLuint* r : {&msaaColor_, &msaaDepth_, &sceneDepth_}) if (*r) { glDeleteRenderbuffers(1, r); *r = 0; }
-  if (sceneTex_) { glDeleteTextures(1, &sceneTex_); sceneTex_ = 0; }
+  for (GLuint* t : {&sceneTex_, &distTex_}) if (*t) { glDeleteTextures(1, t); *t = 0; }
   for (Level& l : bloom_) {
     if (l.fbo) glDeleteFramebuffers(1, &l.fbo);
     if (l.tex) glDeleteTextures(1, &l.tex);
@@ -192,6 +195,22 @@ bool PostFx::allocate(int w, int h, int samples, GLenum colorFmt) {
     bw = std::max(1, bw / 2);
     bh = std::max(1, bh / 2);
   }
+  if (ok) {   // the heat haze's offsets (optional: without them there is no haze)
+    dw_ = std::max(1, (w + 1) / 2);
+    dh_ = std::max(1, (h + 1) / 2);
+    glGenTextures(1, &distTex_);
+    glBindTexture(GL_TEXTURE_2D, distTex_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, dw_, dh_, 0, GL_RG, GL_FLOAT, nullptr);
+    texParams(GL_LINEAR);
+    glGenFramebuffers(1, &distFbo_);
+    glBindFramebuffer(GL_FRAMEBUFFER, distFbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, distTex_, 0);
+    if (!complete("heat haze")) {
+      glDeleteFramebuffers(1, &distFbo_);
+      glDeleteTextures(1, &distTex_);
+      distFbo_ = distTex_ = 0;
+    }
+  }
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   glBindRenderbuffer(GL_RENDERBUFFER, 0);
   glBindTexture(GL_TEXTURE_2D, 0);
@@ -212,6 +231,24 @@ bool PostFx::ensure(int w, int h, bool msaa) {
   else { failed_ = true; logWarn("post: no HDR target at %dx%d (%d samples): drawing without post", w, h, samples); return false; }
   logInfo("post: %dx%d %s, %d sample%s, %d bloom levels", w, h, fmtName_, samples, samples > 1 ? "s" : "", levels_);
   return true;
+}
+
+bool PostFx::beginDistort() {
+  if (!distFbo_) return false;
+  glBindFramebuffer(GL_FRAMEBUFFER, distFbo_);
+  glViewport(0, 0, dw_, dh_);
+  const float zero[4] = {0, 0, 0, 0};
+  glClearBufferfv(GL_COLOR, 0, zero);   // (leaves the clear colour alone)
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_SCISSOR_TEST);
+  glDepthMask(GL_FALSE);
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_ONE, GL_ONE);
+  return true;
+}
+void PostFx::endDistort() {
+  glDisable(GL_BLEND);
+  distUsed_ = true;
 }
 
 void PostFx::finish(const PostParams& p, int vpX, int vpY, int vpW, int vpH, bool low) {
@@ -238,8 +275,15 @@ void PostFx::finish(const PostParams& p, int vpX, int vpY, int vpW, int vpH, boo
   };
   // bloom: prefilter into level 0, down the chain, then back up adding each level into the larger one
   float T = p.bloomThreshold, K = std::max(1e-3f, p.bloomKnee);
+  const bool dist = distUsed_ && distTex_;
+  distUsed_ = false;
+  glActiveTexture(GL_TEXTURE2);
+  glBindTexture(GL_TEXTURE_2D, dist ? distTex_ : 0);
+  glActiveTexture(GL_TEXTURE0);
   glUseProgram(progPre_);
   glUniform4f(U(progPre_, "uThr"), T, T - K, 2 * K, 0.25f / K);
+  glUniform1i(U(progPre_, "uDist"), 2);
+  glUniform1i(U(progPre_, "uDistOn"), dist);
   pass(progPre_, bloom_[0], sceneTex_, w_, h_);
   for (int i = 1; i < levels_; i++) pass(progDown_, bloom_[i], bloom_[i - 1].tex, bloom_[i - 1].w, bloom_[i - 1].h);
   glEnable(GL_BLEND);
@@ -254,6 +298,8 @@ void PostFx::finish(const PostParams& p, int vpX, int vpY, int vpW, int vpH, boo
   GLuint c = progComp_;
   glUniform1i(U(c, "uScene"), 0);
   glUniform1i(U(c, "uBloom"), 1);
+  glUniform1i(U(c, "uDist"), 2);
+  glUniform1i(U(c, "uDistOn"), dist);
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, sceneTex_);
   glActiveTexture(GL_TEXTURE1);
@@ -275,8 +321,10 @@ void PostFx::finish(const PostParams& p, int vpX, int vpY, int vpW, int vpH, boo
   glDrawArrays(GL_TRIANGLES, 0, 3);
   glBindVertexArray(0);
   glUseProgram(0);
-  glActiveTexture(GL_TEXTURE1);
-  glBindTexture(GL_TEXTURE_2D, 0);
+  for (GLenum u : {GL_TEXTURE2, GL_TEXTURE1}) {
+    glActiveTexture(u);
+    glBindTexture(GL_TEXTURE_2D, 0);
+  }
   glActiveTexture(GL_TEXTURE0);
   glDepthMask(GL_TRUE);
 }

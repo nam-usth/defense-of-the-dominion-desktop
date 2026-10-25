@@ -2946,6 +2946,20 @@ void Game::updateNukes(float dt) {
       nukeEmberFx(n.p, (int)n.embers, ms);
       n.embers -= (int)n.embers;
     }
+    // SC2's fire inrush: 200 streaks a second (1.4-3 s) pulled in from a ring round ground zero
+    // toward a point over it, slowing as they go; each is three sprites along its path (they fly
+    // together: a streak, stretched by its speed)
+    n.inrush += nk::key({{1533, 0}, {1540, 200}, {3100, 200}, {3110, 0}}, ms) * dt;
+    for (; n.inrush >= 1; n.inrush--) {
+      const float a = rnd() * 2 * PI_F, r = 1.6f + 3.6f * rnd();
+      const glm::vec3 p = n.p + glm::vec3(std::cos(a) * r, 0.3f + 0.9f * rnd(), std::sin(a) * r);
+      const glm::vec3 v = glm::normalize(n.p + glm::vec3(0, 1, 0) - p) * (5 + 2 * rnd());
+      const float life = 0.45f + 0.2f * rnd();
+      for (int k = 0; k < 3; k++) {
+        const glm::vec3 q = p - v * (0.03f * k);
+        emit(glow_, q.x, q.y, q.z, v.x, v.y, v.z, life, 0.22f - 0.05f * k, 0.05f, 0.5f - 0.12f * k, 0xffc46a, 0xff4a10, 0, 4, 0);
+      }
+    }
     if (!n.hitDone && n.t >= n.tHit) {   // the shock front reaches the bunker: the boom, then a long rumble
       n.hitDone = true;
       audio::play("nukeShock");
@@ -2998,7 +3012,7 @@ static void mushroomSprites(const NukeBlast& mc, float lit, bool hdr, std::vecto
   const float t = mc.t, g = 1 - std::exp(-t / 0.9f);
   const float heat = std::exp(-t / 3.6f);   // the cloud's temperature, 1 → 0
   const float fr = nk::fireR(t), gF = nk::ss(0.6f, 2.6f, t), sxz = 1 + 0.22f * gF;
-  const float capH = nk::fireY(t) + 0.25f * std::max(0.f, t - 2), capR = 0.8f * fr * sxz + 0.1f * t, tube = 0.42f * fr, puff = 1.3f + 1.6f * g;
+  const float capH = nk::capH(t), capR = nk::capR(t), tube = nk::capTube(t), puff = 1.3f + 1.6f * g;   // (the fire tori share the cap)
   const float fade = std::min(1.f, t / 0.15f) * (1 - glm::smoothstep(MUSH_DUR - 2.5f, MUSH_DUR, t));
   const float burn = 1 - nk::ss(nk::FIRE_OUT0, nk::FIRE_OUT1, t);   // the fire's own end
   const float capIn = nk::ss(1.5f, 3.0f, t) * burn, stemIn = nk::ss(0.4f, 1.4f, t) * burn;   // they roll in as the fireball burns out

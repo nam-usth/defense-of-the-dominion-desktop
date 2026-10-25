@@ -1,8 +1,11 @@
 // The nuke's blast. Drawn with its own shaders as the renderer's custom draws: the shock
-// front (a ragged ring of light racing over the ground under a fading shock dome) and the
-// scar it leaves (a small pit of scorched earth, its cracks glowing red, then fading). The
-// white-hot fireball that rises, flattens and burns out into the mushroom cloud, the cloud
-// and the base surge (a ring of dust with a burning leading edge) are soft sprites (game.cpp).
+// front (a ragged ring of light racing over the ground under a fading shock dome), SC2's slow
+// burning ring on the ground, the rolling fire tori faint under the cap, the heat haze (the
+// shock bubble, a ripple over the ground, the shimmer round the cap and over the crater: the
+// renderer's distortion draws) and the scar it leaves (a small pit of scorched earth, its
+// cracks glowing red, then fading). The white-hot fireball that rises, flattens and burns out
+// into the mushroom cloud, the cloud and the base surge (a ring of dust with a burning leading
+// edge) are soft sprites (game.cpp).
 // The timeline is closed-form curves (nk::), so every view and every frame reads the same blast.
 #pragma once
 #include <glad/gl.h>
@@ -31,6 +34,10 @@ inline float surgeH(float t) { return (0.5f + 3.1f * (1 - std::exp(-t / 0.7f))) 
 inline float fireR(float t) { return 3.3f * std::sqrt(1 - std::exp(-t / 0.16f)) + 0.12f * t; }
 inline float fireY(float t) { return 0.42f * fireR(t) + 4.6f * (1 - std::exp(-std::max(0.f, t - 0.3f) / 1.2f)); }
 inline float heat(float t) { return std::exp(-t / 2.4f); }
+// the mushroom's cap (its sprites in game.cpp, the fire tori and the cap's haze here): height, ring radius, tube
+inline float capH(float t) { return fireY(t) + 0.25f * std::max(0.f, t - 2); }
+inline float capR(float t) { return 0.8f * fireR(t) * (1 + 0.22f * ss(0.6f, 2.6f, t)) + 0.1f * t; }
+inline float capTube(float t) { return 0.42f * fireR(t); }
 // the flash: up in 25 ms, mostly gone by 0.3 s
 inline float flashK(float t) { return t < 0 ? 0 : t < 0.025f ? t / 0.025f : std::exp(-(t - 0.025f) / 0.09f); }
 // exposure: x6 in the flash, then dazzled eyes (x0.8 at 0.45-0.9 s), back to 1 by 3 s
@@ -66,13 +73,17 @@ class NukeRenderer {
     glm::vec3 p{0};      // ground zero
     float t = 0, seed = 0;
   };
-  void draw(Renderer& R, const Blast& b) const;   // queues the front, the dome and the flash star
-  void drawScar(Renderer& R, glm::vec2 p, float age, float seed, float front) const;   // front: the shock front's radius (cracks open behind it)
+  void draw(Renderer& R, const Blast& b) const;   // queues the front, the dome, the flash star, the burn ring, the fire tori and the haze
+  // front: the shock front's radius (cracks open behind it); also the heat shimmering over it
+  void drawScar(Renderer& R, glm::vec2 p, float age, float seed, float front) const;
 
  private:
   struct FxMesh { GLuint vao = 0, vbo = 0, ibo = 0; GLsizei count = 0; };
   bool ok_ = false;
-  GLuint progScar_ = 0, progFront_ = 0, progDome_ = 0, progStar_ = 0;
-  FxMesh quad_, ring_, dome_;
+  GLuint progScar_ = 0, progFront_ = 0, progDome_ = 0, progStar_ = 0, progBurn_ = 0, progTorus_ = 0, progHaze_ = 0;
+  FxMesh quad_, ring_, dome_, torus_;
+  // a heat haze over a mesh: S is SC2's strength (10 bends ~10 px at 1080p), ground: a ripple band
+  // (centre x, z, radius, width) on a flat quad instead of the mesh's face-on shimmer
+  void haze(Renderer& R, const FxMesh& m, const glm::mat4& model, float S, float tile, float rise, glm::vec4 ground = glm::vec4(0)) const;
   static FxMesh build(const Geometry& g);
 };

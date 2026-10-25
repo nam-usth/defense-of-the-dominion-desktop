@@ -160,6 +160,25 @@ Geometry ring(float inner, float outer, int seg) {
   return g;
 }
 
+Geometry torus(float radius, float tube, int radial, int tubular) {
+  Geometry g;
+  for (int i = 0; i <= radial; i++) {
+    float a = (float)i / radial * 2 * PI;
+    glm::vec3 d(std::cos(a), 0, std::sin(a));
+    for (int j = 0; j <= tubular; j++) {
+      float b = (float)j / tubular * 2 * PI;
+      glm::vec3 n = d * std::cos(b) + glm::vec3(0, std::sin(b), 0);
+      g.v.push_back({d * radius + n * tube, n, {(float)i / radial, (float)j / tubular}});
+    }
+  }
+  for (int i = 0; i < radial; i++)
+    for (int j = 0; j < tubular; j++) {
+      uint32_t a = i * (tubular + 1) + j, b = a + tubular + 1;
+      g.idx.insert(g.idx.end(), {a, a + 1, b, b, a + 1, b + 1});
+    }
+  return g;
+}
+
 Geometry plane(float w, float h) {
   Geometry g;
   g.v = {{{-w / 2, h / 2, 0}, {0, 0, 1}, {0, 1}}, {{w / 2, h / 2, 0}, {0, 0, 1}, {1, 1}},
@@ -784,6 +803,7 @@ void Renderer::begin() {
   cmds_.clear();
   inst_.clear();
   customs_.clear();
+  distorts_.clear();
 }
 
 void Renderer::draw(const Mesh* mesh, const Material* mat, const glm::mat4& model, bool cast, bool receive,
@@ -804,6 +824,10 @@ void Renderer::drawParticles(const ParticleSystem* ps, Blend blend, int order) {
   if (!ps || ps->p.empty()) return;
   cmds_.push_back({nullptr, nullptr, glm::mat4(1), 0, (int)ps->p.size(), false, false, order, ps, blend});
 }
+void Renderer::drawDistort(CustomDraw fn) {
+  if (fn) distorts_.push_back(std::move(fn));
+}
+
 void Renderer::drawCustom(int order, const glm::vec3& at, CustomDraw fn) {
   if (!fn) return;
   cmds_.push_back({nullptr, nullptr, glm::mat4(1), 0, 0, false, false, order, nullptr, Blend::Normal, (int)customs_.size()});
@@ -1070,6 +1094,11 @@ void Renderer::render(const SceneParams& sp) {
   glDisable(GL_SCISSOR_TEST);
   glDisable(GL_DEPTH_TEST);
   glActiveTexture(GL_TEXTURE0);
+  if (postActive_ && !distorts_.empty() && post_.beginDistort()) {   // a heat haze: the offsets the composite bends the scene by
+    for (const CustomDraw& fn : distorts_) fn(ctx);
+    glBindVertexArray(0);
+    post_.endDistort();
+  }
   if (postActive_) post_.finish(sp.post, sp.vpX, sp.vpY, sp.vpW, sp.vpH, !sp.msaa);   // ends on framebuffer 0
 }
 
