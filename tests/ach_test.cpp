@@ -58,12 +58,12 @@ int main() {
   check("1,000 lifetime kills: VETERAN", b.has("kills1000") && b.stat("kills") == 1000 && !b.has("kills5000"));
 
   // multi-kills: thresholds per weapon, not mixed up
-  b.multiKill(clean, "nuke", 19);  b.multiKill(clean, "strike", 9);  b.multiKill(clean, "grenade", 4);
-  check("19 / 9 / 4 in one blast: none", !b.has("nuke20") && !b.has("strike10") && !b.has("grenade5"));
+  b.multiKill(clean, "nuke", 9);  b.multiKill(clean, "strike", 9);  b.multiKill(clean, "grenade", 4);
+  check("9 / 9 / 4 in one blast: none", !b.has("nuke10") && !b.has("strike10") && !b.has("grenade5"));
   b.multiKill(clean, "grenade", 20);
-  check("20 by a grenade earns SHRAPNEL only", b.has("grenade5") && !b.has("nuke20") && !b.has("strike10"));
-  b.multiKill(clean, "nuke", 20);  b.multiKill(clean, "strike", 10);
-  check("20 by a nuke, 10 by an airstrike", b.has("nuke20") && b.has("strike10"));
+  check("20 by a grenade earns SHRAPNEL only", b.has("grenade5") && !b.has("nuke10") && !b.has("strike10"));
+  b.multiKill(clean, "nuke", 10);  b.multiKill(clean, "strike", 10);
+  check("10 by a nuke, 10 by an airstrike", b.has("nuke10") && b.has("strike10"));
 
   // snipes count across games
   for (int i = 0; i < 49; i++) b.snipe(clean);

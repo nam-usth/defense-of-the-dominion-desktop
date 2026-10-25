@@ -34,7 +34,7 @@ const std::vector<Def>& defs() {
     {"general", "FOUR STARS", "Reach the rank of GENERAL in one game (280 kills).", Cat::Combat, 20, "svg:rank", "", 0, false},
     {"kills1000", "VETERAN", "Kill 1,000 Zerg in all.", Cat::Combat, 20, "svg:rank", "kills", 1000, false},
     {"kills5000", "HIVE BREAKER", "Kill 5,000 Zerg in all.", Cat::Combat, 50, "svg:rank", "kills", 5000, false},
-    {"nuke20", "NUCLEAR OPTION", "Kill 20 Zerg with one nuke.", Cat::Combat, 20, "nukes_coop.png", "", 0, false},
+    {"nuke10", "NUCLEAR OPTION", "Kill 10 Zerg with one nuke.", Cat::Combat, 20, "nukes_coop.png", "", 0, false},
     {"strike10", "AIR SUPERIORITY", "Kill 10 Zerg with one airstrike.", Cat::Combat, 20, "btn-progression-hornerhan-5-fleetcalldown.png", "", 0, false},
     {"grenade5", "SHRAPNEL", "Kill 5 Zerg with one Marauder grenade.", Cat::Combat, 20, "btn-upgrade-terran-explosiveshrapnelshells.png", "", 0, false},
     {"snipe50", "ONE SHOT, ONE KILL", "Kill 50 Zerg with Ghost snipes, in all.", Cat::Combat, 20, "btn-upgrade-terran-ui-lazertargetingsystem.png", "snipes", 50, false},
@@ -137,7 +137,7 @@ void Book::snipe(const Run& r) {
 void Book::multiKill(const Run& r, const char* by, int n) {
   if (r.cheated) return;
   std::string b = by;
-  if (b == "nuke" && n >= 20) unlock("nuke20");
+  if (b == "nuke" && n >= 10) unlock("nuke10");   // (20 was out of reach: the Zerg come a few at a time, rarely 20 alive at once)
   else if (b == "strike" && n >= 10) unlock("strike10");
   else if (b == "grenade" && n >= 5) unlock("grenade5");
 }
