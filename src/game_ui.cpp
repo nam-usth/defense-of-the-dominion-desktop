@@ -1796,7 +1796,7 @@ void Game::drawMenu() {
         y += 6 * s;
       }
       const int cols = 9;
-      const float g = 7 * s, isz = std::min(46 * s, (bw - (cols - 1) * g) / cols);
+      const float g = 7 * s, isz = (bw - (cols - 1) * g) / cols;   // the grid spans the page, as the totals bar and the row below
       int hover = -1;
       for (int i = 0; i < total; i++) {
         float ix = bx0 + (i % cols) * (isz + g), iy = y + (i / cols) * (isz + g);
