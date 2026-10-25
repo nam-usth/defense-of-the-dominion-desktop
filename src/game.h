@@ -74,6 +74,7 @@ struct Enemy {
   int rScore = 0, rMin = 0, rGas = 0;
   float slowUntil = -1, slowFactor = 1;
   bool slowed = false;
+  float barY() const { return type == 'r' ? 1.4f : 1.1f; }   // its HP bar's height over its feet
 };
 using EnemyP = std::shared_ptr<Enemy>;
 
@@ -159,6 +160,9 @@ struct FloatText {
   std::string txt;
   float life, maxLife;
   uint32_t color;
+  float lift = 0;   // px (UI scale 1) from p up to the text: clears the HP bar of the enemy it is anchored on
+  int row = -1;     // its row in the stack over that spot (drawOverlayCanvas picks it on its first frame)
+  std::weak_ptr<Enemy> on;   // that enemy: the text rides over it while it lives
 };
 
 // A unit that leaves the bunker to fetch a crate (hidden while inside)
@@ -472,6 +476,7 @@ class Game {
   void explosionFx(const glm::vec3& p, uint32_t col, float scale);   // Viking missile strikes (the nuke has its mushroom cloud)
   void deathFx(const Enemy& e);
   void bloodFx(const Enemy& e, const glm::vec3& p, float dx, float dz);   // a round hits it: a little blood along (dx, dz)
+  void hitText(const EnemyP& e, std::string txt, uint32_t color);          // a damage number (or MISS) over its HP bar
   void acidFx(const glm::vec3& p);
   void muzzleFlash(float x, float y, float z, float dx, float dz, uint32_t col, bool big);
   void render();

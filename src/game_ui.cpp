@@ -144,7 +144,7 @@ void Game::drawOverlayCanvas() {
         float pct = std::max(0.f, e->hp / e->maxHp);
         if (pct >= 1.0f) continue;   // only damaged enemies (less clutter)
         float sx, sy;
-        if (!project(e->pos + glm::vec3(0, e->type == 'r' ? 1.4f : 1.1f, 0), sx, sy)) continue;
+        if (!project(e->pos + glm::vec3(0, e->barY(), 0), sx, sy)) continue;
         bool r = e->type == 'r';
         float bw = (r ? 36 : 24) * s, bh = (r ? 5 : 4) * s, bx = sx - bw / 2, by = sy - bh / 2;
         // attribute badge: ARM (Roach) / LGT (Zergling), on the bar's dark backing (bare, it was lost on the grass and the Zerg)
@@ -163,13 +163,34 @@ void Game::drawOverlayCanvas() {
         }
       }
   }
-  for (const FloatText& f : floatTexts_) {   // floating damage numbers
+  // floating damage numbers. A new one takes the lowest of FT_ROWS rows over its spot that no text
+  // already up covers; none free (a burst on one Zergling), the row whose texts fade first, and they
+  // go at once: the hits stack up instead of running together
+  constexpr int FT_ROWS = 4;
+  struct Placed { float cx, cy, w; FloatText* f; };
+  std::vector<Placed> placed;
+  placed.reserve(floatTexts_.size());
+  for (FloatText& f : floatTexts_) {   // oldest first: a new one sees all the others placed
     float sx, sy;
     if (!project(f.p, sx, sy)) continue;
     float a = std::min(1.f, f.life / f.maxLife * 2);
     Txt t = TA(15, alpha(rgb(f.color), a), false, 0, true);
-    float w = textW(f.txt.c_str(), t), h = textH(t);
-    ImVec2 p(sx - w / 2, sy - h / 2);
+    float w = textW(f.txt.c_str(), t), h = textH(t), step = 0.8f * h;   // digits fill ~0.8 of the line
+    float cy0 = sy - f.lift * s - h / 2;   // row 0's centre
+    if (f.row < 0) {
+      auto covers = [&](const Placed& q, int k) { return std::abs(q.cx - sx) < (q.w + w) / 2 + 2 * s && std::abs(q.cy - (cy0 - k * step)) < step; };
+      float best = INFINITY;
+      for (int k = 0; k < FT_ROWS; k++) {
+        float taken = 0;
+        for (const Placed& q : placed)
+          if (covers(q, k)) taken = std::max(taken, q.f->life);
+        if (taken < best) { best = taken; f.row = k; }
+      }
+      for (const Placed& q : placed)
+        if (covers(q, f.row)) q.f->life = std::min(q.f->life, 0.1f);
+    }
+    ImVec2 p(sx - w / 2, cy0 - f.row * step - h / 2);
+    placed.push_back({sx, p.y + h / 2, w, &f});
     Txt o = TA(15, IM_COL32(0, 0, 0, (int)(178 * a)), false, 0, true);
     for (int i = 0; i < 8; i++) {
       float an = i * 3.14159f / 4;

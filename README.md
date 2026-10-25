@@ -245,8 +245,8 @@ the patter of near drops, as loud as it is heavy).
   shader (`skyMirror`): a traced reflection of the scene would return what the reflected ray hits there, and the
   sky where it escapes. The night keeps its readable moonlit value: the dark fades to the dry ground's.
 - **The aim**: in the rain 5% of the rounds from the bunker and the Shrike miss in a drizzle, 10% in a downpour
-  (in between as the rain grows): a missed round flies on past its Zerg (it may hit one behind) and a grey MISS
-  rises. Marauder grenades still burst; Ghost snipes, Viking missiles and nukes still strike. The status line
+  (in between as the rain grows): a missed round flies on past its Zerg (it may hit one behind) and a pale blue
+  MISS rises. Marauder grenades still burst; Ghost snipes, Viking missiles and nukes still strike. The status line
   names the shower and its miss chance when it starts.
 
 Menu → Settings → Weather switches it off (the sky clears, the ground dries four times as fast). Cheat `rain`, in
@@ -335,6 +335,8 @@ and logs the volleys fired · `--post on|off` the HDR post-processing. Each clea
   web field is still flat green with dirt quads and fades to the near-black fog colour at night.
 - The weather is desktop-only, and with it a rule the web version does not have: rounds miss in the rain (5% /
   10%), and the `rain` cheat.
+- Damage numbers ride above their Zerg's HP bar and stack in up to four rows (a fifth replaces the row that fades
+  first); the web draws each where the round hit, so a burst on one Zergling runs together.
 - `help` in the cheat console lists the codes in the console itself (the web printed them to the browser console).
 - Achievements (desktop only so far; a cheat code turns them off for that game).
 - Saves are `key=value` files in `%APPDATA%` (Linux: `~/.local/share`) instead of `localStorage`, so web saves
