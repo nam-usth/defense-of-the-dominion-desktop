@@ -61,7 +61,7 @@ build/linux/dotd
 
 Tested on Ubuntu 22.04 under WSLg: GCC 11.4, FFmpeg 4.4, X11 through XWayland and native Wayland, sound
 through PulseAudio, the HDR post-processing and the new nuke included. WSLg's Mesa D3D12 driver stops at OpenGL 4.1, so the game falls back to 3.3 with CPU
-particles there (about 40 FPS at 1600×900). With Mesa's llvmpipe (`LIBGL_ALWAYS_SOFTWARE=1`, OpenGL 4.5), the GPU
+particles there (60–100 FPS at 1280×720). With Mesa's llvmpipe (`LIBGL_ALWAYS_SOFTWARE=1`, OpenGL 4.5), the GPU
 particles' compute shaders compile and run. Not tested: a native Linux desktop, AMD / Intel / NVIDIA drivers on
 Linux, PipeWire, and FFmpeg 5.1+. The code handles 5.1's channel-layout API but was compiled only against 4.4.
 
@@ -131,14 +131,30 @@ shrinks geometrically (90 → 9) so the night closes in evenly, the sun turns or
 with the fog, and switching the cycle off lifts the night over 2.5 s, also behind the menu and title. The top bar
 shows the phase and the countdown to the next one (`☀ DAY  DUSK IN 0:42`, then `NIGHT IN`, `DAWN IN`, `DAY IN`).
 
-The field is drawn by the shader from one tiling 512² gradient-noise texture, built at startup with its broad
-octaves domain-warped (no stripes, no straight edges), read at rotated scales of 150, 36 and 6 units (no repeat
-shows): two grass tones in soft patches with lighter and darker swathes, soft dirt patches, a worn ring round
-the bunker with shade at its foot, and a fine pebbly relief for the light. GFX HIGH draws it in HD: closer in,
-by each pixel's footprint, the grass gains relief and a fourth, finer speckle (the overview stays calm, with no
-hatching). GFX LOW draws it in SD: the broad layers alone, a little softer, in the same tones (every fine term
-averages out). Clusters of faceted boulders lie out past the Sensor ring, and every Zerg, corpse and unit out
-of the bunker sits on a soft contact shadow. At night the field does not go black: the fog fades it to its own
+The field is drawn by the shader from three tiling 512² maps built at startup: a gradient noise with its broad
+octaves domain-warped (no stripes, no straight edges), read at rotated scales of 150, 36 and 6 units, and two
+detail maps, 12 000 short grass blades and 1 100 pebbles on crumbly earth, read at rotations and scales of 2.7 to
+7.3 units that share no period. Two grass tones in soft patches with lighter and darker swathes, dirt patches
+frayed by the blades with a darker seam, a worn ring round the bunker with shade at its foot. Every fine term
+averages out, so a softer read keeps the tone. GFX HIGH draws it in HD: by each pixel's footprint, single blades
+and pebbles with their own slope for the light close in, the blades reading larger as clumps from afar (the
+overview stays calm, with no hatching). GFX LOW draws it in SD: the broad layers alone, a little softer.
+
+On HIGH, 7 500 tufts of four blades stand on the grass out to r 30 (one static mesh, 90 000 triangles). Each takes
+the colour of the ground at its root, dark at the foot and pale at the tip, and sways in slow gusts, harder in the
+rain. There are none on bare earth, in water or where a nuke has scorched the field; they grow back as the scar
+fades.
+
+The sun is lower than it was (55° up, not 65°: longer shadows, the shapes stand out), and on HIGH soft cloud shadows
+drift over the field with the wind: two reads of the noise at rotated scales, so no lattice shows as bands. The
+ambient light depends on which way a surface faces, the sky above and the field's dim green bounce below, and polished
+surfaces mirror the sky on a fresnel edge, so the bunker's metal follows the weather and the dusk.
+
+Clusters of boulders lie out past the Sensor ring: three shapes, each a sphere chiselled by 16 random planes into
+faces that meet in ridges (a corner's normal averages the faces within 40°, so the ridges stay creased). On HIGH they
+are shaded as stone, from the ground's maps projected on three axes: mottled, grainy, faintly banded, lichen on the
+faces turned up, darker at the foot. Every boulder, Zerg, corpse and unit out of the bunker sits on a soft contact
+shadow. At night the field does not go black: the fog fades it to its own
 grey, moon-blue value under a cool moon from behind left (no shadows), a Zerg in the dark fades to the ground
 under it, the bunker's light is warm white, and the sky turns violet at dusk. Boulders stay paler than the
 field in the dark, so none reads as a crouching Zerg.
@@ -304,8 +320,13 @@ vsync off, same laptop:
 
 | | RTX 3050 Ti Laptop | Iris Xe |
 |---|---|---|
-| 1600×900 | 359 FPS (2.8 ms) | 226 FPS (4.4 ms) |
-| 2800×1575 | 182 FPS (5.5 ms) | 128 FPS (7.8 ms) |
+| 1600×900 | 191 FPS (5.2 ms) | 137–220 FPS (4.5–7.3 ms) |
+| 2800×1575 | 74 FPS (13.5 ms) | 53–91 FPS (11–19 ms) |
+
+The Iris Xe's range is the same build run repeatedly: its speed swings with the chip's heat. The overview; close up
+(`--zoom-in 8`) the RTX draws 161 and 70 FPS. Before the detailed ground, the 3D grass and the stone (commit eda26bf, the
+same runs): 280 and 113 FPS on the RTX, 193–210 and 76–79 FPS on the Iris Xe. Most of the new cost is the ground's
+detail at 2800×1575, which takes 6 ms on the RTX; the grass takes about 1 ms.
 
 Starting on the NVIDIA card is slower (driver start-up, and a first texture upload that took 80–200 ms once
 per run); on the Intel card the first frame came after ~0.2 s.
@@ -317,7 +338,7 @@ per run); on the Intel card the first frame came after ~0.2 s.
 | launch → first frame | 0.45 s (1.65 s before the audio device and font atlas moved off the main thread) |
 | launch → every asset loaded | 0.6 s |
 | longest frame while loading | ≈ 50 ms (the first frames: GPU uploads) |
-| heavy scene: wave 15, 53 enemies, 6 Marines + Shrike overdrive, ~1000 particles, vsync off | 263 FPS, 3.8 ms per frame; CPU: update 0.11 ms, render submit 0.16 ms, UI 1.2 ms — the GPU is the limit |
+| heavy scene: wave 15, 53 enemies, 6 Marines + Shrike overdrive, ~1000 particles, vsync off | 137–220 FPS, 4.5–7.3 ms per frame; CPU: update 0.04 ms, render submit 0.16 ms, UI 0.9 ms — the GPU is the limit |
 
 With vsync on (the default) the game runs at the monitor's refresh rate. These numbers come from the test
 options below; the web version was not benchmarked side by side.
@@ -338,6 +359,7 @@ achievements, cheats; N: the achievement list's category tab, 0-4) ·
 the tour and hints · `--dn S` day/night on,
 S seconds into the cycle · `--weather clear|overcast|rain|drizzle|after` that weather at once, held for the run
 (rain: a downpour over full puddles; after: a shower just over, full puddles under the sun) ·
+`--dump-ground DIR` writes the ground's three maps as PNGs and exits (the web version's `assets/textures`) ·
 `--hold X,Y,S` holds the fire button at (X, Y) (fractions of the window) for S seconds
 and logs the volleys fired · `--post on|off` the HDR post-processing · `--hp F` holds the bunker at F (0–1) of its
 max HP for the run (below 0.5 it burns). Each cleared wave logs how it was resupplied.
@@ -346,12 +368,11 @@ max HP for the run (below 0.5 it burns). Each cleared wave logs how it was resup
 
 - Desktop window, native OpenGL: three.js materials re-implemented in one shader (Standard / Lambert / Phong /
   Basic, SC2 team colour, DXT5nm normal maps), PCF sun shadows, radial fog, instanced enemies and particles.
-- GFX LOW turns off shadows and 4× MSAA and draws the field in SD (the web LOW turned off shadows and HiDPI
-  rendering).
-- The ground (grass tones, dirt, boulders, contact shadows) and the moonlit night are desktop-only so far; the
-  web field is still flat green with dirt quads and fades to the near-black fog colour at night.
-- The weather is desktop-only, and with it a rule the web version does not have: rounds miss in the rain (5% /
-  10%), and the `rain` cheat.
+- The graphics are the same on both: the field (from the same three maps, `--dump-ground`), grass, boulders, sun, cloud
+  shadows, moonlit night, wet ground and puddles, HDR bloom and tone curve. GFX LOW turns off shadows, 4× MSAA, the grass
+  and the cloud shadows and draws the field in SD on both, and the web LOW also drops HiDPI rendering. The web HIGH
+  caps the pixel ratio at 1.5 and gives up 4× MSAA for the session under 45 FPS; lit surfaces on Lambert materials
+  there take no cloud shadow (they are lit per vertex).
 - Damage numbers ride above their Zerg's HP bar as a two-row queue: a new one comes in just over the bar and
   pushes the older up, and the one pushed out fades; the web draws each where the round hit, so a burst on one
   Zergling runs together. Menu → Settings → Damage numbers hides them (and MISS); the HP bars stay.

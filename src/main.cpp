@@ -23,6 +23,7 @@
 //   --resize WxH           change the window size after --start (tests the HUD rescale)
 //   --open menu:TAB|tour|howto|achievements[:N]   a menu tab (game, settings, display, controls, tutorial, achievements, cheats),
 //                          the HUD tour, HOW TO PLAY, the title's achievement list (N: its category tab, 0-4)
+//   --dump-ground DIR      write the ground's three maps as PNGs into DIR (the web edition's copies) and exit
 //   --data DIR             settings and saves in DIR instead of %APPDATA% / ~/.local/share (a new player; the real ones untouched)
 //   --no-tutorial          this run without the HUD tour and hints (the stored setting is kept)
 //   --dn SECONDS           day/night cycle on, SECONDS into it (78 dusk, 102 night, 156 dawn)
@@ -92,7 +93,7 @@ int main(int argc, char** argv) {
   std::string gpuArg, platformArg;
   int resizeW = 0, resizeH = 0;
   int threads = -1;
-  std::string shotPath, startMode, openPanel, dataDir, weatherArg;
+  std::string shotPath, startMode, openPanel, dataDir, weatherArg, dumpGroundDir;
   std::vector<std::string> cheats;
   double shotAfter = 3;
   int zoomIn = 0;
@@ -134,6 +135,7 @@ int main(int argc, char** argv) {
     else if (a == "--shot") shotPath = next();
     else if (a == "--after") shotAfter = std::atof(next().c_str());
     else if (a == "--data") dataDir = next();
+    else if (a == "--dump-ground") dumpGroundDir = next();
     else if (a == "--no-tutorial") noTutorial = true;
     else if (a == "--post") postOn = next() != "off";
     else if (a == "--dn") dnAt = std::strtof(next().c_str(), nullptr);
@@ -291,6 +293,12 @@ int main(int argc, char** argv) {
   bool allLoaded = false;
   double firstFrame = -1, loadWorst = 0;
   int exitCode = 0;
+  if (!dumpGroundDir.empty()) {   // (no frame runs: straight to the shutdown below)
+    const bool wrote = game.dumpGround(dumpGroundDir);
+    logInfo("ground maps to %s: %s", dumpGroundDir.c_str(), wrote ? "written" : "FAILED");
+    exitCode = wrote ? 0 : 2;
+    glfwSetWindowShouldClose(win, 1);
+  }
   while (!glfwWindowShouldClose(win)) {
     if (glfwGetWindowAttrib(win, GLFW_ICONIFIED)) { glfwWaitEvents(); last = glfwGetTime(); continue; }   // minimised: the game freezes
     glfwPollEvents();

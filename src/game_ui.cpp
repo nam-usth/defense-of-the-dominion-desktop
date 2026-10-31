@@ -1634,7 +1634,7 @@ void Game::drawMenu() {
         y = sy;
       }
       y += rowH;
-      note(std::string(gfxHigh_ ? "Sun shadows, 4\xC3\x97 MSAA, lit muzzle flashes." : "No shadows, no MSAA \xE2\x80\x94 fastest.") + " [Q] switches during play.");
+      note(std::string(gfxHigh_ ? "Sun shadows, 4\xC3\x97 MSAA, 3D grass, detailed ground, cloud shadows." : "No shadows, grass or MSAA, plain ground \xE2\x80\x94 fastest.") + " [Q] switches during play.");
       note(gpuFx_.ok() ? "GPU particles: compute shaders for denser sparks, fireballs, shockwave dust and smoke columns."
                        : "GPU particles need OpenGL 4.3 compute shaders, which this graphics card / driver does not offer.");
       section("SOUND");

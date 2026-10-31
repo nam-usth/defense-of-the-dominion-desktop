@@ -7,6 +7,7 @@
 #include <cstring>
 #include <deque>
 #include <thread>
+#include <unordered_map>
 
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -159,21 +160,47 @@ void Game::buildScene() {
   groundMat_.specular = hexColor(0x080808);
   groundMat_.shininess = 4;
   buildTerrainTex();
-  // Boulders: clusters of faceted rocks (a big one, two or three small ones) out past the Sensor
-  // ring and the Zerg's spawn band (r 17.5-24), sunk a quarter into the ground; three shapes
+  buildGroundDetail();
+  // Boulders: clusters of rocks (a big one, two or three small ones) out past the Sensor ring and
+  // the Zerg's spawn band (r 17.5-24), sunk a quarter into the ground; three shapes, each a sphere
+  // chiselled by random planes into faces that meet in ridges, a little uneven. A corner's normal
+  // averages the faces round it within 40° (smooth across a face, a crease along a ridge). Seeded:
+  // the web builds the same three
   for (int k = 0; k < 3; k++) {
-    Geometry r = geo::icosahedron(1, 1).nonIndexed();
-    for (Vertex& v : r.v) {
-      glm::ivec3 q(glm::round(v.p * 1000.f));   // the faces sharing a corner move it alike
-      uint32_t h = (uint32_t)q.x * 73856093u ^ (uint32_t)q.y * 19349663u ^ (uint32_t)q.z * 83492791u ^ (uint32_t)(k + 1) * 2654435761u;
-      h ^= h >> 13;
-      h *= 0x5bd1e995u;
-      h ^= h >> 15;
-      v.p *= 0.78f + 0.44f * (h & 0xffff) / 65535.f;
+    uint32_t st = 0x5bd1e995u * (uint32_t)(k + 1);
+    auto rn = [&] { st ^= st << 13; st ^= st >> 17; st ^= st << 5; return (st & 0xffffff) / 16777216.f; };
+    glm::vec4 cuts[16];
+    for (glm::vec4& c : cuts) {
+      const float y = 2 * rn() - 1, a = rn() * 2 * PI, h = std::sqrt(1 - y * y);
+      c = {std::cos(a) * h, y, std::sin(a) * h, 0.62f + 0.33f * rn()};
+    }
+    const float s1 = rn() * 6.28f, s2 = rn() * 6.28f;
+    Geometry r = geo::icosahedron(1, 4).nonIndexed();
+    std::unordered_map<uint64_t, std::vector<int>> corners;
+    for (int i = 0; i < (int)r.v.size(); i++) {
+      Vertex& v = r.v[i];
+      const glm::vec3 d = glm::normalize(v.p);
+      const glm::ivec3 q(glm::round(d * 2000.f));   // (the faces sharing a corner move it alike: it depends on d alone)
+      corners[((uint64_t)(q.x + 4096) << 26) | ((uint64_t)(q.y + 4096) << 13) | (uint64_t)(q.z + 4096)].push_back(i);
+      float rad = 1;
+      for (const glm::vec4& c : cuts) {
+        const float dc = glm::dot(d, glm::vec3(c));
+        if (dc > 0.05f) rad = std::min(rad, c.w / dc);
+      }
+      rad *= 1 + 0.045f * std::sin(3.1f * d.x + s1) * std::sin(2.7f * d.y + s2) + 0.025f * std::sin(7.3f * d.z + s2) * std::sin(6.1f * d.x + s1);
+      v.p = d * rad;
       v.p.y = std::min(v.p.y, 0.55f);   // a flattish top
       v.p *= glm::vec3(1, 0.68f, 0.85f);
     }
     r.computeFlatNormals();
+    std::vector<glm::vec3> flat(r.v.size());
+    for (size_t i = 0; i < r.v.size(); i++) flat[i] = r.v[i].n;
+    for (const auto& kv : corners)
+      for (int i : kv.second) {
+        glm::vec3 n(0);
+        for (int j : kv.second) if (glm::dot(flat[i], flat[j]) > 0.766f) n += flat[j];
+        r.v[i].n = glm::normalize(n);
+      }
     rockMesh_[k] = Mesh::create(r);
   }
   static const uint32_t ROCK_COL[3] = {0x4a3f32, 0x423e39, 0x534735};   // dark: in the sun their tops still read pale
@@ -197,6 +224,7 @@ void Game::buildScene() {
   rockMat_.specular = hexColor(0x0a0a0a);
   rockMat_.shininess = 8;
   rockMat_.scenery = true;
+  buildGrass();
 
   // Procedural stand-ins (used until / unless an SC2 model loads)
   {
@@ -379,7 +407,153 @@ void Game::buildTerrainTex() {
     px[i * 4 + 2] = (uint8_t)(128.5f + 127 * g.x);
     px[i * 4 + 3] = (uint8_t)(128.5f + 127 * g.y);
   }
-  terrainTex_ = Texture::create(N, N, px.data(), true, 8);   // (anisotropy clamped to the card's most)
+  terrainTex_ = Texture::create(N, N, px.data(), true, 2);   // (the camera is never low: anisotropy 8 looks the same and costs a close-up 3 ms)
+}
+
+bool Game::dumpGround(const std::string& dir) const {
+  return Renderer::saveTexture(terrainTex_, dir + "/ground_noise.png") && Renderer::saveTexture(grassTex_, dir + "/ground_grass.png") && Renderer::saveTexture(soilTex_, dir + "/ground_soil.png");
+}
+
+// The grass: thousands of little tufts of blades over the field (none under the bunker), one static mesh. Each
+// vertex carries its tuft's root and sway (render.cpp LIT_VS, TUFT), the shader colours it from the ground at the
+// root and drops the tufts that fall on bare earth, so it needs no map of the field here. Seeded: the web's is the same
+void Game::buildGrass() {
+  uint32_t st = 0x2545f491u;
+  auto rn = [&] { st ^= st << 13; st ^= st >> 17; st ^= st << 5; return (st & 0xffffff) / 16777216.f; };
+  Geometry g;
+  const int TUFTS = 7500, BLADES = 4;
+  g.v.reserve(TUFTS * BLADES * 5);
+  g.idx.reserve(TUFTS * BLADES * 9);
+  for (int t = 0; t < TUFTS; t++) {
+    const float a0 = rn() * 2 * PI, r0 = 3.6f + (30 - 3.6f) * std::sqrt(rn());
+    const glm::vec2 root(std::cos(a0) * r0, std::sin(a0) * r0);
+    const float h0 = 0.14f + 0.16f * rn(), tint = 0.84f + 0.32f * rn();
+    for (int b = 0; b < BLADES; b++) {
+      const float a = rn() * 2 * PI, c = std::cos(a), s = std::sin(a), h = h0 * (0.7f + 0.3f * rn()), lean = (0.25f + 0.5f * rn()) * h, w = 0.016f + 0.012f * rn();
+      const float oa = rn() * 2 * PI, od = 0.08f * rn();
+      const glm::vec2 base = root + glm::vec2(std::cos(oa), std::sin(oa)) * od, d(c, s), side(-s, c);
+      const uint32_t i = (uint32_t)g.v.size();
+      auto put = [&](glm::vec2 xz, float y, float v) { g.v.push_back({{xz.x, y, xz.y}, {root.x, 0.45f * h * v * v, root.y}, {tint, v}}); };
+      put(base - side * w, 0, 0);
+      put(base + side * w, 0, 0);
+      put(base + d * (lean * 0.35f) - side * (w * 0.65f), 0.55f * h, 0.55f);
+      put(base + d * (lean * 0.35f) + side * (w * 0.65f), 0.55f * h, 0.55f);
+      put(base + d * lean, h, 1);
+      for (uint32_t q : {0u, 1u, 3u, 0u, 3u, 2u, 2u, 3u, 4u}) g.idx.push_back(i + q);
+    }
+  }
+  tuftMesh_ = Mesh::create(g);
+  tuftMat_.type = MatType::Tuft;
+  tuftMat_.doubleSide = true;
+}
+
+// The ground's fine detail, two tiling 512² maps (render.cpp ground(), HD only): the grass, thousands
+// of short curved blades laid every way (no direction to hatch), each with a tone of its own; the
+// soil, pebbles on crumbly earth. R the height, G a tone, both with mean 0.5, so a far read (the
+// mips) averages to the plain tone; BA the slope (a 3x3 Sobel). A fixed seed: the web's copies of
+// these maps (--dump-ground) are the same texels
+void Game::buildGroundDetail() {
+  const int N = 512;
+  uint32_t st = 0x9e3779b9u;
+  auto rn = [&] { st ^= st << 13; st ^= st >> 17; st ^= st << 5; return (st & 0xffffff) / 16777216.f; };
+  auto pack = [&](std::vector<float>& H, std::vector<float>& T, float rms) {
+    auto normalise = [](std::vector<float>& c, float sd) {
+      double m = 0, q = 0;
+      for (float v : c) m += v;
+      m /= c.size();
+      for (float v : c) q += (v - m) * (v - m);
+      float k = sd / (float)std::sqrt(std::max(1e-12, q / c.size()));
+      for (float& v : c) v = glm::clamp(0.5f + (v - (float)m) * k, 0.f, 1.f);
+    };
+    normalise(H, 0.2f);
+    normalise(T, 0.22f);
+    std::vector<glm::vec2> slope(N * N);
+    double ss = 0;
+    for (int y = 0; y < N; y++) {
+      const float *p = &H[(y + N - 1) % N * N], *q = &H[y * N], *r = &H[(y + 1) % N * N];
+      for (int x = 0; x < N; x++) {
+        int a = x ? x - 1 : N - 1, b = x + 1 < N ? x + 1 : 0;
+        glm::vec2 g(p[b] + 2 * q[b] + r[b] - p[a] - 2 * q[a] - r[a], r[a] + 2 * r[x] + r[b] - p[a] - 2 * p[x] - p[b]);
+        slope[y * N + x] = g;
+        ss += glm::dot(g, g);
+      }
+    }
+    const float sk = rms / (float)std::sqrt(std::max(1e-12, ss / (N * N)));
+    std::vector<uint8_t> px((size_t)N * N * 4);
+    for (int i = 0; i < N * N; i++) {
+      glm::vec2 g = glm::clamp(slope[i] * sk, -1.f, 1.f);
+      px[i * 4] = (uint8_t)(255 * H[i] + .5f);
+      px[i * 4 + 1] = (uint8_t)(255 * T[i] + .5f);
+      px[i * 4 + 2] = (uint8_t)(128.5f + 127 * g.x);
+      px[i * 4 + 3] = (uint8_t)(128.5f + 127 * g.y);
+    }
+    return Texture::create(N, N, px.data(), true, 2);
+  };
+  auto wrap = [&](int v) { return (v % N + N) % N; };
+  {   // grass: the blades in turn, a later one over an earlier where it stands taller
+    std::vector<float> H(N * N, 0.f), T(N * N, 0.5f);
+    for (int b = 0; b < 12000; b++) {
+      float x = rn() * N, y = rn() * N, a = rn() * 2 * PI, L = 12 + rn() * 22, w0 = 0.9f + rn() * 1.1f;
+      const float bend = (rn() - .5f) * 1.1f / L, tone = rn(), top = 0.45f + 0.55f * rn();
+      for (float s = 0; s < L; s += 1) {
+        const float t = s / L, w = w0 * (1 - 0.7f * t * t), h = top * (0.35f + 0.65f * std::sin(t * 1.9f));   // tapers; highest two-thirds along
+        const int R = (int)std::ceil(w + 1);
+        for (int j = -R; j <= R; j++)
+          for (int i = -R; i <= R; i++) {
+            float dx = (int)x + i - x, dy = (int)y + j - y, d = std::sqrt(dx * dx + dy * dy), c = glm::clamp(w + 0.5f - d, 0.f, 1.f);
+            float v = h * c * (1 - 0.4f * d * d / ((w + 0.5f) * (w + 0.5f)));
+            int k = wrap((int)y + j) * N + wrap((int)x + i);
+            if (v > H[k]) { H[k] = v; T[k] = tone; }
+          }
+        x += std::cos(a);
+        y += std::sin(a);
+        a += bend;
+      }
+    }
+    grassTex_ = pack(H, T, 0.42f);
+  }
+  {   // soil: crumbly earth (a tiling fbm, its finest octaves ridged), then the pebbles domed on it
+    std::vector<float> lat[5];
+    for (int o = 0; o < 5; o++) {
+      lat[o].resize((size_t)(8 << o) * (8 << o));
+      for (float& v : lat[o]) v = rn();
+    }
+    auto value = [&](int o, float u, float v) {
+      const int P = 8 << o;
+      float x = u * P, y = v * P;
+      int i = (int)x, j = (int)y;
+      float fx = x - i, fy = y - j;
+      fx = fx * fx * (3 - 2 * fx);
+      fy = fy * fy * (3 - 2 * fy);
+      const std::vector<float>& l = lat[o];
+      auto at = [&](int a, int b) { return l[(size_t)(b % P) * P + a % P]; };
+      return glm::mix(glm::mix(at(i, j), at(i + 1, j), fx), glm::mix(at(i, j + 1), at(i + 1, j + 1), fx), fy);
+    };
+    std::vector<float> H(N * N), T(N * N);
+    for (int y = 0; y < N; y++)
+      for (int x = 0; x < N; x++) {
+        float u = (x + .5f) / N, v = (y + .5f) / N, s = 0, amp = 0.5f;
+        for (int o = 0; o < 5; o++, amp *= 0.6f) {
+          float n = value(o, u, v);
+          s += amp * (o >= 3 ? 1 - std::abs(2 * n - 1) : n);
+        }
+        H[y * N + x] = s * 0.55f;
+        T[y * N + x] = 0.35f + 0.3f * value(1, v, u);
+      }
+    for (int p = 0; p < 1100; p++) {
+      float x = rn() * N, y = rn() * N, rx = 2.2f + 6.5f * rn() * rn(), ry = rx * (0.6f + 0.4f * rn()), a = rn() * PI, c = std::cos(a), s = std::sin(a), tone = rn(), top = 0.55f + 0.45f * rn();
+      const int R = (int)std::ceil(std::max(rx, ry)) + 1;
+      for (int j = -R; j <= R; j++)
+        for (int i = -R; i <= R; i++) {
+          float dx = (int)x + i - x, dy = (int)y + j - y, qx = (c * dx + s * dy) / rx, qy = (c * dy - s * dx) / ry, d2 = qx * qx + qy * qy;
+          if (d2 >= 1) continue;
+          int k = wrap((int)y + j) * N + wrap((int)x + i);
+          float v = top * std::sqrt(1 - d2);
+          if (v > H[k]) { H[k] = v; T[k] = tone; }
+        }
+    }
+    soilTex_ = pack(H, T, 0.42f);
+  }
 }
 
 // The night effects' textures (drawn here: no art for them), shapes and materials
@@ -3279,6 +3453,7 @@ static void writeBulletMatrix(glm::mat4& m, const Bullet& b, float L) {
 void Game::render() {
   R.begin();
   R.draw(groundMesh_, &groundMat_, glm::mat4(1), false, true);
+  if (gfxHigh_) R.draw(tuftMesh_, &tuftMat_, glm::mat4(1), false, true);
   for (int k = 0; k < 3; k++) R.drawInstanced(rockMesh_[k], &rockMat_, rockInst_[k].data(), (int)rockInst_[k].size(), gfxHigh_, true);
 
   // bunker (+ Neosteel frame from Lv2, Shrike turret from Lv3)
@@ -3332,6 +3507,11 @@ void Game::render() {
   for (const Corpse& c : corpses_) blob(c.pos, c.rotY, 1.1f, 1.4f, 0.45f * (c.flung ? 1 : std::max(0.f, 1 - c.t * 1.4f)));
   for (const UnitFig& m : marines_)
     if (m.visible) blob(m.pos, m.rotY, 0.8f, 0.8f, 0.5f);
+  for (const auto& list : rockInst_)   // the boulders settle into the ground
+    for (const Instance& r : list) {
+      const float s = 2.5f * glm::length(glm::vec3(r.m[0]));
+      blob({r.m[3].x, 0, r.m[3].z}, 0, s, s, 0.6f);
+    }
   if (!blobInst_.empty()) R.drawInstanced(blipMesh_, &blobMat_, blobInst_.data(), (int)blobInst_.size(), false, false, -1);
 
   // units out of the bunker
@@ -3599,7 +3779,8 @@ void Game::render() {
   }
   sp.ambientColor = ambCol_ * ambI_ + glm::vec3(1, 0.97f, 0.92f) * (6 * nkFlash);
   sp.ambientIntensity = 1;
-  sp.sun = {{10, 28, 8}, sunCol_, sunI_};
+  // lower than it was (10, 28, 8; 65°): longer shadows, the shapes stand out. A little stronger, so the field keeps its tone
+  sp.sun = {{14, 24, 9}, sunCol_, sunI_ * 1.12f};
   sp.fill = {fillPos_, fillCol_, fillI_};
   sp.points[0] = {{0, 2.6f, 0}, hexColor(0xffd2a0), bunkerLightI_, 15, 2};   // night glow: warm white (on the greyed grass: khaki, not lime)
   sp.points[1] = {muzzlePos_, hexColor(0xffb060), muzzleI_, 4.5f, 2};        // muzzle flash on the hull
@@ -3614,6 +3795,8 @@ void Game::render() {
   sp.night = dnLightF_;
   sp.nightDesat = 0.55f * dnLightF_;
   sp.terrainTex = terrainTex_;
+  sp.grassTex = grassTex_;
+  sp.soilTex = soilTex_;
   sp.groundHD = gfxHigh_;
   sp.wet = weather_.wet;
   sp.puddle = weather_.puddle;
@@ -3623,6 +3806,11 @@ void Game::render() {
   sp.skyZenith = skyZen_;
   sp.skyHorizon = skyHor_;
   sp.cloudDrift = glm::mod(weather_.drift, glm::vec2(480));   // (the cloud deck the puddles mirror repeats every 480)
+  for (int i = 0; i < 3; i++) {   // the grass is gone where a nuke's front has passed, and grows back as its scar fades
+    const Scar* s = i < (int)scars_.size() ? &scars_[i] : nullptr;
+    sp.grassClear[i] = s ? glm::vec3(s->p, nk::frontR(s->age) * (1 - glm::smoothstep(nk::SCAR_END - 5, nk::SCAR_END, s->age))) : glm::vec3(0, 0, -1);
+  }
+  sp.shadeDrift = glm::mod(weather_.drift + glm::vec2(1.1f, 0.45f) * gameT_, glm::vec2(480));
   sp.fogColor = fogCol_ + glm::vec3(1, 0.95f, 0.85f) * (0.9f * nkFlash) + glm::vec3(1, 0.45f, 0.15f) * (0.12f * nukeLightK() * dnFactor_);
   sp.fogNear = fogNear_;
   sp.fogFar = fogFar_;

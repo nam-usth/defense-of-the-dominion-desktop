@@ -403,11 +403,19 @@ class Game {
   bool dmgNumbersOn_ = true;    // hits and MISSes over the Zerg: Menu → Settings (stored)
 
   // scene
-  Mesh *groundMesh_ = nullptr, *rockMesh_[3] = {};
+  Mesh *groundMesh_ = nullptr, *rockMesh_[3] = {}, *tuftMesh_ = nullptr;
+  Material tuftMat_;   // the grass: one static mesh, drawn on GFX HIGH
+  void buildGrass();
+ public:
+  // Writes the ground's three maps as PNGs into dir: the web edition's copies (assets/textures); false: a file failed
+  bool dumpGround(const std::string& dir) const;
+ private:
   Material groundMat_, rockMat_;
   std::vector<Instance> rockInst_[3];   // the boulders, by shape
   const Texture* terrainTex_ = nullptr; // the ground's noise (buildTerrainTex)
+  const Texture* grassTex_ = nullptr, *soilTex_ = nullptr;   // its fine detail, HD only (buildGroundDetail)
   void buildTerrainTex();
+  void buildGroundDetail();
   Baked bunkerProc_, marineProc_[6], zerglingProc_[3], roachProc_, vikingProc_;
   std::vector<ModelPart> bunkerParts_, shrikeParts_;   // own copies: their materials are re-tinted
   const Model* bunkerModel_ = nullptr;

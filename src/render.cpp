@@ -335,6 +335,26 @@ layout(location=7) in vec3 iColor;
 uniform mat4 uView, uProj, uModel, uLightVP;
 uniform float uNormalBias;
 out vec3 vWorld; out vec3 vNormal; out vec2 vUV; out vec3 vColor; out vec4 vShadowPos;
+#ifdef TUFT
+// A vertex of the grass (one static mesh): aPos where it stands, aNormal its tuft's root (xz) and how far it
+// sways (y), aUV its tint and how far up the blade it is. The wind runs through in slow gusts, stronger in
+// the rain; the tuft takes the ground's sun and shadow at its root
+uniform float uTime, uRain;
+out vec2 vRoot;
+void main() {
+  vec2 root = aNormal.xz;
+  float gust = 0.65 + 0.35 * sin(dot(root, vec2(0.21, 0.13)) + uTime * 1.3) + 0.2 * sin(dot(root, vec2(-0.43, 0.57)) + uTime * 2.9);
+  vec3 P = aPos;
+  P.xz += vec2(0.8, 0.6) * (gust * aNormal.y * (1.0 + 1.2 * uRain));
+  vWorld = P;
+  vNormal = vec3(0.0, 1.0, 0.0);
+  vUV = aUV;
+  vColor = vec3(1.0);
+  vRoot = root;
+  vShadowPos = uLightVP * vec4(root.x, 0.03, root.y, 1.0);
+  gl_Position = uProj * uView * vec4(P, 1.0);
+}
+#else
 void main() {
   mat4 M = uModel * iModel;
   vec4 wp = M * vec4(aPos, 1.0);
@@ -346,6 +366,7 @@ void main() {
   vShadowPos = uLightVP * vec4(wp.xyz + n * uNormalBias, 1.0);
   gl_Position = uProj * uView * wp;
 }
+#endif
 )";
 
 static const char* LIT_FS = R"(#version 330 core
@@ -368,11 +389,17 @@ uniform sampler2DShadow uShadowMap; uniform float uShadowBias, uShadowTexel;
 uniform vec3 uFogColor; uniform float uFogNear, uFogFar; uniform bool uFog;
 uniform vec4 uGlPos[8], uGlColor[8]; uniform int uGlCount;   // small lights: xyz + radius · rgb + reveal
 uniform sampler2D uTerrainTex;                                  // the ground's noise (R, G two fields, BA a fine slope)
+uniform sampler2D uGrassTex, uSoilTex;                          // its fine detail: blades, pebbles (R height, G tone, BA slope)
 uniform float uNight, uNightDesat; uniform vec3 uMoonTint;      // how much of the fog is night; colour the ground loses
 uniform bool uGroundHD;                                         // GFX HIGH: the ground's fine layers (else SD)
 uniform bool uScenery, uInstAlpha;
 uniform float uWet, uPuddle, uRain, uTime, uCloud;              // the weather: the ground's wetness, its puddles, rain now, its clock, cloud cover
 uniform vec3 uSkyZen, uSkyHor; uniform vec2 uCloudDrift;        // the sky the water mirrors
+uniform vec2 uShadeDrift;                                       // the drifting cloud shadows
+#ifdef TUFT
+in vec2 vRoot;
+uniform vec3 uGrassClear[3];                                    // where the grass is gone: centre xz, radius
+#endif
 const float PI = 3.141592653589793;
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
 
@@ -404,28 +431,47 @@ float spotSeen(vec3 p) {
 //    blurs over about 1.7 units (a) and 0.4 (b).
 const mat2 ROT1 = mat2(0.825, 0.565, -0.565, 0.825), ROT2 = mat2(-0.320, 0.947, -0.947, -0.320), ROT3 = mat2(0.199, -0.980, 0.980, 0.199), ROT4 = mat2(0.545, 0.839, -0.839, 0.545);
 const mat2 ROT5 = mat2(0.454, 0.891, -0.891, 0.454);   // the puddles' read
+const mat2 ROT6 = mat2(0.921, 0.389, -0.389, 0.921), ROT7 = mat2(-0.600, 0.800, -0.800, -0.600), ROT8 = mat2(0.309, 0.951, -0.951, 0.309);   // the detail maps' reads
 const vec3 GRASS_LUSH = vec3(.184, .290, .102), GRASS_DRY = vec3(.290, .310, .133), DIRT_DARK = vec3(.290, .224, .141), DIRT_LIGHT = vec3(.431, .353, .227);
-struct Ground { vec3 alb, dry; vec3 N; float ao; float wet, water; };   // dry: alb before the rain; wet: how wet (0..1); water: standing water (a puddle)
-Ground ground(vec2 xz, float lod, float detail) {
+struct Ground { vec3 alb, dry; vec3 N; float ao; float wet, water, dirt; };   // dry: alb before the rain; wet: how wet (0..1); water: standing water (a puddle)
+Ground ground(vec2 xz, float lod, float wpp) {
+  float detail = 1.0 - smoothstep(0.011, 0.020, wpp), soft = 0.5 * (1.0 - smoothstep(0.02, 0.03, wpp));
   vec2 u1 = ROT1 * xz / 150.0 + vec2(0.89, 0.85), u2 = ROT2 * xz / 36.0, u3 = ROT3 * xz / 6.0;
   vec4 a, b, c = vec4(0.5);
   float s = 0.5;
   if (lod >= 0.0) { a = textureLod(uTerrainTex, u1, lod); b = textureLod(uTerrainTex, u2, lod); }
   else if (uGroundHD) {
-    a = texture(uTerrainTex, u1); b = texture(uTerrainTex, u2); c = texture(uTerrainTex, u3);
+    // (c and gc sit at their maps' top mip in the overview in a large window: a whole megabyte, the two dearest reads of
+    // the ground. Half a mip softer at that footprint, none at 1600x900: 2800x1575 on an RTX 3050 Ti, 64 -> 74 FPS)
+    a = texture(uTerrainTex, u1); b = texture(uTerrainTex, u2); c = texture(uTerrainTex, u3, soft);
     s = texture(uTerrainTex, ROT4 * xz / 1.3).r;
   } else { a = texture(uTerrainTex, u1, 1.0); b = texture(uTerrainTex, u2, 1.0); }
+  // the detail maps (HD): single blades and pebbles close up, and the blades read larger, as clumps
+  // from afar (each zero-mean, so the tone holds; lod >= 0 and SD stay flat)
+  vec4 gf = vec4(0.5), gc = vec4(0.5), sf = vec4(0.5);
+  if (lod < 0.0 && uGroundHD) {
+    gf = texture(uGrassTex, ROT6 * xz / 2.7);
+    gc = texture(uGrassTex, ROT7 * xz / 7.3, soft);
+    sf = texture(uSoilTex, ROT8 * xz / 3.1);
+  }
+  float blade = (gf.r - 0.5) * mix(0.3, 1.0, detail) + (gc.r - 0.5) * mix(1.0, 0.5, detail);
+  float tone = (gf.g - 0.5) * mix(0.3, 1.0, detail) + (gc.g - 0.5) * mix(0.9, 0.3, detail);
   float r = length(xz);
-  vec3 grass = mix(GRASS_LUSH, GRASS_DRY, smoothstep(0.36, 0.70, 0.6 * b.g + 0.4 * a.g + (c.g - 0.5) * 0.12))
-             * (0.8 + 0.4 * a.r) * (1.0 + 0.16 * (c.r - 0.5)) * (1.0 + mix(0.06, 0.24, detail) * (s - 0.5));
-  float dn = a.g * 0.65 + b.r * 0.35, ring = 0.85 * (1.0 - smoothstep(2.0, 4.6, r + (b.r - 0.5) * 1.6));
-  float dirt = max(smoothstep(0.632, 0.732, dn + (c.r - 0.5) * 0.05), ring);
+  vec3 grass = mix(GRASS_LUSH, GRASS_DRY, smoothstep(0.36, 0.70, 0.6 * b.g + 0.4 * a.g + (c.g - 0.5) * 0.12 + tone * 0.28))
+             * (0.8 + 0.4 * a.r) * (1.0 + 0.16 * (c.r - 0.5)) * (1.0 + mix(0.06, 0.24, detail) * (s - 0.5)) * (1.0 + 0.55 * blade);
+  // the blades fray the edges of the dirt: a soft edge far off (their mean), crisp close up
+  float dn = a.g * 0.65 + b.r * 0.35, ring = 0.85 * (1.0 - smoothstep(2.0, 4.6, r + (b.r - 0.5) * 1.6 + blade * 1.1));
+  float dirt = max(smoothstep(0.632, 0.732, dn + (c.r - 0.5) * 0.05 - blade * 0.09), ring);
   // the seam only round dirt the broad layers make (no dark specks where the fine term alone tips over)
   float seam = 0.64 * dirt * (1.0 - dirt) * smoothstep(0.15, 0.5, max(smoothstep(0.632, 0.732, dn), ring));
   Ground G;
-  vec3 soil = mix(DIRT_DARK, DIRT_LIGHT, clamp(0.5 + (b.g - 0.5) * 1.2 + (c.r - 0.5) * 1.0, 0.0, 1.0)) * (0.9 + 0.2 * a.r);
+  vec3 soil = mix(DIRT_DARK, DIRT_LIGHT, clamp(0.5 + (b.g - 0.5) * 1.2 + (c.r - 0.5) * 1.0 + (sf.g - 0.5) * 0.55, 0.0, 1.0)) * (0.9 + 0.2 * a.r) * (1.0 + 0.4 * (sf.r - 0.5));
   G.alb = mix(grass, soil, dirt) * (1.0 - seam);
   vec2 g = transpose(ROT3) * (c.ba * 2.0 - 1.0) * mix(mix(0.3, 0.45, detail), 0.75, dirt);
+  if (lod < 0.0 && uGroundHD) {   // and their relief, for the light
+    vec2 gg = transpose(ROT6) * (gf.ba * 2.0 - 1.0) * mix(0.15, 0.7, detail) + transpose(ROT7) * (gc.ba * 2.0 - 1.0) * mix(0.4, 0.25, detail);
+    g += mix(gg, transpose(ROT8) * (sf.ba * 2.0 - 1.0) * mix(0.35, 0.9, detail), dirt);
+  }
   G.N = normalize(vec3(-g.x, 1.0, -g.y));
   G.ao = mix(0.55, 1.0, smoothstep(1.4, 2.8, r));
   // the weather: water stands where the ground is low (a fourth read: the R noise on a 22-unit tile), in the
@@ -435,6 +481,7 @@ Ground ground(vec2 xz, float lod, float detail) {
   G.dry = G.alb;
   G.wet = uWet;
   G.water = 0.0;
+  G.dirt = dirt;
   if (uWet > 0.0 || uPuddle > 0.0) {
     float p = lod < 0.0 ? texture(uTerrainTex, ROT5 * xz / 21.9).r : textureLod(uTerrainTex, ROT5 * xz / 21.9, lod).r;
     float low = p * (0.55 + 0.45 * dirt), T = 1.0 - 0.36 * uPuddle;
@@ -475,6 +522,26 @@ vec2 ripples(vec2 p) {
 }
 // a surface's moonlit value at night: its brightness, moon-blue, lit by the moon (the fill light)
 vec3 nightOf(vec3 alb, vec3 N) { return dot(alb, LUMA) * uMoonTint * (0.45 + 0.55 * max(dot(N, uDirDir[1]), 0.0)); }
+
+// Cloud shadows drifting over the field: the sun dims in soft irregular patches, two reads of the noise at rotated
+// scales (one read's lattice shows as a regular pattern of bands; these have no period in common), deeper under a
+// clear sky's scattered clouds than where the overcast has already dimmed it. The drift wraps at 480, a whole
+// number of both tiles
+float cloudShade(vec2 xz) {
+  float n = 0.55 * textureLod(uTerrainTex, ROT1 * xz / 240.0 + uShadeDrift / 240.0, 1.5).r
+          + 0.45 * textureLod(uTerrainTex, ROT2 * xz / 160.0 + uShadeDrift.yx / 160.0, 1.5).g;
+  return 1.0 - mix(0.24, 0.14, uCloud) * smoothstep(0.47, 0.66, n);
+}
+// The ambient by which way a surface faces: the sky over it, the field's dim green bounce under it (the field
+// itself faces up: as before)
+vec3 hemi(vec3 N) { return uAmbient * mix(vec3(0.6, 0.65, 0.52), vec3(1.05, 1.05, 1.1), 0.5 + 0.5 * N.y); }
+// What a polished surface mirrors, for want of an environment map: the sky above, the field below, on a fresnel
+// edge that a rough surface shows less of
+vec3 envSpec(vec3 N, vec3 V, vec3 f0, float rough) {
+  vec3 R = reflect(-V, N);
+  vec3 sky = R.y >= 0.0 ? mix(uSkyHor, uSkyZen, sqrt(R.y)) : mix(uSkyHor, vec3(0.16, 0.2, 0.1) * dot(uSkyHor, LUMA), min(1.0, -3.0 * R.y));
+  return (f0 + (max(vec3(1.0 - rough), f0) - f0) * pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0)) * sky;
+}
 
 float sunShadow() {
   if (!uShadows || !uReceiveShadow) return 1.0;
@@ -518,11 +585,19 @@ vec3 specBlinn(vec3 L, vec3 V, vec3 N, vec3 f0, float shin) {
   return F_Schlick(f0, dLH) * (0.25 * (1.0 / PI) * (shin * 0.5 + 1.0) * pow(dNH, shin));
 }
 void main() {
-#ifdef TERRAIN
+#ifdef TUFT
+  // a blade takes the colour of the ground at its tuft's root: dark at the root, pale at the tip, each tuft
+  // a little different. None on bare earth, in water, or where a nuke has scorched the field
+  Ground G = ground(vRoot, 1.5, 1.0);
+  if (G.dirt > 0.3 || G.water > 0.05) discard;
+  for (int i = 0; i < 3; i++) if (distance(vRoot, uGrassClear[i].xy) < uGrassClear[i].z) discard;
+  G.alb *= mix(0.62, 1.32, vUV.y) * vUV.x;
+  vec4 diffuse = vec4(mix(G.alb, vec3(dot(G.alb, LUMA)), uNightDesat), 1.0);
+#elif defined(TERRAIN)
   // the close-up detail by the pixel's footprint: crisp grass close up, calm where a pixel spans more of
   // the fine layer (no hatching); the footprint along the screen's axes, the same at any yaw
   float wpp = max(length(dFdx(vWorld.xz)), length(dFdy(vWorld.xz)));
-  Ground G = ground(vWorld.xz, -1.0, 1.0 - smoothstep(0.011, 0.020, wpp));
+  Ground G = ground(vWorld.xz, -1.0, wpp);
   vec4 diffuse = vec4(mix(G.alb, vec3(dot(G.alb, LUMA)), uNightDesat), 1.0);   // at night it greys out
 #else
   vec4 diffuse = uInstAlpha ? vec4(uColor, uOpacity * vColor.r) : vec4(uColor * vColor, uOpacity);
@@ -559,6 +634,19 @@ void main() {
       mapN.xy *= uNormalScale;
       N = perturbNormal(vWorld, N, mapN, faceDir);
     }
+#ifndef TERRAIN
+    if (uScenery && uGroundHD) {   // stone (the ground's maps, projected on three axes): mottled, grainy, faintly banded, a chipped surface,
+      vec3 w = N * N; w *= w; w /= w.x + w.y + w.z;   // lichen on the faces turned up, and darker at its foot where the earth is damp
+      vec2 u1 = vWorld.zy, u2 = vWorld.xz, u3 = vWorld.xy;
+      vec4 t = texture(uTerrainTex, u1 / 2.3) * w.x + texture(uTerrainTex, u2 / 2.3) * w.y + texture(uTerrainTex, u3 / 2.3) * w.z;
+      vec4 f1 = texture(uSoilTex, u1 / 1.4), f2 = texture(uSoilTex, u2 / 1.4), f3 = texture(uSoilTex, u3 / 1.4);
+      float grain = f1.r * w.x + f2.r * w.y + f3.r * w.z;
+      vec3 stone = diffuse.rgb * (0.62 + 0.76 * t.r) * (1.0 + 0.55 * (grain - 0.5)) * (1.0 + 0.09 * sin(vWorld.y * 17.0 + t.g * 6.0));
+      float m = smoothstep(0.62, 0.92, N.y + (t.g - 0.5) * 1.3) * 0.6;
+      diffuse.rgb = mix(stone, GRASS_DRY * (0.55 + 0.7 * t.r), m) * mix(0.55, 1.0, smoothstep(0.0, 0.32, vWorld.y));
+      N = normalize(N - 0.7 * ((vec3(0.0, f1.a, f1.b) - vec3(0.0, 0.5, 0.5)) * w.x + (vec3(f2.b, 0.0, f2.a) - vec3(0.5, 0.0, 0.5)) * w.y + (vec3(f3.b, f3.a, 0.0) - vec3(0.5, 0.5, 0.0)) * w.z));
+    }
+#endif
     vec3 V = normalize(uCamPos - vWorld);
     float sh = sunShadow();
     vec3 dif = diffuse.rgb, f0 = uSpecular;
@@ -569,10 +657,12 @@ void main() {
       rough = clamp(max(uRoughness, 0.0525), 0.0, 1.0);
     }
     vec3 direct = vec3(0.0), spec = vec3(0.0);
+    float cs = uGroundHD ? cloudShade(vWorld.xz) : 1.0;
     for (int i = 0; i < 8; i++) {   // 2 directional, 5 point, 1 spot
       vec3 L, col;
       if (i < 2) {
         L = uDirDir[i]; col = uDirColor[i];
+        if (i == 0) col *= cs;
         if (i == 0 && uType != 1) col *= sh;
       } else if (i < 7) {
         int k = i - 2;
@@ -622,7 +712,8 @@ void main() {
     }
     outC += min(spec, vec3(1.5));   // a glint off the water mirrors its light: past 1, it blooms a little
 #else
-    outC = min(dif * (uAmbient + direct) + spec, vec3(1.0)) + uEmissive * (uHasEmissiveMap ? texture(uEmissiveMap, vUV).rgb : vec3(1.0));
+    if (uType == 0) spec += envSpec(N, V, f0, rough);
+    outC = min(dif * (hemi(N) + direct) + spec, vec3(1.0)) + uEmissive * (uHasEmissiveMap ? texture(uEmissiveMap, vUV).rgb : vec3(1.0));
 #endif
     Nn = N;
   }
@@ -642,7 +733,7 @@ void main() {
 #else
         vec3 dark;
         if (uScenery) dark = nightOf(1.5 * diffuse.rgb, Nn);   // paler than the field: a boulder in the dark reads as a stone, not a crouching Zerg
-        else { Ground U = ground(vWorld.xz, 2.5, 0.0); dark = nightOf(U.dry, vec3(0.0, 1.0, 0.0)) * U.ao; }
+        else { Ground U = ground(vWorld.xz, 2.5, 1.0); dark = nightOf(U.dry, vec3(0.0, 1.0, 0.0)) * U.ao; }
 #endif
         target = mix(uFogColor, dark, uNight);
       }
@@ -762,6 +853,8 @@ bool Renderer::init() {
   litProg_ = compileProgram(LIT_VS, LIT_FS, "lit");
   terrainProg_ = compileProgram(LIT_VS, LIT_FS, "terrain", "#define TERRAIN 1\n");
   if (!terrainProg_) logWarn("terrain shader unavailable: the ground is drawn plain");
+  tuftProg_ = compileProgram(LIT_VS, LIT_FS, "grass", "#define TERRAIN 1\n#define TUFT 1\n");
+  if (!tuftProg_) logWarn("grass shader unavailable: no grass");
   depthProg_ = compileProgram(DEPTH_VS, DEPTH_FS, "depth");
   partProg_ = compileProgram(PART_VS, PART_FS, "particles");
   if (!litProg_ || !depthProg_ || !partProg_) return false;
@@ -1015,23 +1108,34 @@ void Renderer::render(const SceneParams& sp) {
     glUniform3fv(U(p, "uSkyZen"), 1, glm::value_ptr(sp.skyZenith));
     glUniform3fv(U(p, "uSkyHor"), 1, glm::value_ptr(sp.skyHorizon));
     glUniform2fv(U(p, "uCloudDrift"), 1, glm::value_ptr(sp.cloudDrift));
+    glUniform2fv(U(p, "uShadeDrift"), 1, glm::value_ptr(sp.shadeDrift));
     glowUniforms(p);
     glUniform1i(U(p, "uMap"), 0);
     glUniform1i(U(p, "uEmissiveMap"), 1);
     glUniform1i(U(p, "uNormalMap"), 2);
     glUniform1i(U(p, "uShadowMap"), 3);
     glUniform1i(U(p, "uTerrainTex"), 4);
+    glUniform3fv(U(p, "uGrassClear"), 3, glm::value_ptr(sp.grassClear[0]));
+    glUniform1i(U(p, "uGrassTex"), 6);   // (unit 5: the post's depth copy)
+    glUniform1i(U(p, "uSoilTex"), 7);
   };
   if (terrainProg_) frameUniforms(terrainProg_);
+  if (tuftProg_) frameUniforms(tuftProg_);
   frameUniforms(litProg_);
   glActiveTexture(GL_TEXTURE3);
   glBindTexture(GL_TEXTURE_2D, shadowTex_);
   glActiveTexture(GL_TEXTURE4);
   glBindTexture(GL_TEXTURE_2D, sp.terrainTex ? sp.terrainTex->id : whiteTex_);
+  glActiveTexture(GL_TEXTURE6);
+  glBindTexture(GL_TEXTURE_2D, sp.grassTex ? sp.grassTex->id : whiteTex_);
+  glActiveTexture(GL_TEXTURE7);
+  glBindTexture(GL_TEXTURE_2D, sp.soilTex ? sp.soilTex->id : whiteTex_);
+  glActiveTexture(GL_TEXTURE0);
 
   GLuint cur = litProg_;   // the bound program (0: something else drew since: rebind)
   auto drawCmd = [&](const Cmd& c) {
-    const GLuint p = c.mat->type == MatType::Terrain && terrainProg_ ? terrainProg_ : litProg_;
+    const GLuint p = c.mat->type == MatType::Tuft ? tuftProg_ : c.mat->type == MatType::Terrain && terrainProg_ ? terrainProg_ : litProg_;
+    if (!p) return;   // (no grass program: no grass)
     if (p != cur) { glUseProgram(p); cur = p; }
     setMaterial(p, *c.mat, c.receive, shadows);
     glUniformMatrix4fv(U(p, "uModel"), 1, GL_FALSE, glm::value_ptr(c.model));
@@ -1118,6 +1222,15 @@ void Renderer::render(const SceneParams& sp) {
     post_.endDistort();
   }
   if (postActive_) post_.finish(sp.post, sp.vpX, sp.vpY, sp.vpW, sp.vpH, !sp.msaa);   // ends on framebuffer 0
+}
+
+bool Renderer::saveTexture(const Texture* t, const std::string& path) {
+  std::vector<uint8_t> px((size_t)t->w * t->h * 4);
+  glBindTexture(GL_TEXTURE_2D, t->id);
+  glPixelStorei(GL_PACK_ALIGNMENT, 1);
+  glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+  stbi_flip_vertically_on_write(0);
+  return stbi_write_png(path.c_str(), t->w, t->h, 4, px.data(), t->w * 4) != 0;
 }
 
 bool Renderer::saveScreenshot(const std::string& path, int w, int h) {

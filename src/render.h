@@ -62,7 +62,7 @@ struct Texture {
   static const Texture* create(int w, int h, const uint8_t* rgba, bool repeat = false, float aniso = 1);
 };
 
-enum class MatType { Standard, Lambert, Phong, Basic, Terrain };   // Terrain: the ground, drawn procedurally (LIT_FS, TERRAIN)
+enum class MatType { Standard, Lambert, Phong, Basic, Terrain, Tuft };   // Terrain: the ground, drawn procedurally (LIT_FS, TERRAIN); Tuft: its grass (TUFT)
 enum class Blend { Normal, Additive };
 
 struct Material {
@@ -142,12 +142,15 @@ struct SceneParams {
   float night = 0, nightDesat = 0;
   glm::vec3 moonTint{0.20f, 0.27f, 0.42f};
   const Texture* terrainTex = nullptr;
+  const Texture* grassTex = nullptr, *soilTex = nullptr;   // its fine detail (HD)
   bool groundHD = true;
   // the weather (weather.h): how wet the ground is, how full its puddles are, the rain on them now and
   // its clock (their rings); the sky the water mirrors (overhead, at the horizon), its cloud cover and drift
   float wet = 0, puddle = 0, rain = 0, weatherT = 0, cloud = 0;
   glm::vec3 skyZenith{0.36f, 0.5f, 0.68f}, skyHorizon{0.62f, 0.7f, 0.77f};
   glm::vec2 cloudDrift{0};
+  glm::vec2 shadeDrift{0};   // the cloud shadows on the field (wraps at 480: two tiles of the noise they read)
+  glm::vec3 grassClear[3]{};  // where the grass is gone: centre xz, radius (a nuke's scar)
 };
 
 // Soft round sprites with per-particle size / colour / alpha (the web version's
@@ -204,6 +207,7 @@ class Renderer {
   void setGpuParticles(class GpuParticles* g) { gpuParticles_ = g; }   // drawn after the CPU particles (null: none)
   // Pixel readback of the default framebuffer (screenshots for testing)
   static bool saveScreenshot(const std::string& path, int w, int h);
+  static bool saveTexture(const Texture* t, const std::string& path);   // its top mip, rows as uploaded, all four channels (--dump-ground)
   bool postActive() const { return postActive_; }   // the last frame went through the HDR post passes
 
  private:
@@ -225,6 +229,7 @@ class Renderer {
   std::vector<Custom> customs_;
   std::vector<CustomDraw> distorts_;
   std::vector<Instance> inst_;
+  GLuint tuftProg_ = 0;   // the grass: LIT_FS with TERRAIN and TUFT
   GLuint litProg_ = 0, terrainProg_ = 0, depthProg_ = 0, partProg_ = 0;   // terrainProg_: LIT_FS with TERRAIN (0: the ground falls back to Phong)
   GLuint instVbo_ = 0, shadowFbo_ = 0, shadowTex_ = 0;
   GLuint partVao_ = 0, partQuadVbo_ = 0, partInstVbo_ = 0;
