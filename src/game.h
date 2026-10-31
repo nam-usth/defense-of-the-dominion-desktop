@@ -401,6 +401,7 @@ class Game {
   std::vector<PropP> props_;    // transient visuals owned by tickers
   std::vector<FloatText> floatTexts_;
   bool dmgNumbersOn_ = true;    // hits and MISSes over the Zerg: Menu → Settings (stored)
+  bool dustOn_ = true;          // the dust and smoke the fighting kicks up: Menu → Settings (stored)
 
   // scene
   Mesh *groundMesh_ = nullptr, *rockMesh_[3] = {}, *tuftMesh_ = nullptr;

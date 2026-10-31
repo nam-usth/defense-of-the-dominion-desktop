@@ -75,7 +75,10 @@ page on the right, the same height on every tab. ↑ ↓ switch tabs; the last t
 screen, SETTINGS (beside HOW TO PLAY) opens it on the Settings tab, and M / Esc open it there too.
 
 - **Game** — save / load (one slot; the game also autosaves after every cleared wave).
-- **Settings** — quality HIGH / LOW, GPU particles, mute, music, volume, damage numbers (stored, on by default),
+- **Settings** — quality HIGH / LOW, GPU particles, battlefield dust (stored, on by default: the smoke and dust of
+  gunfire, charred Zerg, explosions and the nuke's rolling ring; off, about 5% more FPS on an Iris Xe in a big fight,
+  too little to measure on an RTX 3050 Ti; blood, flames, the mushroom cloud, rocket trails and a burning bunker's
+  smoke stay), mute, music, volume, damage numbers (stored, on by default),
   day/night cycle, weather (stored, on by default).
 - **Display** (desktop only) — windowed or fullscreen, resolution (window presets that fit the monitor, or the
   monitor's video modes), applied at once: the HUD keeps its 1600×900 layout scaled to the height (its fonts are
@@ -369,7 +372,7 @@ max HP for the run (below 0.5 it burns). Each cleared wave logs how it was resup
 - Desktop window, native OpenGL: three.js materials re-implemented in one shader (Standard / Lambert / Phong /
   Basic, SC2 team colour, DXT5nm normal maps), PCF sun shadows, radial fog, instanced enemies and particles.
 - The graphics are the same on both: the field (from the same three maps, `--dump-ground`), grass, boulders, sun, cloud
-  shadows, moonlit night, wet ground and puddles, HDR bloom and tone curve. GFX LOW turns off shadows, 4× MSAA, the grass
+  shadows, moonlit night, wet ground and puddles, the nuke, HDR bloom and tone curve. GFX LOW turns off shadows, 4× MSAA, the grass
   and the cloud shadows and draws the field in SD on both, and the web LOW also drops HiDPI rendering. The web HIGH
   caps the pixel ratio at 1.5 and gives up 4× MSAA for the session under 45 FPS; lit surfaces on Lambert materials
   there take no cloud shadow (they are lit per vertex).

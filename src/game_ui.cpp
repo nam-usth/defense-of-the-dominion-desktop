@@ -1626,17 +1626,22 @@ void Game::drawMenu() {
       section("GRAPHICS QUALITY");
       if (wideButton(dl, "##gfxhi", {bx0, y}, {90 * s, rowH}, "HIGH", WB_BLUE, true, 14, nullptr, gfxHigh_, 6, 2)) setGfx(true);
       if (wideButton(dl, "##gfxlo", {bx0 + 100 * s, y}, {90 * s, rowH}, "LOW", WB_BLUE, true, 14, nullptr, !gfxHigh_, 6, 2)) setGfx(false);
-      if (gpuFx_.ok()) {
-        bool gp = gpuFxOn_;
-        float sy = y;
+      {
+        bool gp = gpuFxOn_, du = dustOn_;
+        float sy = y, x = bx0 + 214 * s;
         y += (rowH - 18 * s) / 2;
-        if (check("##gpufx", bx0 + 214 * s, gp, "GPU PARTICLES")) setGpuFx(gp);
+        if (gpuFx_.ok()) {
+          if (check("##gpufx", x, gp, "GPU PARTICLES")) setGpuFx(gp);
+          x += checkW("GPU PARTICLES") + 14 * s;
+        }
+        if (check("##dust", x, du, "BATTLEFIELD DUST")) { dustOn_ = du; storage::set("dust", du ? "1" : "0"); }
         y = sy;
       }
       y += rowH;
       note(std::string(gfxHigh_ ? "Sun shadows, 4\xC3\x97 MSAA, 3D grass, detailed ground, cloud shadows." : "No shadows, grass or MSAA, plain ground \xE2\x80\x94 fastest.") + " [Q] switches during play.");
-      note(gpuFx_.ok() ? "GPU particles: compute shaders for denser sparks, fireballs, shockwave dust and smoke columns."
-                       : "GPU particles need OpenGL 4.3 compute shaders, which this graphics card / driver does not offer.");
+      note(std::string(gpuFx_.ok() ? "GPU particles: denser sparks, fireballs, shockwave dust and smoke columns."
+                                   : "GPU particles need OpenGL 4.3 compute shaders, which this graphics card / driver does not offer.")
+           + " Battlefield dust: smoke and dust from gunfire, charred Zerg, explosions and the nuke's ring.");
       section("SOUND");
       {
         bool m = audio::muted(), mu = audio::musicOn();

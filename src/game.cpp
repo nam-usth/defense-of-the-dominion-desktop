@@ -139,6 +139,7 @@ bool Game::init(GLFWwindow* win) {
   weatherFx_.init();   // false: no rain drawn (the ground still wets)
   weatherOn_ = storage::get("weather", "1") != "0";
   dmgNumbersOn_ = storage::get("dmgNumbers", "1") != "0";
+  dustOn_ = storage::get("dust", "1") != "0";
   applyDNLights(0);
   tutLoad();
   ach_.load();
@@ -1138,7 +1139,7 @@ void Game::updateCorpses(float dt) {
              drift.y + .8f + rnd() * .8f, drift.z + (rnd() - .5f) * .4f, .3f + rnd() * .25f, (.3f + .15f * rnd()) * (.6f + .4f * fire), .08f, .55f,
              0xffb347, 0xff2a00, -1.5f, 1.0f, 0);
       }
-      c.smokeAcc += dt * 4 * smoke * share;
+      if (dustOn_) c.smokeAcc += dt * 4 * smoke * share;
       while (c.smokeAcc >= 1) {
         c.smokeAcc--;
         emit(smoke_, c.pos.x + (rnd() - .5f) * .3f, c.pos.y + .45f, c.pos.z + (rnd() - .5f) * .3f, drift.x * .5f + (rnd() - .5f) * .3f, .5f + rnd() * .4f,
@@ -1360,6 +1361,7 @@ void Game::explosionFx(const glm::vec3& p, uint32_t col, float k) {
   emb.c0 = 0xffc060; emb.c1 = 0xff3000; emb.a0 = .8f; emb.life0 = 1; emb.life1 = 2 + k;
   emb.s0 = .1f; emb.s1 = .04f; emb.grav = 6; emb.drag = .4f;
   gpuFx_.burst(emb);
+  if (!dustOn_) return;
   // smoke is overdraw-bound (normal blending, large sprites): its count grows slower than the fire's
   B ring;   // shockwave dust skimming the ground
   ring.pos = {p.x, .15f, p.z}; ring.count = (int)(400 * k * rk); ring.shape = GpuParticles::Ring; ring.speed = 12 * k;
@@ -1410,6 +1412,7 @@ void Game::deathFx(const Enemy& e) {
   b.c0 = c0; b.c1 = c1; b.a0 = .9f; b.life0 = .5f; b.life1 = 1.f;
   b.s0 = .11f; b.s1 = .06f; b.grav = 16; b.drag = .8f; b.smoke = true;
   gpuFx_.burst(b);
+  if (!dustOn_) return;
   GpuParticles::Burst sm;
   sm.pos = e.pos + glm::vec3(0, .3f, 0); sm.count = r ? 40 : 24; sm.speed = 1.2f; sm.up = .6f; sm.radius = .3f;
   sm.c0 = r ? 0x4a3020 : 0x2a3a20; sm.c1 = 0x5a5a50; sm.a0 = .45f; sm.life0 = .8f; sm.life1 = 1.6f;
@@ -1527,7 +1530,7 @@ void Game::muzzleFlash(float x, float y, float z, float dx, float dz, uint32_t c
     float a = (rnd() - .5f) * .9f, c = std::cos(a), sn = std::sin(a), sp = 5 + rnd() * 6;
     emit(glow_, x, y, z, (dx * c - dz * sn) * sp, rnd() * 2.5f, (dz * c + dx * sn) * sp, .15f + rnd() * .15f, .09f, .03f, 1, 0xffe9a0, 0xff7a20, 9, 1.5f, 0);
   }
-  emit(smoke_, x + dx * .2f, y + .05f, z + dz * .2f, dx * .6f, .5f, dz * .6f, .5f + rnd() * .3f, .18f * k, .55f * k, .22f, 0x6a6a6a, 0x9a9a9a, -.3f, 1.2f, 1);
+  if (dustOn_) emit(smoke_, x + dx * .2f, y + .05f, z + dz * .2f, dx * .6f, .5f, dz * .6f, .5f + rnd() * .3f, .18f * k, .55f * k, .22f, 0x6a6a6a, 0x9a9a9a, -.3f, 1.2f, 1);
   muzzlePos_ = {x + dx * .3f, y + .1f, z + dz * .3f};
   muzzleI_ = std::max(muzzleI_, big ? 3.2f : 2.2f);
   // and its light on the ground: low and a little out in front of the port (the Shrike's off its roof:
@@ -3235,7 +3238,7 @@ static float puffRot(int i, int salt, float turn) {
 // by 5.4 s; only the smoke low on the stem goes grey-brown, lit by the scene (`lit`: at night
 // it goes dark). The fire is self-lit, and in the HDR target (`hdr`) its hottest parts burn
 // past 1 and bloom. (The ball of light round it is the glow cards: nukeGlowCards.)
-static void mushroomSprites(const NukeBlast& mc, float lit, bool hdr, std::vector<ParticleSystem::P>& smoke,
+static void mushroomSprites(const NukeBlast& mc, float lit, bool hdr, bool dust, std::vector<ParticleSystem::P>& smoke,
                             std::vector<ParticleSystem::P>& fire) {
   if (mc.t >= MUSH_DUR) return;   // (the blast lives on for its embers)
   const float t = mc.t, g = 1 - std::exp(-t / 0.9f);
@@ -3344,7 +3347,7 @@ static void mushroomSprites(const NukeBlast& mc, float lit, bool hdr, std::vecto
     const float rim = std::exp(-t / 2.2f), rimHeat = std::exp(-t / 1.8f), rimIn = nk::ss(0.03f, 0.15f, t);
     auto keep = [](const glm::vec3& p) { return 0.3f + 0.7f * nk::ss(1.5f, 4, std::hypot(p.x, p.z)); };   // the bunker stays readable
     const int NW = 130, NF = 96;
-    for (int k = 0; k < NW; k++) {
+    for (int k = 0; k < NW && dust; k++) {
       float h1 = puffHash(k, 30), h2 = puffHash(k, 31), h3 = puffHash(k, 32), h4 = puffHash(k, 33);
       float a = PI2 * (k + 0.5f * h1) / NW, r = Rd - (0.2f + 0.25f * Rd) * h2 * h2;
       ParticleSystem::P q{};
@@ -3693,7 +3696,7 @@ void Game::render() {
   mushSmoke_.p.clear();
   mushFire_.p.clear();
   mushGlow_.p.clear();
-  for (const NukeBlast& n : nukes_) mushroomSprites(n, 1 - 0.75f * dnLightF_, hdrLast_, mushSmoke_.p, mushFire_.p);
+  for (const NukeBlast& n : nukes_) mushroomSprites(n, 1 - 0.75f * dnLightF_, hdrLast_, dustOn_, mushSmoke_.p, mushFire_.p);
   {   // the cloud thins where it hangs between the camera and the bunker: the fight there stays readable
     glm::vec4 b = proj_ * view_ * glm::vec4(0, 1, 0, 1);
     const glm::vec2 bs = glm::vec2(b) / std::max(b.w, 1e-3f);
