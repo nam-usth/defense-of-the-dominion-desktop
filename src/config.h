@@ -4,13 +4,12 @@
 
 namespace cfg {
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────
-constexpr int   base_ammo = 30;
 constexpr int   victory_wave = 15;          // campaign: clearing this wave wins and unlocks Endless
 constexpr float airstrike_cd = 20, nuke_cd = 15;
 constexpr int   nuke_wave = 5, roach_wave = 4;
 constexpr float stim_duration = 11, stim_hp = 10, stim_hp_marauder = 20;   // SC2 Stimpack: 11 s, 10 HP per Marine, 20 per Marauder (paid by the bunker)
 constexpr int   stim_marines[4] = {6, 4, 2, 1};     // Marines in the bunker Stimpack needs: base, then per Super Stimpack tier
-constexpr float superstim_heal = 6;                 // Super Stimpack: no HP cost, repairs the bunker 6 HP/s while active
+constexpr float superstim_heal[4] = {6, 12, 20, 30};   // Super Stimpack: no HP cost, repairs the bunker this many HP/s while active, by tier
 constexpr int   metabolic_wave = 8;
 constexpr float metabolic_boost = 1.6f;             // Metabolic Boost: from wave 8 Zerglings run 60% faster
 constexpr int   webby_wave = 12;                    // the boosted Zerglings' "webby" skin
@@ -18,7 +17,7 @@ constexpr float repair_rate = 25;                   // Lv3 hull self-repair, HP/
 // Endless: every wave past the campaign's last one reinforces the bunker
 constexpr float endless_dmg = 0.05f, endless_hp = 60, endless_repair = 0.10f;
 constexpr int   endless_ammo = 2;
-// Endless armory: repeatable purchases, each 30% dearer than the last of its kind (ammo: 15%, so more
+// The armory: repeatable purchases, each 30% dearer than the last of its kind (ammo: 15%, so more
 // can be bought; each adds half a starting magazine)
 constexpr float armory_growth = 1.3f, armory_ammo_growth = 1.15f, armory_hp = 150, armory_dmg = 0.10f;
 constexpr int   armory_ammo = 15;
@@ -32,6 +31,27 @@ constexpr int ammo_costs[3][2]  = {{80, 15}, {130, 25}, {200, 40}};
 constexpr float sensor_range[4] = {0, 10.75f, 12.5f, 16};
 constexpr int sensor_costs[3][2] = {{100, 25}, {175, 50}, {275, 100}};
 }  // namespace cfg
+
+// The balance's numbers, tuned against whole games by the bot (--sim, game_sim.cpp; --sim-set changes them for a run)
+namespace bal {
+inline float baseAmmo = 45;                                    // the starting magazine
+// a wave's Zerg: Zerglings a + b·w + c·w² up to wave 20, then late more a wave; Roaches k per wave from their first
+inline float zcA = 2, zcB = 1.3f, zcC = 0.2f, zcLate = 9, rcK = 1.8f;
+inline float swarmCount = 1.25f, swarmHp = 0.5f;                // a SWARM wave's Zerglings: more of them, each weaker (and worth less)
+inline float lingHp0 = 45, lingHpW = 14, lingHpLate = 10, lingDmg0 = 8, lingDmgW = 1.6f, lingSpeedMax = 0.108f;   // (HP: lingHpLate a wave past 20)
+inline float lingMin0 = 3, lingMinW = 0.85f, lingGas0 = 0.25f, lingGasW = 0.32f;
+inline float roachHp0 = 180, roachHpW = 60, roachDmg0 = 14, roachDmgW = 2.8f, roachSpeedMax = 0.058f;
+inline float roachMin0 = 11, roachMinW = 2.4f, roachGas0 = 3, roachGasW = 0.95f;
+inline float clearM0 = 40, clearMW = 15, clearG0 = 12, clearGW = 6, nightPay = 1.25f;   // a wave cleared; by night it pays more
+inline float marineMult = 1, marauderMult = 2.2f, marauderBonus = 2, ghostMult = 1.8f, ghostBonus = 2.5f;
+inline float mgSplash = 0.8f, mgInterval = 0.7f;                // Marauder grenades: the blast's share of a hit, seconds apart (radius: MG_RADIUS)
+inline float mgSlow0 = 0.8f, mgSlow1 = 0.6f, mgSlowDur0 = 1, mgSlowDur1 = 1.5f;   // their slow: speed left, seconds; 1: with Concussive Shells
+inline float lateGrow = 1.06f;                                 // past the campaign's last wave the Zerg's HP grows by this factor a wave (upgrades add up, this multiplies)
+inline float snipeMult = 10, snipeAmmo = 0;                    // a snipe: this many Ghost rounds' damage; rounds it costs (0: free)
+// a nuke's price: the gas is flat, StarCraft II's. Minerals a + b·wave, this many times dearer for each one already this wave, times
+// Fleet logistics' factor, never under a: StarCraft II's too
+inline float nukeM0 = 100, nukeMW = 20, nukeG = 100, nukeGrow = 1.6f;
+}
 
 // ─── ASSET PATHS ─────────────────────────────────────────────────────────────
 // The same SC2 models and textures as the web version (assets/models). A model

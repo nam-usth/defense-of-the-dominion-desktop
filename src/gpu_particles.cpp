@@ -74,11 +74,11 @@ static const char* UPDATE_CS = R"(#version 430
 layout(local_size_x = 256) in;
 %COMMON%
 layout(std430, binding = 0) buffer Parts { P parts[]; };
-uniform uint uCap;
+uniform uint uCap, uBase, uCount;   // the ring's live part: uCount particles from uBase
 uniform float uDt;
 void main() {
-  uint i = gl_GlobalInvocationID.x;
-  if (i >= uCap) return;
+  if (gl_GlobalInvocationID.x >= uCount) return;
+  uint i = (uBase + gl_GlobalInvocationID.x) % uCap;
   P p = parts[i];
   if (p.pos.w <= 0.0) return;
   p.pos.w -= uDt;
@@ -251,10 +251,15 @@ void GpuParticles::update(float dt) {
     glUseProgram(updateProg_);
     glUniform1f(glGetUniformLocation(updateProg_, "uDt"), dt);
     for (Sys* s : {&glow_, &smoke_}) {
-      if (s->history.empty() && s->head == 0) continue;   // nothing ever spawned
+      // only what may still be alive (the whole ring took 2.3 ms of an RTX 3050 Ti's frame at 2800x1575, for a few hundred sparks)
+      const uint64_t from = s->oldestLive(simT_);
+      const GLuint count = (GLuint)std::min<uint64_t>(s->head - from, (uint64_t)s->cap);
+      if (!count) continue;
       glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, s->buf);
       glUniform1ui(glGetUniformLocation(updateProg_, "uCap"), (GLuint)s->cap);
-      pDispatchCompute((GLuint)((s->cap + 255) / 256), 1, 1);
+      glUniform1ui(glGetUniformLocation(updateProg_, "uBase"), (GLuint)(from % (uint64_t)s->cap));
+      glUniform1ui(glGetUniformLocation(updateProg_, "uCount"), count);
+      pDispatchCompute((count + 255) / 256, 1, 1);
     }
     pMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   }

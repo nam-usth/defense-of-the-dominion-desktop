@@ -8,6 +8,7 @@
 // and only they bloom. The tone curve is the identity below its knee.
 #pragma once
 #include <glad/gl.h>
+#include <functional>
 #include <glm/glm.hpp>
 
 struct PostParams {
@@ -23,6 +24,7 @@ struct PostParams {
 
 class PostFx {
  public:
+  std::function<void(int)> onPhase;   // finish(): 1 the bloom begins, 2 the composite (a pass timer)
   bool init();                                     // programs; false: post off for this run
   // (Re)allocates the targets when the canvas size or the sample count changes; false: post off this frame
   bool ensure(int w, int h, bool msaa);

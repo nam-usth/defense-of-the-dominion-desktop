@@ -335,13 +335,13 @@ void Game::drawTopBar() {
     textC(dl, rx, H / 2, rk.name, r);
     rx -= gapX;
   }
-  if (dnEnabled_) {   // e.g. "☀ DAY  DUSK IN 0:42": the phase, then the countdown to the next one
-    std::string next = dayNightNext();
+  if (phase_ == Phase::Playing) {   // e.g. "☀ DAY · DRIZZLE  NEXT: ☽ NIGHT": the sky now, then the next wave's
+    std::string next = wide ? skyNext() : "";
     Txt nt = T(12, MUTED, false, 0, true);
     rx -= textW(next.c_str(), nt);
     textC(dl, rx, H / 2, next.c_str(), nt);
     rx -= 8 * s;
-    std::string lbl = dayNightLabel();
+    std::string lbl = skyNow();
     Txt d = T(12, dnFactor_ > 0.5f ? 0x8899ff : 0xffcc44, true, 1);
     rx -= textW(lbl.c_str(), d);
     textC(dl, rx, H / 2, lbl.c_str(), d);
@@ -432,7 +432,7 @@ void Game::drawConsole(float dt) {
     if (armory_[0]) b.push_back(fmt("+%d HP", armory_[0] * (int)cfg::armory_hp));
     if (armory_[1]) b.push_back(fmt("+%d%% damage", (int)std::round(armory_[1] * cfg::armory_dmg * 100)));
     if (armory_[2]) b.push_back(fmt("+%d rounds", armory_[2] * cfg::armory_ammo));
-    if (armory_[3]) b.push_back(fmt("cooldowns \xC3\x97%.2f", armoryCdMult(armory_[3])));
+    if (armory_[3]) b.push_back(fmt("cooldowns, nuke price \xC3\x97%.2f", armoryCdMult(armory_[3])));
     std::string j;
     for (size_t i = 0; i < b.size(); i++) j += (i ? ", " : "") + b[i];
     endTip += (endTip.empty() ? "" : "\n") + std::string("Armory: ") + j;
@@ -794,8 +794,8 @@ struct CmdInfo { const char *t, *k, *d; };
 static const std::map<std::string, CmdInfo> CMD_INFO = {
   {"air", {"AIRSTRIKE", "R", "A Viking fires a missile at every enemy cluster and drops an ammo crate by the bunker \xE2\x80\x94 your reload once the magazine is empty."}},
   {"stim", {"STIMPACK", "T", "Unlocked by six Marines in the bunker (fewer with Super Stimpack's tiers: 4, 2, 1). For 11 s the Marines and Marauders fire 50% faster (Marines: an extra round every other volley, no extra ammo). Costs 10 HP per Marine and 20 per Marauder, paid by the bunker \xE2\x80\x94 free and repairing with the Super Stimpack research, which also lets you right-click it for autocast: it stims whenever you fire (a gold light runs round the button)."}},
-  {"nuke", {"NUKE", "N", "Tactical nuke on the centre of the swarm after a 2-second warning. Wipes out everything in a huge radius."}},
-  {"roster", {"BUNKER ROSTER", "B", "Hire Marines, Marauders and Ghosts (6 slots) and research their upgrades. In Endless its armory sells more HP, damage, ammo and shorter strike / nuke cooldowns. The game pauses while it is open."}},
+  {"nuke", {"NUKE", "N", "Tactical nuke on the centre of the swarm after a 2-second warning. Wipes out everything in a huge radius. Its price rises with the wave and with each nuke already launched in this wave; Fleet logistics in the armory brings it down, to 100 minerals and 100 gas at the least."}},
+  {"roster", {"BUNKER ROSTER", "B", "Hire Marines, Marauders and Ghosts (6 slots) and research their upgrades. Its armory sells more HP, damage, ammo and shorter strike / nuke cooldowns, again and again. The game pauses while it is open."}},
   {"view", {"RESET VIEW", "HOME", "Back to the overview. Mouse wheel or + / \xE2\x88\x92 zooms in on the bunker; Insert / Delete rotate the view 90\xC2\xB0."}},
   {"menu", {"MENU", "M", "Save / load, graphics and sound, the controls, the tutorial, the main menu. The game pauses while it is open."}},
   {"dmg", {"WEAPON DAMAGE", "1", "Every round from every unit hits harder."}},
@@ -840,10 +840,12 @@ void Game::drawCommandCard(float x0, float y0, float w, float h) {
   cs.push_back({"air", "R", "STRIKE", ui_icons::fleet, nullptr, airBlocked, !airBlocked, false, false, airCD_ > 0 ? airCD_ / strikeCooldown() : 0,
                 airCD_ > 0 ? std::to_string((int)std::ceil(airCD_)) : ""});
   bool nukeLocked = wave_ < cfg::nuke_wave, nukeReady = !nukeLocked && nukeCD_ == 0 && !nukeInFlight_;
+  const bool nukeAffords = minerals_ >= nukeCostM() && gas_ >= nukeCostG();
+  nukeReady = nukeReady && nukeAffords;
   cs.push_back({"nuke", "N", "NUKE", ui_icons::nuke, nullptr, !nukeReady, nukeReady, false, false,
                 nukeLocked ? 1 : nukeCD_ > 0 ? nukeCD_ / nukeCooldown() : 0,
                 nukeLocked ? "W" + std::to_string(cfg::nuke_wave) : nukeCD_ > 0 ? std::to_string((int)std::ceil(nukeCD_)) : ""});
-  bool rosterReady = mode_ == Mode::Endless && wavePhase_ != WavePhase::Combat && phase_ == Phase::Playing && armoryAffordable();
+  bool rosterReady = wavePhase_ != WavePhase::Combat && phase_ == Phase::Playing && armoryAffordable();
   cs.push_back({"roster", "B", "ROSTER", nullptr, "roster", false, rosterReady, false, false, 0, ""});
   cs.push_back({"view", "HOME", "VIEW", ui_icons::detector, nullptr, false, false, false, false, 0, ""});
   cs.push_back({"menu", "M", "MENU", nullptr, "menu", false, false, false, false, 0, ""});
@@ -1042,8 +1044,9 @@ void Game::drawTooltip() {
   if (shown == "nuke") {
     if (wave_ < cfg::nuke_wave) warn = fmt("Unlocks at wave %d", cfg::nuke_wave);
     else if (nukeInFlight_) warn = "Launch in progress";
-    else if (nukeCD_ > 0) warn = fmt("Recharging \xE2\x80\x94 %d s", (int)std::ceil(nukeCD_));
-    else { warn = "READY"; ok = true; }
+    else if (nukeCD_ > 0) warn = fmt("Recharging \xE2\x80\x94 %d s \xC2\xB7 next: \xE2\x97\x86%d \xE2\x96\xB2%d", (int)std::ceil(nukeCD_), nukeCostM(), nukeCostG());
+    else if (minerals_ < nukeCostM() || gas_ < nukeCostG()) warn = fmt("Needs \xE2\x97\x86%d \xE2\x96\xB2%d", nukeCostM(), nukeCostG());
+    else { warn = fmt("READY \xE2\x80\x94 \xE2\x97\x86%d \xE2\x96\xB2%d", nukeCostM(), nukeCostG()); ok = true; }
   }
   // measure
   Txt tt = T(16, 0xe6f3ff, true, 1.5f), dt2 = T(13, 0xb9cfe6), ft = T(13, 0x8fe0a8, true), wt = T(12, ok ? OK : WARN, true, 0.5f);
@@ -1229,7 +1232,7 @@ void Game::drawRoster() {
         tag = cd > 0 ? fmt("SNIPE %ds", (int)std::ceil(cd)) : "SNIPE RDY";
         tagCol = cd > 0 ? 0xd6b0ff : 0xe08aff;
       }
-      if (u == Unit::Marauder && concussiveUnlocked_) { tag = "SLOW" + (concussiveLvl_ > 0 ? fmt(" A%d", concussiveLvl_) : ""); tagCol = 0xffbd8a; }
+      if (u == Unit::Marauder && concussiveUnlocked_) { tag = fmt("BLAST %.1f", (double)MG_RADIUS[concussiveLvl_]); tagCol = 0xffbd8a; }
       if (u == Unit::Ghost) ghostOrd++;
       Txt lt = T(14, tc, true, 0.5f), st = TA(9, tag.empty() ? alpha(rgb(tc), 0.75f) : rgb(tagCol), true, 1);
       const char* sub = tag.empty() ? d.name : tag.c_str();
@@ -1303,17 +1306,21 @@ void Game::drawRoster() {
     struct R { const char* key; Unit unit; const char* name; const char* icon; int cost[2]; bool unlocked; int lvl; int tiers; int tc[3][2]; const char* desc; };
     // Sensor Tower: levels 1-3 bought in turn (the first is the research), no unit needed
     const auto& sk = cfg::sensor_costs;
+    // the speed a Zerg keeps, in words that cannot be read as the speed it loses
+    const int slowKeep0 = (int)std::lround(bal::mgSlow0 * 100), slowKeep1 = (int)std::lround(bal::mgSlow1 * 100);
+    const std::string concDesc = fmt("Zerg caught in a blast run at %d%% speed for %g s (now %d%% for %g s). Its tiers then widen the blast.", slowKeep1, (double)bal::mgSlowDur1, slowKeep0, (double)bal::mgSlowDur0);
     R rs[4] = {
       {"superstim", Unit::Marine, "Super Stimpack", ui_icons::superstim, {250, 150}, superStimUnlocked_, superStimLvl_, 3, {{200, 80}, {320, 130}, {500, 200}},
-       "Stimpack costs no HP and repairs the bunker while it lasts. Its tiers cut the Marines it needs: 6 \xE2\x86\x92 4 \xE2\x86\x92 2 \xE2\x86\x92 1 (or a Marauder)"},
-      {"concussive", Unit::Marauder, "Concussive Shell", ui_icons::concussive, {300, 75}, concussiveUnlocked_, concussiveLvl_, 3, {{250, 80}, {400, 130}, {600, 200}}, "Marauder blasts slow harder: to 40% speed (from 70%) for 2.5s (from 1.5s)"},
-      {"snipe", Unit::Ghost, "Snipe", ui_icons::snipe, {250, 100}, snipeUnlocked_, snipeLvl_, 3, {{200, 80}, {320, 130}, {500, 200}}, "Ghost auto-snipes highest-threat enemy (8s CD)"},
+       "Free, and repairs the bunker. Each tier needs fewer Marines (6 \xE2\x86\x92 4 \xE2\x86\x92 2 \xE2\x86\x92 1) and repairs more (6 \xE2\x86\x92 12 \xE2\x86\x92 20 \xE2\x86\x92 30 HP/s)"},
+      {"concussive", Unit::Marauder, "Concussive Shells", ui_icons::concussive, {300, 75}, concussiveUnlocked_, concussiveLvl_, 3, {{250, 80}, {400, 130}, {600, 200}}, concDesc.c_str()},
+      {"snipe", Unit::Ghost, "Snipe", ui_icons::snipe, {250, 100}, snipeUnlocked_, snipeLvl_, 3, {{200, 80}, {320, 130}, {500, 200}}, "Ghost auto-snipes the most dangerous Zerg in sight: a heavy round (8s CD)"},
       {"sensor", Unit::Marine, "Sensor Tower", nullptr, {sk[0][0], sk[0][1]}, sensorLvl_ >= 1, sensorLvl_, 3, {{sk[0][0], sk[0][1]}, {sk[1][0], sk[1][1]}, {sk[2][0], sk[2][1]}},
        "At night, Zerg in the dark within range show as red ! blips (not which kind). Range 10.75 / 12.5 / 16; the lit area reaches about 9."},
     };
     float cw = (iw - 8 * s) / 2;
     float rowY = y, rowH = 0;
-    for (int k = 0; k < 4; k++) {
+    const int researchRows = theatre_ == Theatre::DayNight ? 4 : 3;   // (by day there are no blips to see)
+    for (int k = 0; k < researchRows; k++) {
       R& r = rs[k];
       bool sensor = !strcmp(r.key, "sensor");
       float x = x0 + (k % 2) * (cw + 8 * s);
@@ -1323,8 +1330,8 @@ void Game::drawRoster() {
       std::string status = r.desc;
       if (r.unlocked) {
         if (!strcmp(r.key, "snipe")) status = fmt("CD: %.1fs | tier %d/3", (double)(r.lvl == 0 ? 8 : r.lvl == 1 ? 6 : r.lvl == 2 ? 4 : 2.5), r.lvl);
-        if (!strcmp(r.key, "concussive")) status = fmt("Slow 40%% for 2.5s | blast radius %.1f | tier %d/3", (double)MG_RADIUS[r.lvl], r.lvl);
-        if (!strcmp(r.key, "superstim")) status = fmt("Stim: no HP cost, +%d HP/s to the bunker | needs %s | tier %d/3", (int)cfg::superstim_heal,
+        if (!strcmp(r.key, "concussive")) status = fmt("Zerg caught in a blast run at %d%% speed for %g s. Blast radius %.1f | tier %d/3", slowKeep1, (double)bal::mgSlowDur1, (double)MG_RADIUS[r.lvl], r.lvl);
+        if (!strcmp(r.key, "superstim")) status = fmt("Stim: no HP cost, +%d HP/s to the bunker | needs %s | tier %d/3", (int)cfg::superstim_heal[r.lvl],
                                                      r.lvl >= 3 ? "a Marine or a Marauder" : fmt("%d Marines", cfg::stim_marines[r.lvl]).c_str(), r.lvl);
         if (sensor) status = fmt("Blips out to %g | tier %d/3", (double)cfg::sensor_range[r.lvl], r.lvl);
       }
@@ -1339,7 +1346,9 @@ void Game::drawRoster() {
       } else if (r.lvl < r.tiers) {
         int m = r.tc[r.lvl][0], g = r.tc[r.lvl][1];
         bool afford = minerals_ >= m && gas_ >= g;
-        lbl = !afford ? fmt("LV.%d: ", r.lvl + 1) + resText(m, g) + " \xE2\x80\x94 NEED " + shortText(m, g, minerals_, gas_) : fmt("UPGRADE LV.%d  ", r.lvl + 1) + resText(m, g);
+        const bool conc = !strcmp(r.key, "concussive");   // (its button says what the tier buys)
+        lbl = !afford ? (conc ? mgRadiusStep(r.lvl) + ": " : fmt("LV.%d: ", r.lvl + 1)) + resText(m, g) + " \xE2\x80\x94 NEED " + shortText(m, g, minerals_, gas_)
+                      : (conc ? "BLAST RADIUS " + mgRadiusStep(r.lvl) + "  " : fmt("UPGRADE LV.%d  ", r.lvl + 1)) + resText(m, g);
         dis = !afford;
         tier = r.lvl;
       } else { lbl = "\xE2\x98\x85 MAXED"; dis = true; }
@@ -1373,12 +1382,12 @@ void Game::drawRoster() {
     }
     y = rowY + rowH + 8 * s;
   }
-  // Endless armory
-  if (mode_ == Mode::Endless) {
+  // the armory
+  {
     y += 6 * s - 8 * s;
     Txt ah = T(13, GOLD, true, 2.5f);
-    text(dl, {x0, y}, "ENDLESS ARMORY", ah);
-    text(dl, {x0 + textW("ENDLESS ARMORY", ah) + 8 * s, y + 2 * s}, "spend the surplus \xE2\x80\x94 each purchase costs 30% more (ammo 15%)", T(11, DIM, true, 0.5f));
+    text(dl, {x0, y}, "ARMORY", ah);
+    text(dl, {x0 + textW("ARMORY", ah) + 8 * s, y + 2 * s}, "spend the surplus \xE2\x80\x94 each purchase costs 30% more (ammo 15%)", T(11, DIM, true, 0.5f));
     y += 21 * s;
     static const char* NAMES[4] = {"Hull plating", "Weapon tuning", "Magazine", "Fleet logistics"};
     const char* ICONS[4] = {ui_icons::neosteel, ui_icons::weapons3, ui_icons::enhanced, ui_icons::fleet};
@@ -1399,9 +1408,9 @@ void Game::drawRoster() {
       float tx = ia.x + 41 * s;
       text(dl, {tx, y + 7 * s}, (std::string(NAMES[k]) + (n ? fmt(" \xC3\x97%d", n) : "")).c_str(), T(14, GOLD, true, 1));
       std::string fx = k == 0 ? fmt("+%d max HP", (int)cfg::armory_hp) : k == 1 ? fmt("+%d%% damage", (int)std::round(cfg::armory_dmg * 100))
-                     : k == 2 ? fmt("+%d rounds", cfg::armory_ammo) : fmt("strike & nuke cooldowns \xE2\x88\x92%d%%", (int)std::round((1 - cfg::armory_cd) * 100));
+                     : k == 2 ? fmt("+%d rounds", cfg::armory_ammo) : fmt("cooldowns, nuke price \xE2\x88\x92%d%%", (int)std::round((1 - cfg::armory_cd) * 100));
       std::string tot = k == 0 ? fmt("+%d HP", n * (int)cfg::armory_hp) : k == 1 ? fmt("+%d%% damage", (int)std::round(n * cfg::armory_dmg * 100))
-                      : k == 2 ? fmt("+%d rounds", n * cfg::armory_ammo) : fmt("cooldowns \xC3\x97%.2f", armoryCdMult(n));
+                      : k == 2 ? fmt("+%d rounds", n * cfg::armory_ammo) : fmt("\xC3\x97%.2f", armoryCdMult(n));
       dl->PushClipRect({tx, y + 7 * s + 18 * s}, {x + cw - 7 * s, y + 7 * s + 18 * s + descH}, true);
       wrapped(dl, {tx, y + 7 * s + 18 * s}, cw - 18 * s - 41 * s, (fx + (n ? "\nnow " + tot : "")).c_str(), T(12, 0xb9cfe6), 1.3f);
       dl->PopClipRect();
@@ -1680,16 +1689,6 @@ void Game::drawMenu() {
         y += 18 * s;
       }
       note("The hits and MISSes over the Zerg. Off, their HP bars still show the damage.");
-      section("EXPERIMENTAL");
-      {
-        bool dn = dnEnabled_, we = weatherOn_;
-        const char* dnLabel = "\xE2\x98\x80 / \xE2\x98\xBD DAY/NIGHT CYCLE";
-        if (check("##dn", bx0, dn, dnLabel)) toggleDayNight();
-        if (check("##weather", bx0 + checkW(dnLabel) + 24 * s, we, "WEATHER")) setWeatherOn(we);
-        y += 18 * s;
-      }
-      note("At night only the area around the bunker is visible \xE2\x80\x94 enemies appear when they come close. [Y] toggles. "
-           "Weather: clear skies, clouds and now and then rain, which leaves puddles and spoils the aim (5% of rounds miss in a drizzle, 10% in a downpour).");
       break;
     }
     case 2: {   // DISPLAY (desktop only)
@@ -1768,9 +1767,13 @@ void Game::drawMenu() {
         } else note("Running on: " + gpuRunning_ + ". The dedicated card is the faster one; the integrated one saves battery.");
       }
       section("PERFORMANCE");
-      check("##perf", bx0, perfOverlay_, "SHOW FRAME TIMES");
+      {
+        const char* resLabel = "AUTO RESOLUTION";
+        if (check("##autores", bx0, autoRes_, resLabel)) storage::set("autores", autoRes_ ? "1" : "0");
+        check("##perf", bx0 + checkW(resLabel) + 24 * s, perfOverlay_, "SHOW FRAME TIMES");
+      }
       y += 18 * s;
-      note("FPS and CPU time per frame in the top-left corner. [F3] toggles.");
+      note("Auto resolution holds 60 FPS: when the card falls behind the 3D scene drops a little sharpness (never the HUD), and takes it back when it can. Frame times: top-left corner, [F3] toggles.");
       break;
     }
     case 3: {   // CONTROLS: key → action
@@ -1779,7 +1782,7 @@ void Game::drawMenu() {
         {"R", "Airstrike + resupply \xE2\x80\x94 when out of ammo"}, {"N", "Nuke (wave 5+)"}, {"T", "Stimpack (six Marines in the bunker; fewer with Super Stimpack)"},
         {"B", "Roster: hire units, research (pauses)"}, {"1 2 3 4", "Upgrade damage \xC2\xB7 armor \xC2\xB7 bunker \xC2\xB7 ammo"},
         {"WHEEL  + \xE2\x88\x92", "Zoom in on the bunker / out"}, {"INSERT  DELETE", "Rotate the view 90\xC2\xB0 left / right"},
-        {"HOME", "Reset the view"}, {"Q \xC2\xB7 Y \xC2\xB7 K", "Graphics \xC2\xB7 day/night \xC2\xB7 sound"}, {"F3", "Frame times"},
+        {"HOME", "Reset the view"}, {"Q \xC2\xB7 K", "Graphics \xC2\xB7 sound"}, {"F3", "Frame times"},
         {"M  ESC", "This menu (pauses)"}};
       float kw = 0;
       for (auto& k : keys) kw = std::max(kw, kbdChip(nullptr, 0, 0, k[0], 11, 5));
@@ -1997,6 +2000,26 @@ void Game::drawTitle() {
   int bw, bsc;
   bool best = bestEndless(bw, bsc);
   float bh = 60 * s;
+  {   // the sky the game is fought under: two cards side by side (stored)
+    const float cw2 = (iw - 8 * s) / 2, chh = 50 * s;
+    auto card = [&](const char* id, float x, const char* label, const char* desc, Theatre t) {
+      const bool chosen = theatre_ == t;
+      ImGui::SetCursorScreenPos({x, y});
+      Btn b = button(id, {cw2, chh});
+      if (b.hovered && !chosen) glowRect(dl, b.a, b.b, rgb(0x46a0ff, 0.45f), 10 * s);
+      cutPanel(dl, b.a, b.b, 8 * s, chosen ? rgb(0x2e6fc0) : b.hovered ? rgb(0x2a5684) : rgb(0x1d3b5e), chosen ? rgb(0x18427a) : b.hovered ? rgb(0x173253) : rgb(0x10223a),
+               chosen || b.hovered ? rgb(EDGE_HI) : rgb(EDGE));
+      text(dl, {b.a.x + 12 * s, b.a.y + 7 * s}, label, T(15, chosen ? 0xffffff : 0xcfe6ff, true, 2));
+      text(dl, {b.a.x + 12 * s, b.a.y + 27 * s}, desc, T(12, chosen ? 0xd8e8fb : MUTED));
+      if (b.clicked && !chosen) {
+        theatre_ = t;
+        storage::set("theatre", t == Theatre::DayNight ? "daynight" : "daylight");
+      }
+    };
+    card("##thDay", ix0, "\xE2\x98\x80 DAYLIGHT", "Sun and rain, never dark", Theatre::Daylight);
+    card("##thNight", ix0 + cw2 + 8 * s, "\xE2\x98\xBD DAY & NIGHT", "Some waves in the dark, better paid", Theatre::DayNight);
+    y += chh + 10 * s;
+  }
   if (modeButton(dl, "##campaign", {ix0, y}, iw, "campaign", "CAMPAIGN", fmt("Clear %d waves of the swarm to win", cfg::victory_wave), false, ready)) start(Mode::Campaign);
   y += bh + 8 * s;
   std::string ed = unlocked ? (best ? fmt("Best: wave %d \xC2\xB7 score %d", bw, bsc) : "No wave limit \xE2\x80\x94 how long can you hold?") : "Locked \xE2\x80\x94 win the campaign to unlock";
@@ -2083,7 +2106,8 @@ void Game::drawHowTo() {
     {"MONEY", "Kills and cleared waves pay minerals and gas. Spend them on upgrades <kbd>1</kbd>\xE2\x80\x93<kbd>4</kbd> (damage, armor, hull, ammo) and on units in the roster <kbd>B</kbd>, which pauses the game."},
     {"UNITS", "The bunker has 6 slots. <b>Marine</b> (1 slot): fires where you click, the cheapest. <b>Ghost</b> (2): fires where you click, +150% damage to Light; researches Snipe, which fires on its own. <b>Marauder</b> (2): fires on its own at the Zerg not slowed yet, a grenade that blasts and slows an area, double damage to Armored \xE2\x80\x94 every 3 grenades cost 1 round. You choose the unit that runs out for supply crates in the roster."},
     {"POWERS", fmt("<kbd>N</kbd> nuke from wave %d. <kbd>T</kbd> Stimpack with six Marines (fewer with Super Stimpack's tiers), for Marines and Marauders. Bunker hull level 3: Shrike auto-turret and self-repair.", cfg::nuke_wave)},
-    {"ZERG", fmt("Zerglings: fast, Light, bite the hull. Roaches from wave %d: Armored, spit acid from range. From wave %d the Zerglings run faster.", cfg::roach_wave, cfg::metabolic_wave)},
+    {"ZERG", fmt("Zerglings: fast, Light, bite the hull, come in packs. Roaches from wave %d: Armored, spit acid from range. From wave %d the Zerglings run faster. Every third wave from the sixth is a <b>SWARM</b>: far more Zerglings, weaker, all at once \xE2\x80\x94 blasts and nukes earn their keep.", cfg::roach_wave, cfg::metabolic_wave)},
+    {"SKY", "Each wave has its sky; the top bar tells you the next. Choose on this screen: <b>Daylight</b>, or <b>Day &amp; Night</b>, where some waves are fought in the dark: only the ground by the bunker is lit, the Sensor Tower shows what is coming, a Viking drops a flare, and the wave pays 25% more. Rain: rounds miss, 5% in a drizzle, 10% in a downpour (grenades and snipes do not)."},
   };
   Txt topic = T(12, 0x9fd2ff, true, 2), rule = T(14, 0xc4d8ee);
   float tw = 0;
@@ -2458,10 +2482,16 @@ static const std::vector<HintDef>& hintDefs() {
     {"ghost", nullptr, {}, "", "GHOST",
      "Your Ghost fires with your volleys \xE2\x80\x94 click where it should shoot \xE2\x80\x94 with +150% damage to Light Zerg (Zerglings). Research Snipe in the roster "
      "(<kbd>B</kbd>) and it also snipes the most dangerous Zerg on its own every few seconds."},
+    {"night", nullptr, {}, "", "NIGHT",
+     "Night has fallen: only the ground by the bunker is lit, and the Zerg come out of the dark. Research the <b>Sensor Tower</b> in the roster (<kbd>B</kbd>) to see their blips further out. An airstrike's Viking drops a flare that lights the field, and a wave cleared at night pays 25% more."},
+    {"rain", nullptr, {}, "", "RAIN",
+     "It is raining: some of your rounds miss, 5% in a drizzle, 10% in a downpour. Marauder grenades and Ghost snipes still strike. The next wave's sky is in the top bar."},
+    {"swarm", nullptr, {}, "", "SWARM",
+     "A <b>SWARM</b> wave: far more Zerglings, each weaker, all at once from several sides. This is what Marauder blasts and the nuke are for."},
     {"roach", nullptr, {}, "", "ROACHES",
      "Roaches are <b>Armored</b> and spit acid from range. Marauders deal Armored enemies double damage; armor (<kbd>2</kbd>) cuts the damage the bunker takes."},
     {"nuke", nullptr, {"cmd-nuke"}, "n", "NUKE READY",
-     fmt("From wave %d, press <kbd>N</kbd> or click NUKE: a Ghost marks the middle of the swarm and the warhead wipes out everything in the blast. It recharges after each launch.", cfg::nuke_wave)},
+     fmt("From wave %d, press <kbd>N</kbd> or click NUKE: a Ghost marks the middle of the swarm and the warhead wipes out everything in the blast. It recharges after each launch, costs minerals and gas, and each one in a wave costs more than the last (Fleet logistics in the armory brings the price down).", cfg::nuke_wave)},
     {"hull", nullptr, {"hp"}, "", "BUNKER DAMAGED",
      "Below half HP the bunker burns \xE2\x80\x94 if it falls, the game is lost. Armor reduces the damage; bunker hull level 3 mounts a Shrike turret and repairs itself."},
     {"stim", nullptr, {"cmd-stim"}, "t", "STIMPACK",
@@ -2493,7 +2523,7 @@ static const std::vector<TourDef>& tourDefs() {
 // which name things a new player has not met yet
 static std::string tourText(const std::string& k) {
   if (k == "air") return "When the magazine is empty: a Viking fires a missile at every Zerg group and drops an ammo crate by the bunker.";
-  if (k == "nuke") return fmt("From wave %d (the button shows W%d until then): a nuke on the middle of the swarm wipes out everything in a huge radius. It recharges after each launch.", cfg::nuke_wave, cfg::nuke_wave);
+  if (k == "nuke") return fmt("From wave %d (the button shows W%d until then): a nuke on the middle of the swarm wipes out everything in a huge radius, for minerals and gas. It recharges after each launch.", cfg::nuke_wave, cfg::nuke_wave);
   if (k == "roster") return "Hire Marines, Marauders and Ghosts into the bunker's 6 slots and research their upgrades. Marines and Ghosts fire with each volley, Marauders on their own. The game pauses while it is open.";
   if (k == "view") return "Back to the overview. The mouse wheel zooms in on the bunker; INSERT / DELETE rotate the view.";
   if (k == "menu") return "Save and load, settings, the controls and this tutorial. The game pauses while it is open.";
@@ -2542,6 +2572,9 @@ bool Game::tutWhen(const std::string& id) {
     return false;
   }
   if (id == "roster") return wave_ >= 2 && !combat;
+  if (id == "night") return combat && dnFactor_ > 0.9f;
+  if (id == "rain") return combat && weather_.rain > 0.1f;
+  if (id == "swarm") return combat && waveSwarm_;
   if (id == "roach") { for (auto& r : roaches_) if (!r->dead) return true; return false; }
   if (id == "nuke") return wave_ >= cfg::nuke_wave && combat && nukeCD_ <= 0 && !nukeInFlight_;
   if (id == "hull") return combat && bunkerHp_ < maxHp_ * 0.5f;
@@ -2860,6 +2893,7 @@ void Game::drawPerf() {
   std::string lines[] = {
     fmt("%.0f FPS   frame %.2f ms (worst %.1f)", n / p.frame, p.frame / n * 1000, p.worst * 1000),
     fmt("CPU  update %.2f  render %.2f  UI %.2f ms", p.update / n * 1000, p.render / n * 1000, p.ui / n * 1000),
+    fmt("GPU %.1f ms   3D resolution %d%%", R.gpuTotalMs(), (int)std::lround(renderScale_ * 100)),
     fmt("workers %d   draws %d   particles %d+%d", jobs::workers(), R.drawCount(), (int)glow_.p.size(), (int)smoke_.p.size()),
     fmt("enemies %d   bullets %d   acid %d", (int)(zerglings_.size() + roaches_.size()), (int)bullets_.size(), (int)acids_.size()),
     gpuFx() ? fmt("GPU particles: up to %d live", gpuFx_.live()) : std::string(gpuFx_.ok() ? "GPU particles: off" : "GPU particles: unavailable"),
@@ -2978,7 +3012,6 @@ void Game::onKey(int key, int action, int mods) {
   if (key == GLFW_KEY_B) openRoster();
   if (key == GLFW_KEY_Q) setGfx(!gfxHigh_);
   if (key == GLFW_KEY_M) openMenu();
-  if (key == GLFW_KEY_Y) toggleDayNight();
   if (key == GLFW_KEY_ESCAPE) openMenu();
   // secret cheat sequence: d-o-t-d
   if (key >= GLFW_KEY_A && key <= GLFW_KEY_Z) {

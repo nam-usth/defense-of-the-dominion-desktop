@@ -78,8 +78,8 @@ screen, SETTINGS (beside HOW TO PLAY) opens it on the Settings tab, and M / Esc 
 - **Settings** — quality HIGH / LOW, GPU particles, battlefield dust (stored, on by default: the smoke and dust of
   gunfire, charred Zerg, explosions and the nuke's rolling ring; off, about 5% more FPS on an Iris Xe in a big fight,
   too little to measure on an RTX 3050 Ti; blood, flames, the mushroom cloud, rocket trails and a burning bunker's
-  smoke stay), mute, music, volume, damage numbers (stored, on by default),
-  day/night cycle, weather (stored, on by default).
+  smoke stay), mute, music, volume, damage numbers (stored, on by default), auto resolution (stored, on by default; see
+  Performance).
 - **Display** (desktop only) — windowed or fullscreen, resolution (window presets that fit the monitor, or the
   monitor's video modes), applied at once: the HUD keeps its 1600×900 layout scaled to the height (its fonts are
   rebuilt). The graphics card on hybrid laptops, dedicated (e.g. NVIDIA) or integrated (Intel): the driver picks it
@@ -126,13 +126,26 @@ in `achievements.txt` beside the settings. `powershell -ExecutionPolicy Bypass -
 their unit test (35 checks: every rule and its cheat gate, the toasts, storage round trips), which needs no window;
 on Linux: `cmake --build build/linux --target ach_test && build/linux/ach_test`.
 
-## Day / night and resupply
+## Theatres: a wave's sky
 
-The day/night cycle (Y, or Menu → Settings) runs day 78 s → dusk 24 s → night 54 s → dawn 24 s, eased with a
-smootherstep: the old curve jumped from full night back to day in one frame at the end of dusk. The fog radius
-shrinks geometrically (90 → 9) so the night closes in evenly, the sun turns orange on the way, enemy HP bars fade
-with the fog, and switching the cycle off lifts the night over 2.5 s, also behind the menu and title. The top bar
-shows the phase and the countdown to the next one (`☀ DAY  DUSK IN 0:42`, then `NIGHT IN`, `DAWN IN`, `DAY IN`).
+The sky is part of the game, as the night levels of Beach Head and the night and pool maps of Plants vs. Zombies:
+every wave has its own, and the title screen chooses the **theatre** of a new game (stored; a save keeps its own):
+
+- **Daylight**: never dark. Clear, overcast, drizzle and downpour waves.
+- **Day & Night** (the default): the same with some waves fought in the dark, and a wave cleared at night pays 25% more.
+
+The campaign's fifteen skies are fixed, as levels (`SKY_CAMPAIGN` in `game.cpp`):
+
+| Wave | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Daylight | clear | clear | overcast | drizzle | clear | clear | overcast | clear | downpour | clear | overcast | drizzle | downpour | clear | downpour |
+| Day & Night | clear | clear | overcast | drizzle | clear | **night** | **night** | clear | downpour | **night** | overcast | **night**, drizzle | downpour | **night** | **night**, downpour |
+
+Endless draws each wave's sky from a seed of the game's own (saved, so a loaded game has the same forecast): about half
+the waves wet or overcast and, in Day & Night, 45% of them at night. The sky turns in the break before its wave: the
+night falls or lifts over 6 s (a smootherstep), the fog radius shrinking geometrically (90 → 9) so it closes in evenly,
+the sun turning orange on the way. The top bar shows the sky now and the next wave's (`☀ DAY · DRIZZLE  NEXT: ☽ NIGHT · SWARM`).
+Records in Endless are kept per theatre. Sensor Tower research is offered only in Day & Night.
 
 The field is drawn by the shader from three tiling 512² maps built at startup: a gradient noise with its broad
 octaves domain-warped (no stripes, no straight edges), read at rotated scales of 150, 36 and 6 units, and two
@@ -199,21 +212,21 @@ up to 8 small lights, which the sprites honour too). Each Marauder picks its tar
 night: lit, or a Sensor Tower blip; none in sight: it holds its fire): the nearest one not slowed yet and outside
 the blasts already on their way (the grenades in flight), else the nearest not slowed, else the nearest outside
 them, else the nearest — so the slows spread over the swarm — and the grenade bursts on the first enemy in its
-path or on its target point: everyone else within 1.5 takes half the round's damage (double vs Armored, as the
-round), and all of them slow to 70% speed for 1.5 s. Concussive Shells slows them to 40% for 2.5 s, and its AOE
-tiers widen the blast to 2.0 / 2.6 / 3.2. The burst is a small ball of light, white-hot in a soft glow, with a few
+path or on its target point: everyone else within 2.0 takes 80% of the round's damage (double vs Armored, as the
+round), and all of them slow to 80% speed for 1 s. Concussive Shells slows them to 60% speed for 1.5 s, and its
+tiers widen the blast to 2.6 / 3.4 / 4.2 (each tier's button names the radius it buys). The burst is a small ball of light, white-hot in a soft glow, with a few
 sparks (blue for a concussive shell, else warm), over a soft glow on the ground across the blast radius that has
 no edge and dies away in half a second. Marines and Ghosts fire where you click; a hint introduces each unit the
 first time it fights, and the roster hint sums up all three.
 
 Stimpack (T) stims the Marines and the Marauders (SC2: 10 HP per Marine, 20 per Marauder, paid by the bunker;
 Marines fire an extra round every other volley, Marauders their grenades 50% sooner). It needs six Marines in the
-bunker; after the Super Stimpack research (no HP cost, repairs the bunker) its three tiers bring that down to 4, 2
-and 1 — at the last a Marine or a Marauder, so even three Marauders can stim. With Super Stimpack, right-clicking
+bunker; after the Super Stimpack research (no HP cost, repairs the bunker 6 HP/s) its three tiers bring that down to 4, 2
+and 1 — at the last a Marine or a Marauder, so even three Marauders can stim — and repair more: 12, 20 and 30 HP/s. With Super Stimpack, right-clicking
 STIM turns on autocast, as in StarCraft II: the attack that finds it ready (a volley, or a Marauder's grenade)
 stims first (quietly, the stim sound only), and two gold dashes run round the button's border while it is on
-(saved with the game; `--cheat autocast:stim` in tests). The Endless armory's Magazine adds 15 rounds (half a
-starting magazine) and grows dearer by 15% a purchase instead of 30%, so the magazine can keep growing.
+(saved with the game; `--cheat autocast:stim` in tests). The armory's Magazine adds 15 rounds and grows dearer by 15%
+a purchase instead of 30%, so the magazine can keep growing.
 
 The crate runner: click a unit in the roster to send it out for the supply crates (a gold border and a crate in
 its corner; click it again for any unit); unelected, a Marine goes, else any free unit (`--cheat runner:N` in
@@ -255,12 +268,10 @@ hull, the Zerg and the rocks it faces. The bunker blocks it (a cylinder fitted t
 
 ## Weather
 
-The sky wanders at random on game time (`src/weather.*`): clear for 80–170 s, then clouds roll in over ~18 s and
-stay 25–45 s, then a shower about half the time (40–90 s), else clear again; after a shower it mostly clears. A
-new game (and the title) starts clear and dry, the first change 45–100 s in. A shower is a **drizzle** (strength
-0.15–0.35: few fine, short, slow drops, a light wind) or a **downpour** (0.7–1: dense long streaks falling nearly
-twice as fast, a stronger wind, the day darker and the distance hazed), even odds, and every 15–30 s it may turn from one
-to the other; the strength also wavers a little as it falls. The rain has its own sound (band-limited noise and
+Each wave's sky (above) sets the weather (`src/weather.*`): clouds roll in over ~7 s in the break before it, and the rain
+comes up over ~4 s once they are in. A shower is a **drizzle** (strength 0.15–0.35: few fine, short, slow drops, a light
+wind) or a **downpour** (0.7–1: dense long streaks falling nearly twice as fast, a stronger wind, the day darker and the
+distance hazed); the strength wavers a little as it falls. The rain has its own sound (band-limited noise and
 the patter of near drops, as loud as it is heavy).
 
 - **The rain** is particles without state: each drop is a quad the vertex shader builds from its index (a hash
@@ -283,8 +294,7 @@ the patter of near drops, as loud as it is heavy).
   MISS rises. Marauder grenades still burst; Ghost snipes, Viking missiles and nukes still strike. The status line
   names the shower and its miss chance when it starts.
 
-Menu → Settings → Weather switches it off (the sky clears, the ground dries four times as fast). Cheat `rain`, in
-turn: a downpour now, a drizzle, clear. Cost (heavy scene below, 1600×900, HIGH, vsync off, a downpour over full
+Cheat `rain`, in turn: a downpour now, a drizzle, clear (until the next wave's sky comes in). Cost (heavy scene below, 1600×900, HIGH, vsync off, a downpour over full
 puddles against a clear sky; the laptop was warm, the runs noisy): about +0.3–0.45 ms a frame on the RTX 3050 Ti
 and +1 ms on the Iris Xe, all of it on the GPU (the CPU's render submit stays the same).
 
@@ -315,6 +325,39 @@ Menu → Settings → GPU particles; without OpenGL 4.3 the game keeps the CPU p
 hits spurted blood instead of sparks): idle 2.99 ms on / 2.99 off; gunfire 4.10 / 3.93 ms; gunfire + 5 airstrikes + 3 nukes 6.1 / 3.5 ms — the
 extra is pixel fill of the explosions, not simulation (CPU update stays < 0.1 ms).
 
+## The swarm and the balance
+
+A wave comes in **packs** from all sides, larger and closer together as the waves go on (about 3 + 0.7 × wave Zerglings a
+pack), Roaches in squads of two to four between them. Every third wave from the sixth is a **SWARM**: 25% more
+Zerglings at half the HP and half the pay, most of them at once from two to four sides; the forecast names it, so a nuke can be saved for
+it. Zerglings: 2 + 1.3 w + 0.2 w² up to wave 20 (wave 10: 35, wave 15: 66, the final assault × 1.25), then 9 more a
+wave. The Zerg take up room (`crowdZerg`: a 1-unit grid): they run round each other, about 16 Zerglings fit at the hull and the rest
+pile up behind, so a pack keeps its shape on the screen and a blast finds a crowd to hit.
+
+All the numbers are in `config.h`, namespace `bal`, tuned on the real game code by a bot (`--sim`, `src/game_sim.cpp`):
+whole games without drawing a frame, about a second each. It clicks 6 times a second at the nearest Zerg it can see, opens with
+Marines, turns the bunker into its plan from wave 4, spends everything as it comes in a fixed order, nukes a crowd and calls the Viking when out of
+ammo. It is no expert: it compares bunkers, it does not predict a player's score. On the old numbers a Ghost bunker reached the
+test's wave-61 limit in every game without a single nuke, and pure Marauders fell at wave 4; on these (Day & Night, 16 games each):
+
+| Plan | Wins the campaign | Falls at wave (median, range) | Most of the damage |
+|---|---|---|---|
+| 6 Marines | every game | 21 (18–21) | Marine rounds 80%, Shrike 20% |
+| 3 Marauders | every game | 34 (20–37) | grenades 92% |
+| 3 Ghosts | every game | 21 (19–24) | rounds 62%, Snipe 29% |
+| 2 Marines, a Marauder, a Ghost | every game | 39 (33–39) | grenades 45%, the rest shared |
+
+What changed, and why:
+
+- **Snipe** is a heavy round (10 Ghost rounds' damage), not a sure kill, and only at a Zerg in sight: the free instant kill carried the old Endless.
+- **Marauder**: 2.2 × a Marine's round (it was 1.2), a blast of 80% (50%) and wider, radius 2.0 to 4.2 with the tiers (1.5 to 3.2); its slow is weaker,
+  because in a crowd it kept whole packs from ever reaching the bunker.
+- **Nuke**: it costs 100 gas, flat as in StarCraft II, and 100 + 20 × wave minerals, 1.6 times more for each one already this wave. Fleet logistics in the armory brings the minerals down with the cooldowns (×0.9 a purchase, ×0.4 at most), never under StarCraft II's 100. It was free every 15 s: the bot's Endless ran on 75 nukes by wave 40.
+- **The armory is open in the campaign too**, its prices nearer three minerals to one gas: the campaign's money had nothing left to buy by wave 13 (12 000 minerals in the bank at wave 15).
+- **Gas**: kills and cleared waves now pay about one gas for three minerals, the ratio the research and the armory ask for (it was nearer five to one, which left the research waiting on gas and minerals piling up).
+- **Endless**: past wave 15 the Zerg's HP grows by 6% a wave. Upgrades add up, this multiplies, so every bunker falls in the end.
+- **The first magazine** is 45 rounds (it was 30): a pack empties a magazine faster than a trickle does.
+
 ## Graphics card
 
 The executable exports `NvOptimusEnablement` / `AmdPowerXpressRequestHighPerformance`, which hybrid-graphics
@@ -323,13 +366,28 @@ vsync off, same laptop:
 
 | | RTX 3050 Ti Laptop | Iris Xe |
 |---|---|---|
-| 1600×900 | 191 FPS (5.2 ms) | 137–220 FPS (4.5–7.3 ms) |
-| 2800×1575 | 74 FPS (13.5 ms) | 53–91 FPS (11–19 ms) |
+| 1600×900 | 235 FPS (4.3 ms) | 161 FPS (6.2 ms) |
+| 2800×1575 | 100 FPS (10 ms) | 78 FPS (12.8 ms) |
 
-The Iris Xe's range is the same build run repeatedly: its speed swings with the chip's heat. The overview; close up
-(`--zoom-in 8`) the RTX draws 161 and 70 FPS. Before the detailed ground, the 3D grass and the stone (commit eda26bf, the
-same runs): 280 and 113 FPS on the RTX, 193–210 and 76–79 FPS on the Iris Xe. Most of the new cost is the ground's
-detail at 2800×1575, which takes 6 ms on the RTX; the grass takes about 1 ms.
+(One run of each, `--auto-res off`: this laptop's speed wanders by tens of percent between runs, the Iris Xe's with the
+chip's heat, so builds are compared only in alternating runs.)
+
+## Performance
+
+`--perf` logs the frame's cost every half second, CPU and GPU per pass (timer queries that never wait on the GPU). With a few hundred Zerg the CPU
+stays under 2 ms: the GPU is the limit, and in it the ground. What came of that, each measured in alternating runs against the build before it:
+
+- **The ground's cache.** Its seven reads and arithmetic run for nearly every pixel, and the camera moves only as the player zooms or turns it. Once
+  the view has held still for two frames its dry colour and slope are kept per pixel (two 10-bit targets) and read back; the rain's part stays live. 2800×1575 on the
+  RTX: ground 4.7 → 2.8 ms, 83 → 99 FPS; Iris Xe, 1600×900: 115 → 138 FPS. Screenshots with it and without it (`--ground-cache off`, `--seed`) differ by 0.3 levels on average, by more than 8 levels on 0.04% of the pixels at most, which are moving Zerg.
+- **Particles**: the compute pass moved the whole ring (164 000) every frame for a few hundred sparks; now only its live part. 2.1 → 0.02 ms on the RTX at 2800×1575.
+- **Grass**: coloured and culled in the vertex shader, so a tuft on bare earth or deep in the dark has no triangle to shade and the pixel shader needs no discard. Iris Xe: 1.2 → 0.75 ms by day, 0.7 → 0.27 ms at night; on the RTX, 0.6 ms dearer.
+- **Night**: where the dark has taken the ground entirely its lights are skipped (the result is the same). Iris Xe at night: 250 → 330 FPS.
+- **Shadows**: the soft filter reads its four corners first, and stops if they agree (their bilinear reads cover every texel the nine would).
+- **Auto resolution** (Menu → Settings, on by default, `--auto-res off`): if the card takes over 14 ms a frame for a second, the 3D scene drops to 90%, 80%, down to 60% of the
+  resolution; well under it for five seconds, it climbs back. The HUD stays sharp, and a card with room to spare never sees it. F3 shows the card's time and the resolution.
+
+Drawing the ground last, so that what stands on it hides its dearest shader, gained nothing (4x MSAA shades it at the thin blades' edges anyway): measured and dropped.
 
 Starting on the NVIDIA card is slower (driver start-up, and a first texture upload that took 80–200 ms once
 per run); on the Intel card the first frame came after ~0.2 s.
@@ -352,16 +410,19 @@ options below; the web version was not benchmarked side by side.
 
 `--start campaign|endless` starts once assets are loaded · `--cheat CODE[@S]` (repeatable; `@S`: S seconds after
 the start; also `hire:marine|marauder|ghost` and `research:KEY[:TIER]`, paid for: `--cheat mng` first, or
-`grant:M,G`, test money that is not a cheat under `--data`) · `--key K@S` presses a key (a letter, a digit, enter, space, esc, left, right, up, down) ·
+`grant:M,G`, test money that is not a cheat under `--data`, and `armory:K` buys from the armory, K 0-3) · `--key K@S` presses a key (a letter, a digit, enter, space, esc, left, right, up, down) ·
 `--open roster|menu|cheat|menu:TAB|tour|tour:N|howto|achievements[:N]` (TAB: game, settings, display, controls, tutorial,
 achievements, cheats; N: the achievement list's category tab, 0-4) ·
-`--zoom-in N` · `--shot FILE --after S` saves a screenshot and exits · `--perf` overlay + log line ·
+`--zoom-in N` · `--shot FILE --after S` saves a screenshot and exits · `--perf` overlay + log lines ·
 `--no-vsync` · `--threads N` (0 = no workers) · `--bench-fire` fires every volley automatically (without `--data`: no achievements) · `--ui-scale S` ·
 `--gpu dedicated|integrated` (Windows) · `--platform x11|wayland` (Linux) · `--resize WxH` (after --start) ·
 `--data DIR` settings and saves in DIR (a new player; the real ones untouched) · `--no-tutorial` this run without
-the tour and hints · `--dn S` day/night on,
-S seconds into the cycle · `--weather clear|overcast|rain|drizzle|after` that weather at once, held for the run
+the tour and hints · `--theatre daylight|daynight` this run's · `--dn F` this much night (0–1), held for the run ·
+`--weather clear|overcast|rain|drizzle|after` that weather at once, held for the run
 (rain: a downpour over full puddles; after: a shower just over, full puddles under the sun) ·
+`--seed N` one random sequence, to compare runs · `--ground-cache on|off` · `--auto-res on|off` ·
+`--sim PLAN[:GAMES[:WAVECAP]]` whole games by the bot, no frames drawn (marine, marauder, ghost, mix or all; use `--data`), results in the log · `--sim-out FILE` its per-wave CSV ·
+`--sim-set A=1,B=2` the balance's numbers for this run ·
 `--dump-ground DIR` writes the ground's three maps as PNGs and exits (the web version's `assets/textures`) ·
 `--hold X,Y,S` holds the fire button at (X, Y) (fractions of the window) for S seconds
 and logs the volleys fired · `--post on|off` the HDR post-processing · `--hp F` holds the bunker at F (0–1) of its
@@ -374,7 +435,7 @@ max HP for the run (below 0.5 it burns). Each cleared wave logs how it was resup
 - The graphics are the same on both: the field (from the same three maps, `--dump-ground`), grass, boulders, sun, cloud
   shadows, moonlit night, wet ground and puddles, the nuke, HDR bloom and tone curve. GFX LOW turns off shadows, 4× MSAA, the grass
   and the cloud shadows and draws the field in SD on both, and the web LOW also drops HiDPI rendering. The web HIGH
-  caps the pixel ratio at 1.5 and gives up 4× MSAA for the session under 45 FPS; lit surfaces on Lambert materials
+  caps the pixel ratio at 1.5, and its auto resolution steps down for the session (85%, 70%, then no MSAA) under 50 FPS; lit surfaces on Lambert materials
   there take no cloud shadow (they are lit per vertex).
 - Damage numbers ride above their Zerg's HP bar as a two-row queue: a new one comes in just over the bar and
   pushes the older up, and the one pushed out fades; the web draws each where the round hit, so a burst on one

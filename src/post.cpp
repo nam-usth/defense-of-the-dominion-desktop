@@ -283,6 +283,7 @@ void PostFx::finish(const PostParams& p, int vpX, int vpY, int vpW, int vpH, boo
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, sceneFbo_);
     glBlitFramebuffer(0, 0, w_, h_, 0, 0, w_, h_, GL_COLOR_BUFFER_BIT, GL_NEAREST);
   }
+  if (onPhase) onPhase(1);
   glBindVertexArray(emptyVao_);
   glActiveTexture(GL_TEXTURE0);
   auto pass = [&](GLuint prog, const Level& dst, GLuint src, int srcW, int srcH) {
@@ -313,6 +314,7 @@ void PostFx::finish(const PostParams& p, int vpX, int vpY, int vpW, int vpH, boo
   glDisable(GL_BLEND);
 
   // composite into the default framebuffer, at the canvas (the HUD is drawn over it later)
+  if (onPhase) onPhase(2);
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   glViewport(vpX, vpY, vpW, vpH);
   glUseProgram(progComp_);

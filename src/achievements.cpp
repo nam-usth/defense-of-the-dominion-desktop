@@ -46,7 +46,7 @@ const std::vector<Def>& defs() {
     {"sensor3", "EYES IN THE DARK", "Research the Sensor Tower to level 3.", Cat::Command, 10, "svg:sensor", "", 0, false},
     {"untouchable", "UNTOUCHABLE", "Clear wave 5 or later with no Zerg damage to the bunker.", Cat::Feats, 20, "btn-upgrade-terran-buildingarmor.png", "", 0, false},
     {"last_stand", "LAST STAND", "Clear a wave with the bunker below 10% HP.", Cat::Feats, 20, "btn-upgrade-terran-neosteelframe.png", "", 0, true},
-    {"night_watch", "NIGHT WATCH", "Clear a wave at night (Menu \xE2\x86\x92 Settings \xE2\x86\x92 day/night cycle).", Cat::Feats, 10, "svg:sensor", "", 0, false},
+    {"night_watch", "NIGHT WATCH", "Clear a wave at night.", Cat::Feats, 10, "svg:sensor", "", 0, false},
     {"marines_only", "BAND OF BROTHERS", "Win the campaign without hiring a Marauder or a Ghost.", Cat::Feats, 50, "svg:roster", "", 0, false},
     {"no_support", "NO AIR SUPPORT", "Win the campaign without calling an airstrike or a nuke.", Cat::Feats, 50, "svg:lock", "", 0, false},
   };

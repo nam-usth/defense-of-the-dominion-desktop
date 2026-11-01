@@ -136,6 +136,7 @@ struct SceneParams {
   bool shadows = true, msaa = true;
   int vpX = 0, vpY = 0, vpW = 1, vpH = 1;   // framebuffer pixels, origin bottom-left
   PostParams post;                          // HDR target, bloom, tone curve (post.h)
+  float scale = 1;                          // the scene's resolution against the canvas (post only: the composite stretches it)
   // night: how much of the fog is darkness (the field fades to its moonlit value, not to the fog colour),
   // how much colour the ground and scenery lose; the ground's noise texture (TERRAIN) and its detail
   // (HD: the fine layers and a finer speckle; SD: softer, the broad layers alone)
@@ -205,12 +206,24 @@ class Renderer {
   void render(const SceneParams& sp);
   int drawCount() const { return (int)cmds_.size(); }
   void setGpuParticles(class GpuParticles* g) { gpuParticles_ = g; }   // drawn after the CPU particles (null: none)
+  void groundCache(bool on) { groundCacheOn_ = on; }                   // test: off shades the ground in full every frame
   // Pixel readback of the default framebuffer (screenshots for testing)
   static bool saveScreenshot(const std::string& path, int w, int h);
   static bool saveTexture(const Texture* t, const std::string& path);   // its top mip, rows as uploaded, all four channels (--dump-ground)
   bool postActive() const { return postActive_; }   // the last frame went through the HDR post passes
+  // GPU ms per pass, from timer queries read back a few frames late (never waits on the GPU)
+  enum GpuPass { GP_COMPUTE, GP_SHADOW, GP_GROUND, GP_GRASS, GP_OPAQUE, GP_TRANSPARENT, GP_RESOLVE, GP_BLOOM, GP_COMPOSITE, GP_COUNT };
+  const float* gpuMs() const { return gpuMs_; }
+  float gpuTotalMs() const { float t = 0; for (float m : gpuMs_) t += m; return t; }
+  void passBegin(int pass);   // (passes do not nest)
+  void passEnd();
 
  private:
+  static constexpr int GP_RING = 4;
+  GLuint gpuQ_[GP_COUNT][GP_RING] = {};
+  bool gpuQUsed_[GP_COUNT][GP_RING] = {};
+  int gpuFrame_ = 0;
+  float gpuMs_[GP_COUNT] = {};
   PostFx post_;
   bool postOk_ = false, postActive_ = false;
   struct Cmd {
@@ -237,6 +250,11 @@ class Renderer {
   class GpuParticles* gpuParticles_ = nullptr;
   void bindInstances(int first);
   void setMaterial(GLuint prog, const Material& m, bool receive, bool shadowsOn);
+  void bakeGround(const SceneParams& sp, int vw, int vh);
+  bool groundCacheOn_ = true, gcReady_ = false, gcBaked_ = false, gcFailed_ = false;
+  GLuint groundBakeProg_ = 0, gcFbo_ = 0, gcTex_[2] = {};
+  glm::mat4 gcVP_{0};
+  int gcW_ = 0, gcH_ = 0, gcTexW_ = 0, gcTexH_ = 0, gcStill_ = 0;
 };
 
 // defines: lines put after each source's #version line (a shader variant)

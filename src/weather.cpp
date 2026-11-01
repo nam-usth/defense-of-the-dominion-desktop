@@ -84,81 +84,46 @@ void main() {
 
 // ─── The sky's state ─────────────────────────────────────────────────────────
 void Weather::reset(std::mt19937& rng) {
+  const bool keepHeld = held;
   *this = Weather();
-  hold = uni(rng, 45, 100);
+  held = keepHeld;
   const float a = uni(rng, 0, 6.2832f);
   wind = glm::vec2(std::cos(a), std::sin(a)) * 1.2f;
 }
 
-void Weather::pour(bool hard, std::mt19937& rng) {
-  showerMax = hard ? uni(rng, 0.7f, 1) : uni(rng, 0.15f, 0.35f);
-  spell = uni(rng, 15, 30);
-}
-
-void Weather::set(Sky s, std::mt19937& rng, bool instant) {
+void Weather::set(Sky s, bool hard, std::mt19937& rng, bool instant) {
   sky = s;
-  afterRain = false;
-  if (s == Sky::Rain) {   // a shower: a drizzle or a downpour (even odds), its wind (harder in a downpour), how long it lasts
-    pour(uni(rng, 0, 1) < 0.5f, rng);
+  if (s == Sky::Rain) {   // a shower: how hard, and its wind (harder in a downpour)
+    showerMax = hard ? uni(rng, 0.7f, 1) : uni(rng, 0.15f, 0.35f);
     const float a = uni(rng, 0, 6.2832f);
     wind = glm::vec2(std::cos(a), std::sin(a)) * (heavy() ? uni(rng, 1.2f, 3.2f) : uni(rng, 0.3f, 1.2f));
-    hold = uni(rng, 40, 90);
-  } else hold = s == Sky::Clear ? uni(rng, 80, 170) : uni(rng, 25, 45);
+  }
   if (instant) {
     cloud = s == Sky::Clear ? 0.f : 1.f;
     rain = s == Sky::Rain ? showerMax : 0.f;
   }
 }
 
-// Clear (80-170 s) → overcast (25-45 s) → a shower about half the time (40-90 s), else clear
-// again; after a shower it stays overcast a while and mostly clears (rains again a quarter of
-// the time). Rain about a fifth of the time, in spells of a minute or so. A shower is a drizzle
-// or a downpour, and every 15-30 s it may turn from one to the other (two times in five)
-void Weather::update(float dt, std::mt19937& rng, bool on) {
+// The sky turns in the break before a wave: the clouds roll in (and out) over ~7 s; the rain starts once they are in,
+// comes up over ~4 s (a drizzle swells into a downpour as fast) and stops over ~4 s, wavering a little as it falls
+void Weather::update(float dt) {
   t += dt;
-  if (on && !held && sky == Sky::Rain && (spell -= dt) <= 0) {
-    if (uni(rng, 0, 1) < 0.4f) pour(!heavy(), rng);
-    else spell = uni(rng, 15, 30);
-  }
-  if (on && !held && (hold -= dt) <= 0) {
-    switch (sky) {
-      case Sky::Clear:
-        sky = Sky::Overcast;
-        afterRain = false;
-        hold = uni(rng, 25, 45);
-        break;
-      case Sky::Overcast:
-        if (uni(rng, 0, 1) < (afterRain ? 0.25f : 0.5f)) set(Sky::Rain, rng, false);
-        else set(Sky::Clear, rng, false);
-        break;
-      case Sky::Rain:
-        sky = Sky::Overcast;
-        afterRain = true;
-        hold = uni(rng, 20, 40);
-        break;
-    }
-  }
-  // the sky: the clouds roll in (and out) over ~18 s; the rain starts once they are in, comes up
-  // over ~6 s (a drizzle swells into a downpour as fast) and stops over ~4 s, wavering a little
-  // as it falls
-  const float cloudT = on && sky != Sky::Clear ? 1.f : 0.f;
-  cloud += std::clamp(cloudT - cloud, -dt / 18, dt / 18);
+  const float cloudT = sky != Sky::Clear ? 1.f : 0.f;
+  cloud += std::clamp(cloudT - cloud, -dt / 7, dt / 7);
   const float waver = 0.88f + 0.12f * std::sin(0.31f * (float)t) * std::sin(0.13f * (float)t + 1),
-              rainT = on && sky == Sky::Rain && cloud > 0.75f ? showerMax * waver : 0.f;
-  rain += std::clamp(rainT - rain, -dt / 4, dt / 6);
+              rainT = sky == Sky::Rain && cloud > 0.6f ? showerMax * waver : 0.f;
+  rain += std::clamp(rainT - rain, -dt / 4, dt / 4);
   drift += wind * (1.5f * dt);
   blown += wind * dt;
   fall += fallSpeed() * dt;
   // the ground: soaked after ~12 s of a downpour, the puddles full after ~45 s more; once the rain
-  // stops it dries in about a minute under the sun (two under clouds), the puddles seep away slower.
-  // Switched off, four times as fast
-  const float off = on ? 1.f : 4.f;
+  // stops it dries in about a minute under the sun (two under clouds), the puddles seep away slower
   if (rain > 0.02f) {
     wet = std::min(1.f, wet + dt * rain / 12);
     puddle = std::min(1.f, puddle + dt * rain * wet / 45);
   } else {
-    wet = std::max(0.f, wet - dt * off / (50 + 70 * cloud));
-    puddle = std::max(0.f, puddle - dt * off / (100 + 100 * cloud));
+    wet = std::max(0.f, wet - dt / (50 + 70 * cloud));
+    puddle = std::max(0.f, puddle - dt / (100 + 100 * cloud));
   }
 }
 

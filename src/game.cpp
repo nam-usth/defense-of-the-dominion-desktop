@@ -20,20 +20,27 @@ static const float PI = PI_F;
 
 // ─── Units and research ──────────────────────────────────────────────────────
 // SC2 unit attributes drive damage bonuses: Zergling is Light, Roach Armored.
-static const UnitDef UNIT_DEFS[3] = {
+static UnitDef UNIT_DEFS[3] = {
   {1, {50, 0}, 1.0f, 0xffee44, 0.65f, false, false, 1.0f, "M", "MARINE", "marine"},
   {2, {150, 25}, 1.2f, 0xff8800, 0.5f, true, false, 2.0f, "Ma", "MARAUDER", "marauder"},   // +100% vs Armored
   {2, {200, 50}, 1.4f, 0xcc44ff, 0.75f, false, true, 2.5f, "Gh", "GHOST", "ghost"},        // +150% vs Light
 };
-const UnitDef& unitDef(Unit u) { return UNIT_DEFS[(int)u]; }
+const UnitDef& unitDef(Unit u) {
+  UnitDef* d = UNIT_DEFS;   // (the balance's numbers: --sim-set may change them)
+  d[0].dmgMult = bal::marineMult;
+  d[1].dmgMult = bal::marauderMult;
+  d[1].bonusMult = bal::marauderBonus;
+  d[2].dmgMult = bal::ghostMult;
+  d[2].bonusMult = bal::ghostBonus;
+  return d[(int)u];
+}
 
 static const float SNIPE_CD[4] = {8, 6, 4, 2.5f};            // s per snipe level
-// Marauder punisher grenades (blast radius: MG_RADIUS): the rest of the blast takes MG_SPLASH of the
-// round's damage; everyone in it slows to MG_SLOW of their speed for MG_SLOW_DUR s ([1]: Concussive Shells)
-static const float MG_SPLASH = 0.5f, MG_SLOW[2] = {0.7f, 0.4f}, MG_SLOW_DUR[2] = {1.5f, 2.5f};
-// they fire on their own, a grenade every MG_INTERVAL s each (stimmed: 50% faster), at enemies within MG_REACH;
+// Marauder punisher grenades (blast radius: MG_RADIUS): the rest of the blast takes bal::mgSplash of the
+// round's damage; everyone in it slows (bal::mgSlow*, the more with Concussive Shells)
+// they fire on their own, a grenade every bal::mgInterval s each (stimmed: 50% faster), at enemies within MG_REACH;
 // every MG_PER_ROUND grenades (the Marauders' together) cost one round of ammo
-static const float MG_INTERVAL = 0.7f, MG_REACH = 14;
+static const float MG_REACH = 14;
 static const int MG_PER_ROUND = 3;
 // drawn as the Viking's missile, a little larger, with its flame and a shorter light streak (it is faster),
 // burning icy blue with Concussive Shells
@@ -48,9 +55,8 @@ namespace shrike {
 const float interval = 0.3f, range = 14, overdriveInterval = 0.12f, omega = 20, maxTurn = 14, sink = -0.05f;
 const uint32_t overdriveColor = 0xff2a1a;
 }
-// One cycle (3 min): day 78 s → dusk 24 s → night 54 s → dawn 24 s
-static const float DN_DAY = 78, DN_FADE = 24, DN_NIGHT = 54, DN_CYCLE = DN_DAY + DN_FADE + DN_NIGHT + DN_FADE;
-static const float DN_SLEW = 2.5f;   // turning the cycle on / off blends over at most this many seconds
+// The night falls or lifts over this many seconds, in the break before the wave it belongs to
+static const float DN_TURN = 6;
 static const float DN_NIGHT_FOG_NEAR = 2.5f, DN_NIGHT_FOG_FAR = 9.0f, DN_DAY_FOG_NEAR = 45, DN_DAY_FOG_FAR = 90;
 // Viking flare: burns FLARE_DUR s of game time and lifts the night to FLARE_F at full
 // strength (fog far ≈ 21.6: the whole spawn ring shows)
@@ -137,9 +143,10 @@ bool Game::init(GLFWwindow* win) {
   gpuFxOn_ = storage::get("gpuParticles", "1") != "0";
   R.setGpuParticles(gpuFx() ? &gpuFx_ : nullptr);
   weatherFx_.init();   // false: no rain drawn (the ground still wets)
-  weatherOn_ = storage::get("weather", "1") != "0";
+  theatre_ = storage::get("theatre", "daynight") == "daylight" ? Theatre::Daylight : Theatre::DayNight;
   dmgNumbersOn_ = storage::get("dmgNumbers", "1") != "0";
   dustOn_ = storage::get("dust", "1") != "0";
+  autoRes_ = storage::get("autores", "1") != "0";
   applyDNLights(0);
   tutLoad();
   ach_.load();
@@ -991,14 +998,16 @@ EnemyP Game::makeZergling(float x, float z) {
     if (k && models::isReady(k)) { skin = k; break; }
   int tier = wave_ >= 7 ? 2 : wave_ >= 4 ? 1 : 0;
   enemyLook(*e, skin, "zergling:" + std::to_string(tier), zerglingProc_[tier]);
-  e->hp = e->maxHp = 60.f + wave_ * 28;
-  e->speed = (0.014f + wave_ * 0.004f) * (boost ? cfg::metabolic_boost : 1);
-  e->dmg = 10.f + wave_ * 3;
+  // past wave 20 the swarm grows in number more than in hide: the count is the threat, and area damage its answer
+  const float swarmK = waveSwarm_ ? bal::swarmHp : 1.f;
+  e->hp = e->maxHp = (bal::lingHp0 + bal::lingHpW * std::min(wave_, 20) + bal::lingHpLate * std::max(0, wave_ - 20)) * swarmK * std::pow(bal::lateGrow, (float)std::max(0, wave_ - cfg::victory_wave));
+  e->speed = std::min(bal::lingSpeedMax, (0.014f + wave_ * 0.004f) * (boost ? cfg::metabolic_boost : 1));
+  e->dmg = bal::lingDmg0 + bal::lingDmgW * wave_;
   e->leg = rnd() * 6.28f;
   e->light = true;   // SC2: Zergling is Light
   e->rScore = 10 + wave_ * 2;
-  e->rMin = 6 + wave_ * 2;
-  e->rGas = wave_ / 2;
+  e->rMin = (bal::lingMin0 + bal::lingMinW * wave_) * swarmK;
+  e->rGas = (bal::lingGas0 + bal::lingGasW * wave_) * swarmK;
   return e;
 }
 
@@ -1012,14 +1021,14 @@ EnemyP Game::makeRoach(float x, float z) {
   enemyLook(*e, skin, "roach", roachProc_);
   e->atkT = 0;
   e->mouth = roachMouth(skin);
-  e->hp = e->maxHp = 200.f + wave_ * 70;
-  e->speed = 0.008f + wave_ * 0.002f;
-  e->dmg = 18.f + wave_ * 5;
+  e->hp = e->maxHp = (bal::roachHp0 + bal::roachHpW * wave_) * std::pow(bal::lateGrow, (float)std::max(0, wave_ - cfg::victory_wave));
+  e->speed = std::min(bal::roachSpeedMax, 0.008f + wave_ * 0.002f);
+  e->dmg = bal::roachDmg0 + bal::roachDmgW * wave_;
   e->leg = rnd() * 6.28f;
   e->armored = true;   // SC2: Roach is Armored
   e->rScore = 30 + wave_ * 5;
-  e->rMin = 18 + wave_ * 4;
-  e->rGas = 3 + wave_;
+  e->rMin = bal::roachMin0 + bal::roachMinW * wave_;
+  e->rGas = bal::roachGas0 + bal::roachGasW * wave_;
   return e;
 }
 
@@ -1074,6 +1083,7 @@ void Game::updateAcids(float dt) {
     if (rnd() < .75f)   // dripping trail
       emit(glow_, a.p.x, a.p.y, a.p.z, (rnd() - .5f) * .6f, (rnd() - .5f) * .6f, (rnd() - .5f) * .6f, .3f, .26f, .05f, .85f, 0xb8ff40, 0x2c8a10, 2, 0, 0);
     if (a.t < roach_acid::flight) { i++; continue; }
+    simHurt_[1] += a.dmg * arm;
     bunkerHp_ = std::max(0.f, bunkerHp_ - a.dmg * arm);
     waveHurt_ = true;
     for (int k = 0; k < 9; k++)   // splash + a puff of corrosive smoke
@@ -1257,6 +1267,7 @@ void Game::updateShrike(float dt) {
     float ox = cy * tip.x + sy * tip.z, oz = -sy * tip.x + cy * tip.z, oy = shrikeY_ + tip.y;
     Bullet b = makeBullet(tx, tz, 0, Unit::Marine, ox, oy, oz, aimY);
     if (od) b.color = shrike::overdriveColor;
+    b.shrike = true;
     bullets_.push_back(b);
     muzzleFlash(ox, oy, oz, b.vx / b.speed, b.vz / b.speed, od ? 0xff4020 : 0xffb030, false);
   }
@@ -1453,10 +1464,12 @@ void Game::marauderBlast(const glm::vec3& at, const EnemyP& struck, float dmg0, 
     float dx = o->pos.x - at.x, dz = o->pos.z - at.z;
     if (o != struck && dx * dx + dz * dz > R * R) continue;
     o->slowed = true;
-    o->slowUntil = gameT_ + MG_SLOW_DUR[sl];
-    o->slowFactor = MG_SLOW[sl];
+    o->slowUntil = gameT_ + (sl ? bal::mgSlowDur1 : bal::mgSlowDur0);
+    o->slowFactor = sl ? bal::mgSlow1 : bal::mgSlow0;
     if (o == struck) continue;
-    o->hp -= dmg0 * def.dmgMult * (def.bonusVsArmored && o->armored ? def.bonusMult : 1) * MG_SPLASH;
+    const float sd = dmg0 * def.dmgMult * (def.bonusVsArmored && o->armored ? def.bonusMult : 1) * bal::mgSplash;
+    o->hp -= sd;
+    simDmg_[1] += sd;
     o->flash = 0.08f;
     if (o->hp <= 0) killed.push_back(o);
   }
@@ -1742,6 +1755,7 @@ void Game::strikeAt(float tx, float tz, uint32_t col, float r) {
     float dx = e->pos.x - tx, dz = e->pos.z - tz;
     if (std::sqrt(dx * dx + dz * dz) < r) { killEnemy(e, true); n++; }
   }
+  simStrikeKills_ += n;
   if (n) ach_.multiKill(run_, "strike", airRunKills_ += n);   // the airstrike's missiles so far
 }
 
@@ -1756,6 +1770,7 @@ void Game::doAirstrike() {
   if (airCD_ > 0 || wavePhase_ != WavePhase::Combat || ammo_ > 0) { setStatus(ammo_ > 0 ? "Use when ammo is empty!" : "Not ready yet!"); return; }
   if (vikingActive_) { setStatus("Viking already inbound!"); return; }
   airCD_ = strikeCooldown();
+  simStrikes_++;
   waveAirs_++;
   run_.usedSupport = true;
   airRunKills_ = 0;   // its missiles' kills add up (AIR SUPERIORITY)
@@ -1851,8 +1866,7 @@ void Game::launchViking(std::vector<std::pair<glm::vec2, EnemyP>> targets, glm::
   // cleared by these missiles waits for it (resupply)
   awaitCrate([this]() { setStatus("Ammo restocked! Good hunting, Commander."); });
   // At night it drops a parachute flare that lights the battlefield (as in Beach Head)
-  // (checked again when it fires: Y may have switched the cycle off meanwhile)
-  if (dnEnabled_ && dnFactor_ > 0.5f) after(0.6f, [this]() { if (dnEnabled_ && dnFactor_ > 0.5f) startFlare(); });
+  if (dnFactor_ > 0.5f) after(0.6f, [this]() { if (dnFactor_ > 0.5f) startFlare(); });
   after((22 - START_X) / SPEED * 0.85f, [this, cratePos]() {
     setStatus("Crate deployed! Marine incoming...");
     deliverCrate(cratePos.x, cratePos.y);
@@ -1877,6 +1891,10 @@ void Game::doNuke(bool force) {
       return;
     }
     if (nukeInFlight_) { setStatus("Nuclear launch already in progress!"); return; }
+    const int nm = nukeCostM(), ng = nukeCostG();
+    if (minerals_ < nm || gas_ < ng) { setStatus(needText((float)nm, (float)ng)); audio::play("deny"); return; }
+    minerals_ -= nm;
+    gas_ -= ng;
     nukeCD_ = nukeCooldown();
     run_.usedSupport = true;
   }
@@ -2053,6 +2071,8 @@ void Game::doNuke(bool force) {
       f.spin = (rnd() < .5f ? -1 : 1) * (6 + 6 * rnd());
       killEnemy(e, true, false, &f);
     }
+    simNukeKills_ += killed;
+    simNukes_++;
     ach_.multiKill(run_, "nuke", killed);
     setStatus("Nuclear detonation \xE2\x80\x94 " + std::to_string(killed) + " unit" + (killed != 1 ? "s" : "") + " annihilated. Bunker intact.");
     return false;
@@ -2214,7 +2234,7 @@ void Game::marauderFireTick() {
     marauderShots_++;
     if (stimAuto_ && stimT_ <= 0) doStim(true);   // autocast: its attack stims too
     // the next one: a full interval on, nudged apart from the others so they keep a ripple
-    marauderReady_[mi] = gameT_ + MG_INTERVAL / (stimT_ > 0 ? 1.5f : 1.f) * (0.94f + 0.12f * rnd());
+    marauderReady_[mi] = gameT_ + bal::mgInterval / (stimT_ > 0 ? 1.5f : 1.f) * (0.94f + 0.12f * rnd());
     glm::vec3 p = bunkerPort(std::atan2(t.y, t.x) + (mi - (n - 1) / 2.f) * 0.2f);
     Bullet b = makeBullet(t.x, t.y, 0, Unit::Marauder, p.x, p.y, p.z, 0.15f);
     b.range = std::min(18.f, std::hypot(t.x - p.x, t.y - p.z));   // the grenade comes down on its target
@@ -2225,7 +2245,8 @@ void Game::marauderFireTick() {
   }
 }
 
-// ─── Ghost auto-snipe: threat = hp / distance ────────────────────────────────
+// ─── Ghost auto-snipe: threat = hp / distance, among the Zerg in sight ────────
+// (by night: lit, or a Sensor Tower blip). A heavy round, not a sure kill: a late Roach takes several
 void Game::ghostSnipeTick(float) {
   if (!snipeUnlocked_) return;
   int ghosts = (int)std::count(roster_.begin(), roster_.end(), Unit::Ghost);
@@ -2235,11 +2256,15 @@ void Game::ghostSnipeTick(float) {
     EnemyP target;
     float best = -1;
     for (auto& e : allEnemies()) {
-      if (e->dead) continue;
+      if (e->dead || !(e->visible || sensed(*e))) continue;
       float d = std::max(0.5f, glm::length(e->pos)), threat = (e->hp ? e->hp : 1) / d;
       if (!target || threat > best) { target = e; best = threat; }
     }
     if (!target) return;
+    if (bal::snipeAmmo > 0) {
+      if (ammo_ <= 0) return;
+      if ((snipeAmmoAcc_ += bal::snipeAmmo) >= 1) { snipeAmmoAcc_ -= 1; ammo_--; }
+    }
     snipeReady_[gi] = gameT_ + SNIPE_CD[snipeLvl_];
     // purple beam from the bunker to the target
     glm::vec3 tp = target->pos;
@@ -2260,11 +2285,18 @@ void Game::ghostSnipeTick(float) {
     m[3] = glm::vec4(tp * 0.5f, 1);
     beam->m = m;
     beams_.push_back({beam, .3f, .3f, 0, tp * 0.5f});
-    killEnemy(target, true);
-    ach_.snipe(run_);
+    const float dmg = baseDamage() * unitDef(Unit::Ghost).dmgMult * bal::snipeMult;
+    simDmg_[3] += std::min(dmg, target->hp);
+    target->hp -= dmg;
+    target->flash = 0.08f;
+    hitText(target, std::to_string((int)std::round(dmg)), 0xcc44ffu);
     spawnParts(tp, 0xcc44ff, 18);
-    setStatus(std::string("Ghost snipe \xE2\x80\x94 ") + (target->type == 'r' ? "Roach" : "Zergling") + " eliminated!");
     audio::play("snipe");
+    if (target->hp <= 0) {
+      killEnemy(target, true);
+      ach_.snipe(run_);
+      setStatus(std::string("Ghost snipe \xE2\x80\x94 ") + (target->type == 'r' ? "Roach" : "Zergling") + " eliminated!");
+    }
   }
 }
 
@@ -2343,6 +2375,8 @@ void Game::updateCamera(float dt) {
   float k = std::min(1.f, dt * 9);
   zoom_ += (zoomT_ - zoom_) * k;
   camYaw_ += (camYawT_ - camYaw_) * k;
+  if (std::abs(zoomT_ - zoom_) < 1e-4f) zoom_ = zoomT_;   // at rest (the ground's cache waits for that: Renderer::bakeGround)
+  if (std::abs(camYawT_ - camYaw_) < 1e-4f) camYaw_ = camYawT_;
   float z = zoom_ * zoom_ * (3 - 2 * zoom_);
   float dist = cam::farDist + (cam::nearDist - cam::farDist) * z;
   float elev = cam::farElev + (cam::nearElev - cam::farElev) * z;
@@ -2423,88 +2457,76 @@ void Game::applyDNLights(float f) {
   skyHor_ = lerp3(lerp3(hor, hexColor(0x222a40), f), hexColor(0x7a5060), 0.5f * dusk);
 }
 
-// Night factor at time t of the cycle: 0 through the day, eased up through dusk,
-// 1 through the night, eased down through dawn (smootherstep: no jump in the
-// level, its rate or its acceleration). The old curve snapped from full night
-// back to day at the end of dusk, then faded in again.
-static float dnCycleFactor(float t) {
-  auto ease = [](float x) { return x * x * x * (x * (x * 6 - 15) + 10); };
-  if (t < DN_DAY) return 0;
-  if (t < DN_DAY + DN_FADE) return ease((t - DN_DAY) / DN_FADE);
-  if (t < DN_DAY + DN_FADE + DN_NIGHT) return 1;
-  return 1 - ease((t - DN_DAY - DN_FADE - DN_NIGHT) / DN_FADE);
-}
-
+// The night falls or lifts in the break before its wave (smootherstep: no jump in the level, its rate or its acceleration)
 void Game::updateDayNight(float dt) {
-  if (dnEnabled_) dnTime_ = std::fmod(dnTime_ + dt, DN_CYCLE);
-  float target = dnEnabled_ ? dnCycleFactor(dnTime_) : 0;
-  // Slew-limited: the cycle itself moves slower than this, so only switching
-  // the cycle on / off is blended (the night lifts over DN_SLEW s, not at once)
-  float step = dt / DN_SLEW;
-  dnFactor_ = std::max(dnFactor_ - step, std::min(dnFactor_ + step, target));
+  if (!dnHeld_) {
+    const float step = dt / DN_TURN;
+    dnT_ = dnT_ < dnTarget_ ? std::min(dnTarget_, dnT_ + step) : std::max(dnTarget_, dnT_ - step);
+    dnFactor_ = dnT_ * dnT_ * dnT_ * (dnT_ * (dnT_ * 6 - 15) + 10);
+  }
   // the lights follow the factor lifted by a flare (re-applied also as one lights up or burns out)
   // and the weather
   applyDNLights(dnLit());
 }
-
-// Top-bar label (a night still lifting after the cycle restarted at day reads DAWN)
-std::string Game::dayNightLabel() const {
-  if (!dnEnabled_) return "";
-  std::string phase = dnFactor_ > 0.97f ? "NIGHT" : dnFactor_ < 0.03f ? "DAY" : dnTime_ >= DN_DAY && dnTime_ < DN_DAY + DN_FADE + DN_NIGHT ? "DUSK" : "DAWN";
-  return std::string(dnFactor_ > 0.5f ? "\xE2\x98\xBD " : "\xE2\x98\x80 ") + phase;
-}
-
-// Top-bar countdown to the next phase of the cycle: "DUSK IN 0:42" (day), "NIGHT IN" (dusk),
-// "DAWN IN" (night), "DAY IN" (dawn)
-std::string Game::dayNightNext() const {
-  const float ends[4] = {DN_DAY, DN_DAY + DN_FADE, DN_DAY + DN_FADE + DN_NIGHT, DN_CYCLE};
-  const char* names[4] = {"DUSK", "NIGHT", "DAWN", "DAY"};
-  int k = 0;
-  while (k < 3 && dnTime_ >= ends[k]) k++;
-  float until = ends[k] - dnTime_;
-  // the label turns NIGHT / DAY at factor 0.97 / 0.03, a moment before that phase begins:
-  // then count to the one after ("NIGHT IN 0:01" under NIGHT read wrong)
-  const char* shown = dnFactor_ > 0.97f ? "NIGHT" : dnFactor_ < 0.03f ? "DAY" : "";
-  if (!strcmp(names[k], shown)) {
-    until = k < 3 ? ends[k + 1] - dnTime_ : DN_CYCLE + ends[0] - dnTime_;
-    k = (k + 1) % 4;
-  }
-  int sec = std::max(0, (int)std::ceil(until));
-  char buf[32];
-  snprintf(buf, sizeof buf, "%s IN %d:%02d", names[k], sec / 60, sec % 60);
-  return buf;
-}
-
-void Game::toggleDayNight() {
-  dnEnabled_ = !dnEnabled_;
-  // back to day: the night lifts over DN_SLEW s (updateDayNight — run by frame()
-  // while the cycle is off even when the game is paused or over)
-  if (!dnEnabled_) dnTime_ = 0;
-  setStatus(dnEnabled_ ? "Day/Night cycle ON \xE2\x80\x94 [Y] to toggle" : "Day/Night cycle OFF");
-}
-void Game::setDayNightTime(float t) {   // test: the cycle on at t seconds, lights set at once
-  dnEnabled_ = true;
-  dnTime_ = std::fmod(std::max(0.f, t), DN_CYCLE);
-  dnFactor_ = dnCycleFactor(dnTime_);
+void Game::holdNightForRun(float f) {   // test: lights set at once, and the waves leave them
+  dnHeld_ = true;
+  dnT_ = dnTarget_ = dnFactor_ = glm::clamp(f, 0.f, 1.f);
   applyDNLights(dnLit());
 }
 
-// ─── Weather ─────────────────────────────────────────────────────────────────
-void Game::setWeatherOn(bool on) {
-  weatherOn_ = on;
-  storage::set("weather", on ? "1" : "0");
-  setStatus(on ? "Weather ON \xE2\x80\x94 clear skies, clouds, now and then rain" : "Weather OFF \xE2\x80\x94 the sky clears");
+// ─── A wave's sky ────────────────────────────────────────────────────────────
+// The campaign's fifteen waves are levels, each under its own sky (Beach Head's nights, Plants vs. Zombies' maps; our
+// pool is the rain): c clear, o overcast, d a drizzle, p a downpour by day; the capitals by night. Daylight · Day & Night
+static const char* const SKY_CAMPAIGN[2] = {"ccodccocpcodpcp", "ccodcCCcpCoDpCP"};
+WaveSky Game::waveSky(int w) const {
+  const int dn = theatre_ == Theatre::DayNight;
+  if (w >= 1 && w <= cfg::victory_wave) {
+    const char c = SKY_CAMPAIGN[dn][w - 1], l = (char)std::tolower((unsigned char)c);
+    return {c != l, l == 'o' ? 1 : l == 'd' ? 2 : l == 'p' ? 3 : 0};
+  }
+  // Endless: from the game's own seed, so a loaded game has the same forecast
+  uint32_t h = skySeed_ ^ ((uint32_t)w * 2654435761u);
+  h ^= h >> 13;
+  h *= 1274126177u;
+  h ^= h >> 16;
+  const int a = h % 100, b = (h >> 8) % 100;
+  return {dn && a < 45, b < 18 ? 3 : b < 34 ? 2 : b < 50 ? 1 : 0};
 }
+void Game::applySky(const WaveSky& s, bool instant) {
+  if (!dnHeld_) {
+    dnTarget_ = s.night ? 1.f : 0.f;
+    if (instant) dnT_ = dnFactor_ = dnTarget_;
+  }
+  if (!weather_.held) {
+    const Weather::Sky want = s.rain >= 2 ? Weather::Sky::Rain : s.rain == 1 ? Weather::Sky::Overcast : Weather::Sky::Clear;
+    if (want != weather_.sky || (want == Weather::Sky::Rain && (s.rain == 3) != weather_.heavy())) weather_.set(want, s.rain == 3, rng_, instant);
+  }
+  if (instant) applyDNLights(dnLit());
+}
+std::string Game::skyLabel(const WaveSky& s) {
+  static const char* const RAIN[4] = {"", " \xC2\xB7 OVERCAST", " \xC2\xB7 DRIZZLE", " \xC2\xB7 DOWNPOUR"};
+  return std::string(s.night ? "\xE2\x98\xBD NIGHT" : "\xE2\x98\x80 DAY") + RAIN[s.rain];
+}
+// The top bar: the sky now (DUSK and DAWN while it turns), and the next wave's
+std::string Game::skyNow() const {
+  const std::string light = dnFactor_ > 0.97f ? "\xE2\x98\xBD NIGHT" : dnFactor_ < 0.03f ? "\xE2\x98\x80 DAY" : dnTarget_ > 0.5f ? "\xE2\x98\xBD DUSK" : "\xE2\x98\x80 DAWN";
+  const bool wetSky = weather_.sky == Weather::Sky::Rain;
+  return light + (wetSky ? (weather_.heavy() ? " \xC2\xB7 DOWNPOUR" : " \xC2\xB7 DRIZZLE") : weather_.sky == Weather::Sky::Overcast ? " \xC2\xB7 OVERCAST" : "");
+}
+std::string Game::skyNext() const {
+  if (mode_ == Mode::Campaign && wave_ >= cfg::victory_wave) return "";
+  return "NEXT: " + skyLabel(waveSky(wave_ + 1)) + (isSwarmWave(wave_ + 1) ? " \xC2\xB7 SWARM" : "");   // (time to save a nuke)
+}
+
+// ─── Weather ─────────────────────────────────────────────────────────────────
 // The cheat, in turn: a downpour now (out of clouds already in: it starts at once), it eases to a
-// drizzle, the sky clears
+// drizzle, the sky clears. Till the next wave's sky comes in
 void Game::rainCheat() {   // (the status line follows: update)
-  if (!weatherOn_) { setStatus("Weather is off \xE2\x80\x94 Menu \xE2\x86\x92 Settings"); return; }
   if (weather_.sky != Weather::Sky::Rain) {
-    weather_.set(Weather::Sky::Rain, rng_, false);
-    weather_.pour(true, rng_);
+    weather_.set(Weather::Sky::Rain, true, rng_, false);
     weather_.cloud = std::max(weather_.cloud, 0.8f);
-  } else if (weather_.heavy()) weather_.pour(false, rng_);
-  else weather_.set(Weather::Sky::Clear, rng_, false);
+  } else if (weather_.heavy()) weather_.set(Weather::Sky::Rain, false, rng_, false);
+  else weather_.set(Weather::Sky::Clear, false, rng_, false);
 }
 // 5% in a drizzle, 10% in a downpour, between the two as the rain grows (none in the last of it)
 float Game::rainMiss() const {
@@ -2533,7 +2555,7 @@ void Game::hitText(const EnemyP& e, std::string txt, uint32_t color) {
 void Game::weatherForRun(const std::string& s) {
   const bool rains = s == "rain" || s == "drizzle";
   const Weather::Sky sky = rains ? Weather::Sky::Rain : s == "overcast" ? Weather::Sky::Overcast : Weather::Sky::Clear;
-  weather_.set(sky, rng_, true);
+  weather_.set(sky, s == "rain", rng_, true);
   if (rains) weather_.rain = weather_.showerMax = s == "rain" ? 0.9f : 0.25f;
   weather_.wet = rains ? 1.f : s == "after" ? 0.6f : 0.f;   // after: a shower just over, the sun out
   weather_.puddle = s == "rain" || s == "after" ? 1.f : s == "drizzle" ? 0.3f : 0.f;
@@ -2636,45 +2658,77 @@ void Game::clearScheduler() {
 }
 
 // ─── Waves ───────────────────────────────────────────────────────────────────
+// A pack: n Zerg coming in together from one side, a loose crowd over a second or so
+void Game::addPack(char type, int n, float t, float bearing) {
+  const float spread = std::min(1.2f, 0.3f + n * 0.02f), deep = 1.5f + n * 0.05f;
+  for (int i = 0; i < n; i++)
+    spawnQueue_.push_back({t + i * 0.025f, type, bearing + (rnd() - 0.5f) * spread, 13.5f + rnd() * deep});
+}
+// The swarm comes in packs from all sides, larger and closer together as the waves go on; every third wave from the sixth is
+// a SWARM: most of its Zerglings (more of them, each weaker) at once, from two to four sides. Roaches in squads, between them
 void Game::startWave() {
-  // Gentle early ramp: 2, 3, 4, 6, 8, 10, 13, 16, 19, 23, 27 … then linear
-  static const int ZT[12] = {0, 2, 3, 4, 6, 8, 10, 13, 16, 19, 23, 27};
-  int zc = wave_ < 12 ? ZT[wave_] : 27 + (wave_ - 11) * 4;
-  int rc = wave_ >= cfg::roach_wave ? (int)std::floor((wave_ - cfg::roach_wave + 1) * 1.8f) : 0;
+  const float w = (float)wave_;
+  int zc = (int)std::round(wave_ <= 20 ? bal::zcA + bal::zcB * w + bal::zcC * w * w : bal::zcA + bal::zcB * 20 + bal::zcC * 400 + bal::zcLate * (w - 20));
+  int rc = wave_ >= cfg::roach_wave ? (int)std::floor((wave_ - cfg::roach_wave + 1) * bal::rcK) : 0;
   bool finalWave = mode_ == Mode::Campaign && wave_ == cfg::victory_wave;
   if (finalWave) { zc = (int)std::round(zc * 1.25f); rc = (int)std::round(rc * 1.25f); }   // final assault
-  spawnInterval_ = std::max(0.4f, 1.4f - wave_ * 0.08f);
+  waveSwarm_ = isSwarmWave(wave_);
+  if (waveSwarm_) zc = (int)std::round(zc * bal::swarmCount);
+  applySky(waveSky(wave_), false);
   spawnQueue_.clear();
-  spawnQueue_.insert(spawnQueue_.end(), zc, 'z');
-  spawnQueue_.insert(spawnQueue_.end(), rc, 'r');
-  std::shuffle(spawnQueue_.begin(), spawnQueue_.end(), rng_);
-  spawnTimer_ = 0;
+  const float packSize = std::min(3 + w * 0.7f, 30.f), gap = std::max(2.2f, 5.5f - w * 0.18f);
+  if (waveSwarm_) {
+    const int packs = 2 + (wave_ >= 15) + (wave_ >= 30);
+    const float a0 = rnd() * 2 * PI;
+    for (int p = 0; p < packs; p++) addPack('z', zc / packs + (p < zc % packs), 0.3f + p * 0.9f, a0 + p * 2 * PI / packs + (rnd() - 0.5f) * 0.5f);
+  } else {
+    float t = 0.3f;
+    for (int left = zc; left > 0;) {
+      const int n = std::clamp((int)std::round(packSize * (0.6f + 0.8f * rnd())), 1, left);
+      addPack('z', n, t, rnd() * 2 * PI);
+      left -= n;
+      t += gap * (n / packSize) * (0.8f + 0.4f * rnd());
+    }
+  }
+  float rt = 1.5f;
+  for (int left = rc; left > 0;) {
+    const int n = std::min(left, 2 + (int)(rnd() * 3));
+    addPack('r', n, rt, rnd() * 2 * PI);
+    left -= n;
+    rt += gap * 1.1f;
+  }
+  std::sort(spawnQueue_.begin(), spawnQueue_.end(), [](const SpawnEv& a, const SpawnEv& b) { return a.t > b.t; });
+  waveT_ = 0;
   wavePhase_ = WavePhase::Combat;
   waveKills_ = waveNukes_ = waveAirs_ = waveCrates_ = 0;
   waveHurt_ = false;
   std::string roachMsg = rc > 0 ? " + " + std::to_string(rc) + " Roach" + (rc > 1 ? "es" : "") : "";
   std::string boostMsg = wave_ == cfg::metabolic_wave ? " \xE2\x80\x94 Metabolic Boost: Zerglings run faster!"
                          : endlessWaves() ? " \xE2\x80\x94 bunker reinforced \xC3\x97" + std::to_string(endlessWaves()) : "";
+  const std::string skyMsg = " \xE2\x80\x94 " + skyLabel(waveSky(wave_));
   if (finalWave) setStatus("FINAL WAVE " + std::to_string(wave_) + ": " + std::to_string(zc) + " Zerglings" + roachMsg + " \xE2\x80\x94 hold the line!");
-  else setStatus("Wave " + std::to_string(wave_) + ": " + std::to_string(zc) + " Zergling" + (zc > 1 ? "s" : "") + roachMsg + boostMsg);
+  else setStatus(std::string(waveSwarm_ ? "SWARM! " : "") + "Wave " + std::to_string(wave_) + ": " + std::to_string(zc) + " Zergling" + (zc > 1 ? "s" : "") + roachMsg + (boostMsg.empty() ? skyMsg : boostMsg));
   audio::play("wave");
 }
 
 void Game::waveCleared() {
   wavePhase_ = WavePhase::Cleared;
-  ach_.waveCleared(run_, mode_ == Mode::Endless, wave_, waveHurt_, maxHp_ > 0 ? bunkerHp_ / maxHp_ : 0, dnEnabled_ && dnFactor_ >= 0.5f);
-  int bm = 40 + wave_ * 15, bg = 10 + wave_ * 5;
+  ach_.waveCleared(run_, mode_ == Mode::Endless, wave_, waveHurt_, maxHp_ > 0 ? bunkerHp_ / maxHp_ : 0, dnFactor_ >= 0.5f);
+  const float pay = dnFactor_ >= 0.5f ? bal::nightPay : 1.f;   // the dark pays better
+  int bm = (int)std::round((bal::clearM0 + bal::clearMW * wave_) * pay), bg = (int)std::round((bal::clearG0 + bal::clearGW * wave_) * pay);
   minerals_ += bm;
   gas_ += bg;
+  applySky(waveSky(wave_ + 1), false);   // the next wave's sky comes in over the break
   setStatus("Wave " + std::to_string(wave_) + " cleared! +\xE2\x97\x86" + std::to_string(bm) + " +\xE2\x96\xB2" + std::to_string(bg) + " \xE2\x80\x94 " +
-            (mode_ == Mode::Endless ? "Armory open (B) \xC2\xB7 resupply incoming..." : "Resupply incoming..."));
+            (armoryAffordable() ? "Armory open (B) \xC2\xB7 resupply incoming..." : "Resupply incoming..."));
   audio::play("clear");
   after(1.5f, [this]() {
     // Countdown: 3... 2... 1... once the magazine is full again
     auto countdown = [this]() {
-      setStatus("Next wave in 3...");
-      after(1, [this]() { setStatus("Next wave in 2..."); });
-      after(2, [this]() { setStatus("Next wave in 1..."); });
+      const std::string sky = " \xE2\x80\x94 " + skyLabel(waveSky(wave_ + 1)) + (isSwarmWave(wave_ + 1) ? " \xC2\xB7 SWARM!" : "");
+      setStatus("Next wave in 3..." + sky);
+      after(1, [this, sky]() { setStatus("Next wave in 2..." + sky); });
+      after(2, [this, sky]() { setStatus("Next wave in 1..." + sky); });
       after(3, [this]() {
         wave_++;
         reinforce();   // Endless: the bunker is reinforced as the swarm grows
@@ -2716,11 +2770,12 @@ void Game::reinforce() {
 float Game::repairMult() const { return 1 + cfg::endless_repair * endlessWaves(); }
 // Lv3 self-repair and the Super Stimpack (while stimmed) stack; Endless speeds it up
 float Game::repairRate() const {
-  return ((hpLvl_ >= 3 ? cfg::repair_rate : 0) + (superStimUnlocked_ && stimT_ > 0 ? cfg::superstim_heal : 0)) * repairMult();
+  return ((hpLvl_ >= 3 ? cfg::repair_rate : 0) + (superStimUnlocked_ && stimT_ > 0 ? cfg::superstim_heal[std::clamp(superStimLvl_, 0, 3)] : 0)) * repairMult();
 }
 
-// ─── Endless armory ──────────────────────────────────────────────────────────
-static const int ARMORY_BASE[4][2] = {{300, 75}, {400, 100}, {250, 60}, {350, 120}};
+// ─── The armory ──────────────────────────────────────────────────────────────
+// (gas near a third of the minerals, as the income and the research: the two run out together)
+static const int ARMORY_BASE[4][2] = {{300, 100}, {400, 150}, {250, 80}, {350, 150}};
 void Game::armoryCost(int k, int& m, int& g) const {
   float f = std::pow(k == 2 ? cfg::armory_ammo_growth : cfg::armory_growth, (float)armory_[k]);
   m = (int)std::round(ARMORY_BASE[k][0] * f / 5) * 5;
@@ -2787,7 +2842,6 @@ void Game::buy(const std::string& type) {
 
 void Game::buyArmory(int k) {
   static const char* NAMES[4] = {"Hull plating", "Weapon tuning", "Magazine", "Fleet logistics"};
-  if (mode_ != Mode::Endless) return;
   if (armoryMaxed(k)) { setStatus(std::string(NAMES[k]) + " is maxed"); audio::play("deny"); return; }
   int m, g;
   armoryCost(k, m, g);
@@ -2804,7 +2858,7 @@ void Game::buyArmory(int k) {
     case 0: snprintf(fx, sizeof fx, "+%d max HP", (int)cfg::armory_hp); snprintf(tot, sizeof tot, "+%d HP", n * (int)cfg::armory_hp); break;
     case 1: snprintf(fx, sizeof fx, "+%d%% damage", (int)std::round(cfg::armory_dmg * 100)); snprintf(tot, sizeof tot, "+%d%% damage", (int)std::round(n * cfg::armory_dmg * 100)); break;
     case 2: snprintf(fx, sizeof fx, "+%d rounds", cfg::armory_ammo); snprintf(tot, sizeof tot, "+%d rounds", n * cfg::armory_ammo); break;
-    default: snprintf(fx, sizeof fx, "strike & nuke cooldowns \xE2\x88\x92%d%%", (int)std::round((1 - cfg::armory_cd) * 100)); snprintf(tot, sizeof tot, "cooldowns \xC3\x97%.2f", armoryCdMult(n)); break;
+    default: snprintf(fx, sizeof fx, "strike & nuke cooldowns, nuke price \xE2\x88\x92%d%%", (int)std::round((1 - cfg::armory_cd) * 100)); snprintf(tot, sizeof tot, "\xC3\x97%.2f", armoryCdMult(n)); break;
   }
   setStatus(std::string(NAMES[k]) + " \xC3\x97" + std::to_string(n) + ": " + fx + " (total " + tot + ")");
   audio::play("buy");
@@ -2860,9 +2914,9 @@ void Game::researchUpgrade(const std::string& key, int tier) {
   struct UD { const char* key; Unit unit; const char* name; int cost[2]; struct T { int cost[2]; const char* desc; } tiers[3]; int nt; };
   static const UD U[3] = {
     {"superstim", Unit::Marine, "Super Stimpack", {250, 150},
-     {{{200, 80}, "Stimpack Lv.1 \xE2\x80\x94 needs 4 Marines"}, {{320, 130}, "Stimpack Lv.2 \xE2\x80\x94 needs 2 Marines"}, {{500, 200}, "Stimpack Lv.3 \xE2\x80\x94 needs 1 Marine or Marauder (MAX)"}}, 3},
-    {"concussive", Unit::Marauder, "Concussive Shell", {300, 75},
-     {{{250, 80}, "AOE Lv.1 \xE2\x80\x94 blast radius 1.5 \xE2\x86\x92 2.0"}, {{400, 130}, "AOE Lv.2 \xE2\x80\x94 radius 2.6"}, {{600, 200}, "AOE Lv.3 \xE2\x80\x94 radius 3.2 (MAX)"}}, 3},
+     {{{200, 80}, "Stimpack Lv.1 \xE2\x80\x94 needs 4 Marines, repairs 12 HP/s"}, {{320, 130}, "Stimpack Lv.2 \xE2\x80\x94 needs 2 Marines, repairs 20 HP/s"}, {{500, 200}, "Stimpack Lv.3 \xE2\x80\x94 needs 1 Marine or Marauder, repairs 30 HP/s (MAX)"}}, 3},
+    {"concussive", Unit::Marauder, "Concussive Shells", {300, 75},
+     {{{250, 80}, nullptr}, {{400, 130}, nullptr}, {{600, 200}, nullptr}}, 3},   // (their messages: the radius, below)
     {"snipe", Unit::Ghost, "Snipe", {250, 100},
      {{{200, 80}, "Snipe Lv.1 \xE2\x80\x94 CD 8s \xE2\x86\x92 6s"}, {{320, 130}, "Snipe Lv.2 \xE2\x80\x94 CD 6s \xE2\x86\x92 4s"}, {{500, 200}, "Snipe Lv.3 \xE2\x80\x94 CD 4s \xE2\x86\x92 2.5s (MAX)"}}, 3},
   };
@@ -2894,7 +2948,11 @@ void Game::researchUpgrade(const std::string& key, int tier) {
     if (key == "concussive") concussiveUnlocked_ = true;
     if (key == "snipe") snipeUnlocked_ = true;
     if (key == "superstim") superStimUnlocked_ = true;
-    setStatus(std::string(d->name) + " researched!");
+    if (key == "concussive") {
+      char b[96];
+      snprintf(b, sizeof b, "Concussive Shells \xE2\x80\x94 Zerg in a blast now run at %d%% speed for %g s", (int)std::lround(bal::mgSlow1 * 100), (double)bal::mgSlowDur1);
+      setStatus(b);
+    } else setStatus(std::string(d->name) + " researched!");
   } else {
     if (tier >= d->nt) return;
     const auto& t = d->tiers[tier];
@@ -2904,7 +2962,7 @@ void Game::researchUpgrade(const std::string& key, int tier) {
     if (key == "concussive") concussiveLvl_ = tier + 1;
     if (key == "snipe") snipeLvl_ = tier + 1;
     if (key == "superstim") superStimLvl_ = tier + 1;
-    setStatus(t.desc);
+    setStatus(t.desc ? std::string(t.desc) : "Blast radius " + mgRadiusStep(tier) + (tier == 2 ? " (MAX)" : ""));
   }
   achState();
 }
@@ -2930,16 +2988,64 @@ void Game::resetRoster() {
   syncMarines();
 }
 
+int Game::nukeCostM() const { return std::max((int)bal::nukeM0, (int)std::round((bal::nukeM0 + bal::nukeMW * wave_) * std::pow(bal::nukeGrow, (float)waveNukes_) * armoryCdMult() / 5) * 5); }
+float Game::baseDamage() const { return 10 * (1 + dmgLvl_ * .6f) * (1 + cfg::endless_dmg * endlessWaves()) * (1 + cfg::armory_dmg * armory_[1]); }
+
+// The swarm takes up room: Zerg push apart (a grid of 1-unit cells: a few hundred of them cost next to nothing), run round each
+// other, and pile up behind those already at the hull instead of standing inside them. So a pack keeps its shape on the screen, a
+// blast finds a crowd to hit, and only so many can bite at once
+void Game::crowdZerg(float dt) {
+  static constexpr int GRID = 80;
+  static std::vector<int> head(GRID * GRID), next;
+  static std::vector<Enemy*> es;
+  static std::vector<glm::vec2> push;
+  es.clear();
+  for (auto* list : {&zerglings_, &roaches_}) for (auto& e : *list) if (!e->dead) es.push_back(e.get());
+  const int n = (int)es.size();
+  std::fill(head.begin(), head.end(), -1);
+  next.resize(n);
+  push.assign(n, glm::vec2(0));
+  auto cell = [](float v) { return std::clamp((int)std::floor(v) + GRID / 2, 0, GRID - 1); };
+  for (int i = 0; i < n; i++) {
+    const int c = cell(es[i]->pos.z) * GRID + cell(es[i]->pos.x);
+    next[i] = head[c];
+    head[c] = i;
+  }
+  for (int i = 0; i < n; i++) {
+    const Enemy& a = *es[i];
+    const float ra = a.type == 'r' ? 0.7f : 0.38f;
+    const int cx = cell(a.pos.x), cz = cell(a.pos.z);
+    for (int z = std::max(0, cz - 1); z <= std::min(GRID - 1, cz + 1); z++)
+      for (int x = std::max(0, cx - 1); x <= std::min(GRID - 1, cx + 1); x++)
+        for (int j = head[z * GRID + x]; j >= 0; j = next[j]) {
+          if (j <= i) continue;
+          const Enemy& b = *es[j];
+          const float R = ra + (b.type == 'r' ? 0.7f : 0.38f), dx = a.pos.x - b.pos.x, dz = a.pos.z - b.pos.z, d2 = dx * dx + dz * dz;
+          if (d2 >= R * R) continue;
+          const float d = std::max(1e-3f, std::sqrt(d2)), f = 0.5f * (R - d) / d;
+          const glm::vec2 p = d2 < 1e-6f ? glm::vec2(0.5f * R * (rnd() - 0.5f), 0.5f * R * (rnd() - 0.5f)) : glm::vec2(dx * f, dz * f);
+          push[i] += p;
+          push[j] -= p;
+        }
+  }
+  const float k = std::min(1.f, dt * 10);
+  for (int i = 0; i < n; i++) {
+    Enemy& e = *es[i];
+    e.pos.x += push[i].x * k;
+    e.pos.z += push[i].y * k;
+    const float d = std::hypot(e.pos.x, e.pos.z), minD = 0.92f * attackReach(e);   // not into the hull
+    if (d < minD && d > 1e-3f) { e.pos.x *= minD / d; e.pos.z *= minD / d; }
+  }
+}
+
 // ─── Main update (game.js loop) ──────────────────────────────────────────────
 void Game::update(float dt) {
   updateCamera(dt);   // also while paused: the player can look around
   muzzleI_ = std::max(0.f, muzzleI_ - dt * 45);   // the flash decays in ~60 ms
   gunI_ *= std::exp(-dt * 11);                     // its pool on the ground: a quarter left by the next volley (sustained fire glows)
   if (phase_ != Phase::Playing || isPaused()) {   // game clock, timers and events are frozen
-    // A night switched off still lifts behind the menu, title and results (it is
-    // not game time: with the cycle off nothing else moves). Left frozen, the
-    // title showed the night and the next game started in it.
-    if (!dnEnabled_ && dnFactor_ > 0) updateDayNight(dt);
+    // Back on the title the night lifts (it is not game time: nothing else moves there)
+    if (phase_ != Phase::Playing && dnT_ != dnTarget_) updateDayNight(dt);
     return;
   }
   gameT_ += dt;
@@ -2976,15 +3082,13 @@ void Game::update(float dt) {
   }
 
   // spawn
-  if (wavePhase_ == WavePhase::Combat && !spawnQueue_.empty()) {
-    spawnTimer_ -= dt;
-    if (spawnTimer_ <= 0) {
-      char type = spawnQueue_.back();
+  if (wavePhase_ == WavePhase::Combat) {
+    waveT_ += dt;
+    while (!spawnQueue_.empty() && spawnQueue_.back().t <= waveT_) {
+      const SpawnEv ev = spawnQueue_.back();
       spawnQueue_.pop_back();
-      float r = 13 + rnd() * 2, a = rnd() * PI * 2;
-      if (type == 'z') zerglings_.push_back(makeZergling(std::cos(a) * r, std::sin(a) * r));
-      else roaches_.push_back(makeRoach(std::cos(a) * r, std::sin(a) * r));
-      spawnTimer_ = type == 'r' ? spawnInterval_ * 1.6f : spawnInterval_;
+      if (ev.type == 'z') zerglings_.push_back(makeZergling(std::cos(ev.angle) * ev.r, std::sin(ev.angle) * ev.r));
+      else roaches_.push_back(makeRoach(std::cos(ev.angle) * ev.r, std::sin(ev.angle) * ev.r));
     }
   }
 
@@ -3004,6 +3108,7 @@ void Game::update(float dt) {
     if (d < attackReach(e)) {
       if (e.type == 'r') roachAttack(e, dt, ex, ez);   // ranged: acid, damage on impact
       else {                                          // melee: bites the hull
+        simHurt_[0] += e.dmg * dt * arm;
         bunkerHp_ = std::max(0.f, bunkerHp_ - e.dmg * dt * arm);
         waveHurt_ = true;
         bool bite;
@@ -3045,6 +3150,7 @@ void Game::update(float dt) {
       e.rotY = std::atan2(-ex, -ez);
     }
   }
+  crowdZerg(dt);
   auto isDead = [](const EnemyP& e) { return e->dead; };
   zerglings_.erase(std::remove_if(zerglings_.begin(), zerglings_.end(), isDead), zerglings_.end());
   roaches_.erase(std::remove_if(roaches_.begin(), roaches_.end(), isDead), roaches_.end());
@@ -3052,7 +3158,7 @@ void Game::update(float dt) {
   if (bunkerHp_ <= 0) { gameOver(); return; }
 
   // bullets
-  float baseDmg = 10 * (1 + dmgLvl_ * .6f) * (1 + cfg::endless_dmg * endlessWaves()) * (1 + cfg::armory_dmg * armory_[1]);
+  const float baseDmg = baseDamage();
   for (auto& e : allEnemies()) if (e->slowed && gameT_ > e->slowUntil) e->slowed = false;   // slows expire in game time
   float fs = dt * 60;   // movement tuned at 60 fps
   std::vector<EnemyP> enemyList = allEnemies();
@@ -3105,6 +3211,7 @@ void Game::update(float dt) {
       float bonus = hasBonus ? def.bonusMult : 1.0f;
       float dmg = baseDmg * def.dmgMult * bonus;
       e.hp -= dmg;
+      simDmg_[b.shrike ? 4 : (int)b.unit] += dmg;
       e.flash = 0.08f;
       audio::play("hit");
       hitText(hitE, std::to_string((int)std::round(dmg)), bonus > 1 ? 0xff6600u : 0xffffffu);
@@ -3147,7 +3254,7 @@ void Game::update(float dt) {
   if (nukeLightT_ >= 0 && (nukeLightT_ += dt) >= NUKE_LIGHT_DUR) nukeLightT_ = -1;
   const char* sky0 = weather_.name();
   const bool rained = weather_.sky == Weather::Sky::Rain;
-  weather_.update(dt, rng_, weatherOn_);   // likewise: the light under the clouds
+  weather_.update(dt);   // likewise: the light under the clouds
   if (strcmp(weather_.name(), sky0)) {     // the player is told what the rain does to the aim
     logInfo("weather: %s", weather_.name());
     if (weather_.sky == Weather::Sky::Rain) {
@@ -3836,8 +3943,29 @@ void Game::render() {
   sp.vpW = std::max(1, (int)std::round(canvasW_ * sx));
   sp.vpH = std::max(1, (int)std::round(canvasH_ * sy));
   sp.vpY = fbH_ - (int)std::round((canvasY_ + canvasH_) * sy);
+  sp.scale = renderScale_;
   R.render(sp);
   hdrLast_ = R.postActive();
+}
+
+// ─── Automatic resolution ───────────────────────────────────────────────────
+// The card's time per frame (timer queries: it reads true under vsync too, where the frame interval says nothing) against
+// the 60 FPS budget, less room for the CPU's part and the HUD. Over it for a second: 10% fewer pixels across; well
+// under it for five: back up. The HUD stays sharp, and a card with room to spare never sees this
+void Game::updateAutoRes(float dt) {
+  const float BUDGET = 14, STEP = 0.1f, MIN_SCALE = 0.6f;
+  if (!autoRes_ || !hdrLast_) { renderScale_ = 1; resOver_ = resUnder_ = 0; return; }
+  const float ms = R.gpuTotalMs(), up = renderScale_ + STEP, cost = (up * up) / (renderScale_ * renderScale_);
+  resOver_ = ms > BUDGET ? resOver_ + dt : 0;
+  resUnder_ = renderScale_ < 1 && ms * cost < 0.85f * BUDGET ? resUnder_ + dt : 0;
+  float to = renderScale_;
+  if (resOver_ >= 1 && renderScale_ > MIN_SCALE) to = renderScale_ - STEP;
+  else if (resUnder_ >= 5) to = std::min(1.f, up);
+  if (to != renderScale_) {
+    logInfo("resolution %d%% -> %d%% (the card takes %.1f ms a frame)", (int)std::lround(renderScale_ * 100), (int)std::lround(to * 100), ms);
+    renderScale_ = to;
+    resOver_ = resUnder_ = 0;
+  }
 }
 
 // ─── Frame ───────────────────────────────────────────────────────────────────
@@ -3861,9 +3989,12 @@ void Game::frame(float dt) {
   update(dt);
   audio::setRain(phase_ == Phase::Playing ? weather_.rain : 0);   // (not under the title and results: their music alone)
   double t1 = glfwGetTime();
+  R.passBegin(Renderer::GP_COMPUTE);
   gpuFx_.update(phase_ == Phase::Playing && !isPaused() ? dt : 0);   // spawn this frame's bursts, move the GPU particles
+  R.passEnd();
   updateSensorRing(dt);
   render();
+  updateAutoRes(dt);
   double t2 = glfwGetTime();
   drawUI(dt);
   double t3 = glfwGetTime();
@@ -3880,6 +4011,12 @@ void Game::frame(float dt) {
     perfRun_.frames++;
   }
   if (t3 - perfT_ >= 0.5) {
+    if (perfLog_) {   // --perf: the run as a series, to find what a moment costs
+      const float* g = R.gpuMs();
+      logInfo("perf %.1f s: %.0f FPS, worst %.1f ms; CPU %.2f+%.2f+%.2f; GPU compute %.2f shadow %.2f ground %.2f grass %.2f opaque %.2f see-through %.2f resolve %.2f bloom %.2f composite %.2f; %d Zerg, %d GPU particles",
+              gameT_, perfAcc_.frames / std::max(1e-6, perfAcc_.frame), perfAcc_.worst * 1000, perfAcc_.update / perfAcc_.frames * 1000, perfAcc_.render / perfAcc_.frames * 1000,
+              perfAcc_.ui / perfAcc_.frames * 1000, g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7], g[8], (int)(zerglings_.size() + roaches_.size()), gpuFx_.live());
+    }
     perfShown_ = perfAcc_;
     perfAcc_ = Perf();
     perfT_ = t3;
@@ -3935,6 +4072,8 @@ void Game::start(Mode m) {
   newGameState();
   run_ = {};   // a new game (loadGame restores a saved one's after this)
   run_.cheated = benchFire_ && !testData_;   // --bench-fire plays for you: not on the real profile
+  skySeed_ = (uint32_t)rng_();
+  applySky(waveSky(wave_), true);
   runAch_.clear();
   waveHurt_ = false;
   airRunKills_ = 0;
@@ -3947,7 +4086,7 @@ void Game::start(Mode m) {
 
 void Game::newGameState() {
   score_ = 0; wave_ = 1; kills_ = 0; minerals_ = 150; gas_ = 50;
-  ammo_ = maxAmmo_ = cfg::base_ammo;
+  ammo_ = maxAmmo_ = (int)bal::baseAmmo;
   marauderShots_ = 0;
   bunkerHp_ = maxHp_ = 750;
   dmgLvl_ = armorLvl_ = hpLvl_ = ammoLvl_ = 0;
@@ -3974,8 +4113,9 @@ void Game::gameOver() {
   if (mode_ == Mode::Endless) {
     int bw, bs;
     if (!bestEndless(bw, bs) || wave_ > bw || (wave_ == bw && score_ > bs)) {
-      storage::set("endless_best_wave", std::to_string(wave_));
-      storage::set("endless_best_score", std::to_string(score_));
+      const std::string dn = theatre_ == Theatre::DayNight ? "_dn" : "";   // a record per theatre (the old key: the old all-day games)
+      storage::set("endless_best_wave" + dn, std::to_string(wave_));
+      storage::set("endless_best_score" + dn, std::to_string(score_));
       record = true;
     }
   }
@@ -4017,6 +4157,8 @@ void Game::showTitle() {
   tutDismiss();
   phase_ = Phase::Menu;
   wavePhase_ = WavePhase::Idle;
+  if (!dnHeld_) dnTarget_ = 0;
+  if (!theatreHeld_) theatre_ = storage::get("theatre", "daynight") == "daylight" ? Theatre::Daylight : Theatre::DayNight;   // (a loaded game's went with it)
   roster_ = {Unit::Marine, Unit::Marine};
   syncMarines();
   overlay_ = Overlay::Title;
@@ -4032,7 +4174,8 @@ void Game::showResults(bool victory, bool newly, bool record) {
 
 bool Game::endlessUnlocked() const { return storage::get("endless_unlocked") == "1"; }
 bool Game::bestEndless(int& wave, int& score) const {
-  std::string w = storage::get("endless_best_wave"), s = storage::get("endless_best_score");
+  const std::string dn = theatre_ == Theatre::DayNight ? "_dn" : "";
+  std::string w = storage::get("endless_best_wave" + dn), s = storage::get("endless_best_score" + dn);
   if (w.empty()) return false;
   wave = std::atoi(w.c_str());
   score = std::atoi(s.c_str());

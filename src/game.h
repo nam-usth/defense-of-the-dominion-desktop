@@ -4,6 +4,7 @@
 #pragma once
 #include <algorithm>
 #include <cstdlib>
+#include <cstdio>
 #include <functional>
 #include <map>
 #include <memory>
@@ -26,6 +27,8 @@ struct ImFont;
 enum class Phase { Menu, Playing, GameOver, Victory };
 enum class WavePhase { Idle, Combat, Clearing, Cleared };
 enum class Mode { Campaign, Endless };
+enum class Theatre { Daylight, DayNight };   // the sky a game is fought under (the title's choice, in its save)
+struct WaveSky { bool night = false; int rain = 0; };   // a wave's sky. rain: 0 clear · 1 overcast · 2 a drizzle · 3 a downpour
 enum class Unit { Marine, Marauder, Ghost };
 
 struct UnitDef {
@@ -71,7 +74,8 @@ struct Enemy {
   bool biteSet = false;
   float biteT = 0;
   bool light = false, armored = false;
-  int rScore = 0, rMin = 0, rGas = 0;
+  int rScore = 0;
+  float rMin = 0, rGas = 0;
   float slowUntil = -1, slowFactor = 1;
   bool slowed = false;
   float barY() const { return type == 'r' ? 1.4f : 1.1f; }   // its HP bar's height over its feet
@@ -115,14 +119,21 @@ struct Bullet {
   glm::vec2 aim{0};               // a Marauder grenade's target point (on the ground)
   std::vector<glm::vec4> trail;   // a Marauder grenade's light streak: recent nozzle positions, w = game time
   const Enemy* passed = nullptr;  // in the rain: the Zerg this round missed and flies past (not rolled for again)
+  bool shrike = false;            // the Shrike's (--sim counts its damage apart)
 };
 
 // In the rain the bunker's rounds (and the Shrike's) miss now and then: in a drizzle, in a downpour
 // (between the two as the rain grows). Grenades still burst, snipes and missiles still strike
 inline constexpr float RAIN_MISS[2] = {0.05f, 0.10f};
 
-// A Marauder grenade's blast radius: base, then per Concussive Shell AOE tier
-inline constexpr float MG_RADIUS[4] = {1.5f, 2.0f, 2.6f, 3.2f};
+// A Marauder grenade's blast radius: base, then per Concussive Shells tier
+inline constexpr float MG_RADIUS[4] = {2.0f, 2.6f, 3.4f, 4.2f};
+// what the tier from this level buys, "2.0 → 2.6"
+inline std::string mgRadiusStep(int lvl) {
+  char b[32];
+  snprintf(b, sizeof b, "%.1f \xE2\x86\x92 %.1f", (double)MG_RADIUS[lvl], (double)MG_RADIUS[lvl + 1]);
+  return b;
+}
 
 // A punisher grenade's blast: a soft glow on the ground over its radius (the burst itself: sprites)
 struct MBlast {
@@ -233,6 +244,8 @@ class Game {
     }
     else if (code.rfind("hire:", 0) == 0) {
       for (int k = 0; k < 3; k++) if (code.substr(5) == unitDef((Unit)k).key) hireUnit((Unit)k);
+    } else if (code.rfind("armory:", 0) == 0) {
+      buyArmory(std::atoi(code.c_str() + 7));
     } else if (code.rfind("research:", 0) == 0) {
       std::string r = code.substr(9);
       size_t c = r.find(':');
@@ -256,14 +269,20 @@ class Game {
       if (p.size() > 13) achTab_ = std::clamp(std::atoi(p.c_str() + 13), 0, 4);
     }
   }
-  void setDayNightTime(float t);                    // test: the cycle on, t seconds into it
+  void holdNightForRun(float f);                    // test: this much night (0..1) for the whole run
+  void theatreForRun(Theatre t) { theatre_ = t; theatreHeld_ = true; }   // test (the stored choice is kept)
   void weatherForRun(const std::string& s);         // test: clear | overcast | rain | drizzle | after (a shower just over), held
   void tutorialForRun(bool on) { tutRun_ = on; }    // test: no tour / hints this run (the stored setting is kept)
+  void groundCacheForRun(bool on) { R.groundCache(on); }
+  void seedForRun(unsigned s) { rng_.seed(s); }     // test: the same random sequence each run
+  void simRun(const std::string& plan, int games, int waveCap, const std::string& out);   // --sim (game_sim.cpp)
+  static bool simSet(const std::string& assignments);   // --sim-set a=1,b=2: the balance's numbers for this run; false: an unknown name
   void postForRun(bool on) { postRun_ = on; }       // HDR post-processing (main sets the window's samples to match)
   void testPress(bool down) { onMouseButton(0, down ? 1 : 0); }   // test: the left button (GLFW_MOUSE_BUTTON_LEFT, PRESS / RELEASE)
   int ammo() const { return ammo_; }
   void testKey(int key) { onKey(key, 1, 0); }
-  void showPerf(bool on) { perfOverlay_ = on; }
+  void showPerf(bool on) { perfOverlay_ = perfLog_ = on; }
+  void autoResForRun(bool on) { autoRes_ = on; }    // test: this run with the resolution fixed (the stored setting is kept)
   void benchFire(bool on) { benchFire_ = on; }   // test: fire every volley at the nearest enemy, magazine refilled
   void testData(bool on) { testData_ = on; }     // --data: a throwaway profile (test hooks may earn achievements there)
   void holdHpForRun(float f) { hpHold_ = f; }    // test: the bunker held at f of its max HP (repair and damage leave it there)
@@ -289,8 +308,16 @@ class Game {
   // graphics
   bool gfxHigh_ = true;
   // day / night
-  bool dnEnabled_ = false;
-  float dnTime_ = 0, dnFactor_ = 0;
+  // the wave's sky (waveSky): the night falls or lifts in the break before it. dnT_ runs linearly to dnTarget_, dnFactor_ is it eased
+  Theatre theatre_ = Theatre::DayNight;
+  uint32_t skySeed_ = 0;   // Endless's forecast: a game's own (saved)
+  bool dnHeld_ = false, theatreHeld_ = false;   // test states (--dn, --theatre)
+  float dnT_ = 0, dnTarget_ = 0, dnFactor_ = 0;
+  WaveSky waveSky(int wave) const;
+  void applySky(const WaveSky& s, bool instant);
+  static std::string skyLabel(const WaveSky& s);
+  std::string skyNow() const;
+  std::string skyNext() const;
   float dnLightF_ = 0;   // the factor the lights / fog were last applied at (a flare lifts it below dnFactor_)
   float dnLit() const;   // that factor now: dnFactor_ lifted by a burning Viking flare
   // Viking flare (night airstrikes): lights the field for FLARE_DUR s of game time
@@ -304,9 +331,7 @@ class Game {
   // weather (weather.h): clear, overcast, now and then rain; the ground wets, puddles fill and dry
   Weather weather_;
   WeatherRenderer weatherFx_;
-  bool weatherOn_ = true;               // Menu → Settings (stored)
   glm::vec3 skyZen_{0}, skyHor_{0};     // the sky the puddles mirror (applyDNLights)
-  void setWeatherOn(bool on);
   void rainCheat();                     // the "rain" code, in turn: a downpour now, a drizzle, the sky clears
   float rainMiss() const;               // the chance a round misses in the rain now (RAIN_MISS)
   // nuke fireball light: lights the field (and lifts a night) for NUKE_LIGHT_DUR s of game time
@@ -333,9 +358,6 @@ class Game {
   float fogNear_ = 45, fogFar_ = 90;
   void applyDNLights(float f);
   void updateDayNight(float dt);
-  void toggleDayNight();
-  std::string dayNightLabel() const;
-  std::string dayNightNext() const;   // countdown to the next phase, e.g. "DUSK IN 0:42"
 
   // scheduler (game time): one-shots and per-frame tickers
   struct Timer { float t; std::function<void()> fn; };
@@ -383,8 +405,16 @@ class Game {
   int airRunKills_ = 0;              // kills by the current airstrike's missiles
   std::vector<std::string> runAch_;  // earned in this game (the results screen)
   void achState();                   // the state rules: upgrades, squad, overdrive, research
-  std::vector<char> spawnQueue_;
-  float spawnTimer_ = 0, spawnInterval_ = 1.2f;
+  struct SpawnEv { float t; char type; float angle, r; };
+  std::vector<SpawnEv> spawnQueue_;   // this wave's Zerg to come, the next one last
+  float waveT_ = 0;                   // seconds into the wave
+  bool waveSwarm_ = false;            // a SWARM wave: more Zerglings, weaker, in huge packs
+  bool isSwarmWave(int wave) const { return !(mode_ == Mode::Campaign && wave == cfg::victory_wave) && wave >= 6 && wave % 3 == 0; }
+  void addPack(char type, int n, float t, float bearing);
+  void crowdZerg(float dt);
+  float baseDamage() const;
+  int nukeCostM() const;   // its price now: minerals, gas
+  int nukeCostG() const { return (int)bal::nukeG; }
   bool nukeInFlight_ = false;
   bool rosterPaused_ = false, menuOpen_ = false, cheatOpen_ = false;
   bool isPaused() const { return rosterPaused_ || menuOpen_ || cheatOpen_ || tutOpen_; }   // a tutorial box pauses too
@@ -759,6 +789,19 @@ class Game {
   // performance overlay (F3): CPU time per frame stage, averaged over ~0.5 s
   bool perfOverlay_ = false, benchFire_ = false, testData_ = false;
   float hpHold_ = -1;   // test (--hp): the bunker's HP held at this fraction, -1 = off
+  bool perfLog_ = false;
+  // --sim's bot (game_sim.cpp), and what it counts: damage by Marine, Marauder, Ghost rounds, Snipe, Shrike; kills by strike and nuke
+  friend struct SimSet;
+  void simHire(int marines, int marauders, int ghosts);
+  void simShop(int plan);
+  void simBotStep(float dt);
+  float simClick_ = 0, simDmg_[5] = {}, snipeAmmoAcc_ = 0;
+  float simHurt_[2] = {};   // the bunker's damage this wave: bites, acid
+  int simStrikeKills_ = 0, simNukeKills_ = 0, simNukes_ = 0, simStrikes_ = 0;
+  // Automatic resolution (Menu → Settings, stored): the scene's scale, and how long the card has been over or under its budget
+  bool autoRes_ = true;
+  float renderScale_ = 1, resOver_ = 0, resUnder_ = 0;
+  void updateAutoRes(float dt);
   struct Perf { double update = 0, render = 0, ui = 0, frame = 0, worst = 0; int frames = 0; } perfAcc_, perfShown_, perfRun_;
   double perfT_ = 0;
   void drawPerf();

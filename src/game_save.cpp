@@ -86,6 +86,8 @@ storage::Record Game::snapshot() const {
   r["gameT"] = num(gameT_);
   r["victoryAchieved"] = victoryAchieved_ ? "1" : "0";
   r["gameMode"] = mode_ == Mode::Endless ? "endless" : "campaign";
+  r["theatre"] = theatre_ == Theatre::DayNight ? "daynight" : "daylight";
+  r["skySeed"] = num(skySeed_);
   // An airstrike's crate run / a nuke countdown can't be saved: loading would keep
   // the cooldown but lose the effect (e.g. 0 ammo with R blocked for 20 s)
   bool crateRun = vikingActive_ || std::any_of(marines_.begin(), marines_.end(), [](const UnitFig& m) { return (bool)m.cb; });
@@ -133,7 +135,7 @@ static std::string ago(double ts) {
   return std::to_string(std::llround(m / 1440.0)) + " d ago";
 }
 std::string Game::saveLabel(const storage::Record& d) const {
-  return std::string(getStr(d, "gameMode") == "endless" ? "Endless" : "Campaign") + " \xC2\xB7 wave " + std::to_string((int)getNum(d, "wave")) +
+  return std::string(getStr(d, "gameMode") == "endless" ? "Endless" : "Campaign") + (getStr(d, "theatre") == "daynight" ? " \xC2\xB7 Day & Night" : " \xC2\xB7 Daylight") + " \xC2\xB7 wave " + std::to_string((int)getNum(d, "wave")) +
          (getStr(d, "wavePhase") == "combat" ? "" : " cleared") + " \xC2\xB7 " + ago(getNum(d, "ts"));
 }
 
@@ -162,6 +164,8 @@ void Game::loadGame(bool autoSlot) {
     return;
   }
   start(mode_);   // restart cleanly, then restore the state
+  theatre_ = getStr(d, "theatre") == "daynight" ? Theatre::DayNight : Theatre::Daylight;   // older saves: fought by day
+  skySeed_ = (uint32_t)getNum(d, "skySeed");
   wave_ = (int)getNum(d, "wave");
   score_ = (int)getNum(d, "score");
   kills_ = (int)getNum(d, "kills");
@@ -219,6 +223,7 @@ void Game::loadGame(bool autoSlot) {
   if (wp == "cleared" || wp == "clearing") { wave_ = (int)getNum(d, "wave") + 1; ammo_ = maxAmmo_; }
   endlessSteps_ = (int)getNum(d, "endlessSteps");
   reinforce();
+  applySky(waveSky(wave_), true);
   startWave();
   shrikeOD_ = shrikeOverdrive();   // a restored overdrive is not news: keep the "Loaded" message
   achState();

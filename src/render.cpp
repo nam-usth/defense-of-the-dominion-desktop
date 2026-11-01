@@ -325,6 +325,104 @@ void ParticleSystem::update(float dt) {
   }
 }
 
+// ─── The ground's code: the lit fragment shader's, and the grass's vertex shader (a tuft's colour at its root) ───
+static const char* GROUND_GLSL = R"(
+uniform sampler2D uTerrainTex;                                  // the ground's noise (R, G two fields, BA a fine slope)
+uniform sampler2D uGrassTex, uSoilTex;                          // its fine detail: blades, pebbles (R height, G tone, BA slope)
+uniform bool uGroundHD;                                         // GFX HIGH: the ground's fine layers (else SD)
+uniform float uWet, uPuddle;                                    // the weather: the ground's wetness, its puddles
+// The ground at xz, from the noise at rotated scales: tiles of 150 and 36 units for the broad layers
+// (the field is 120 across: the first never repeats, the second has too many cells to band), 6 for
+// the fine one and 1.3 for a speckle. Two grass tones in soft patches at two scales, frayed by clumps;
+// lighter and darker swathes; soft dirt patches with a darker seam where they meet the grass, a worn
+// ring round the bunker, a fine slope for the light (crinkled on dirt, fainter on grass), and shade at
+// the bunker's foot. The broad layer is offset to put a mid-toned stretch of it under the bunker (as
+// on main). Every fine term is zero-mean, so a softer read keeps the tone:
+//  - HD (GFX HIGH): all four layers; detail (0..1, from the pixel's footprint) raises the grass's relief
+//    and the speckle (albedo only: crisp clumps) close up;
+//  - SD (GFX LOW): the broad layers a mip softer and no fine ones (two fetches, a flat light);
+//  - lod >= 0: blurred mips without derivatives (a unit's fog target, in a per-pixel branch): mip 2.5
+//    blurs over about 1.7 units (a) and 0.4 (b).
+const mat2 ROT1 = mat2(0.825, 0.565, -0.565, 0.825), ROT2 = mat2(-0.320, 0.947, -0.947, -0.320), ROT3 = mat2(0.199, -0.980, 0.980, 0.199), ROT4 = mat2(0.545, 0.839, -0.839, 0.545);
+const mat2 ROT5 = mat2(0.454, 0.891, -0.891, 0.454);   // the puddles' read
+const mat2 ROT6 = mat2(0.921, 0.389, -0.389, 0.921), ROT7 = mat2(-0.600, 0.800, -0.800, -0.600), ROT8 = mat2(0.309, 0.951, -0.951, 0.309);   // the detail maps' reads
+const vec3 GRASS_LUSH = vec3(.184, .290, .102), GRASS_DRY = vec3(.290, .310, .133), DIRT_DARK = vec3(.290, .224, .141), DIRT_LIGHT = vec3(.431, .353, .227);
+struct Ground { vec3 alb, dry; vec3 N; float ao; float wet, water, dirt; };   // dry: alb before the rain; wet: how wet (0..1); water: standing water (a puddle)
+float groundAo(vec2 xz) { return mix(0.55, 1.0, smoothstep(1.4, 2.8, length(xz))); }
+Ground groundDry(vec2 xz, float lod, float wpp) {
+  float detail = 1.0 - smoothstep(0.011, 0.020, wpp), soft = 0.5 * (1.0 - smoothstep(0.02, 0.03, wpp));
+  vec2 u1 = ROT1 * xz / 150.0 + vec2(0.89, 0.85), u2 = ROT2 * xz / 36.0, u3 = ROT3 * xz / 6.0;
+  vec4 a, b, c = vec4(0.5);
+  float s = 0.5;
+  if (lod >= 0.0) { a = textureLod(uTerrainTex, u1, lod); b = textureLod(uTerrainTex, u2, lod); }
+  else if (uGroundHD) {
+    // (c and gc sit at their maps' top mip in the overview in a large window: a whole megabyte, the two dearest reads of
+    // the ground. Half a mip softer at that footprint, none at 1600x900: 2800x1575 on an RTX 3050 Ti, 64 -> 74 FPS)
+    a = GROUND_READ(uTerrainTex, u1, 0.0); b = GROUND_READ(uTerrainTex, u2, 0.0); c = GROUND_READ(uTerrainTex, u3, soft);
+    s = GROUND_READ(uTerrainTex, ROT4 * xz / 1.3, 0.0).r;
+  } else { a = GROUND_READ(uTerrainTex, u1, 1.0); b = GROUND_READ(uTerrainTex, u2, 1.0); }
+  // the detail maps (HD): single blades and pebbles close up, and the blades read larger, as clumps
+  // from afar (each zero-mean, so the tone holds; lod >= 0 and SD stay flat)
+  vec4 gf = vec4(0.5), gc = vec4(0.5), sf = vec4(0.5);
+  if (lod < 0.0 && uGroundHD) {
+    gf = GROUND_READ(uGrassTex, ROT6 * xz / 2.7, 0.0);
+    gc = GROUND_READ(uGrassTex, ROT7 * xz / 7.3, soft);
+    sf = GROUND_READ(uSoilTex, ROT8 * xz / 3.1, 0.0);
+  }
+  float blade = (gf.r - 0.5) * mix(0.3, 1.0, detail) + (gc.r - 0.5) * mix(1.0, 0.5, detail);
+  float tone = (gf.g - 0.5) * mix(0.3, 1.0, detail) + (gc.g - 0.5) * mix(0.9, 0.3, detail);
+  float r = length(xz);
+  vec3 grass = mix(GRASS_LUSH, GRASS_DRY, smoothstep(0.36, 0.70, 0.6 * b.g + 0.4 * a.g + (c.g - 0.5) * 0.12 + tone * 0.28))
+             * (0.8 + 0.4 * a.r) * (1.0 + 0.16 * (c.r - 0.5)) * (1.0 + mix(0.06, 0.24, detail) * (s - 0.5)) * (1.0 + 0.55 * blade);
+  // the blades fray the edges of the dirt: a soft edge far off (their mean), crisp close up
+  float dn = a.g * 0.65 + b.r * 0.35, ring = 0.85 * (1.0 - smoothstep(2.0, 4.6, r + (b.r - 0.5) * 1.6 + blade * 1.1));
+  float dirt = max(smoothstep(0.632, 0.732, dn + (c.r - 0.5) * 0.05 - blade * 0.09), ring);
+  // the seam only round dirt the broad layers make (no dark specks where the fine term alone tips over)
+  float seam = 0.64 * dirt * (1.0 - dirt) * smoothstep(0.15, 0.5, max(smoothstep(0.632, 0.732, dn), ring));
+  Ground G;
+  vec3 soil = mix(DIRT_DARK, DIRT_LIGHT, clamp(0.5 + (b.g - 0.5) * 1.2 + (c.r - 0.5) * 1.0 + (sf.g - 0.5) * 0.55, 0.0, 1.0)) * (0.9 + 0.2 * a.r) * (1.0 + 0.4 * (sf.r - 0.5));
+  G.alb = mix(grass, soil, dirt) * (1.0 - seam);
+  vec2 g = transpose(ROT3) * (c.ba * 2.0 - 1.0) * mix(mix(0.3, 0.45, detail), 0.75, dirt);
+  if (lod < 0.0 && uGroundHD) {   // and their relief, for the light
+    vec2 gg = transpose(ROT6) * (gf.ba * 2.0 - 1.0) * mix(0.15, 0.7, detail) + transpose(ROT7) * (gc.ba * 2.0 - 1.0) * mix(0.4, 0.25, detail);
+    g += mix(gg, transpose(ROT8) * (sf.ba * 2.0 - 1.0) * mix(0.35, 0.9, detail), dirt);
+  }
+  G.N = normalize(vec3(-g.x, 1.0, -g.y));
+  G.ao = groundAo(xz);
+  G.dirt = dirt;
+  return G;
+}
+// the weather: water stands where the ground is low (a fourth read: the R noise on a 22-unit tile), in the
+// dirt and the worn ring, never on the lush grass; it rises with the rain that has fallen (uPuddle)
+// and seeps away after, the soil soaked round it. The whole field darkens as it wets, the dirt most
+// (not its moonlit value in the dark: the night stays as readable)
+void groundRain(inout Ground G, vec2 xz, float lod) {
+  G.dry = G.alb;
+  G.wet = uWet;
+  G.water = 0.0;
+  float dirt = G.dirt;
+  if (uWet > 0.0 || uPuddle > 0.0) {
+    float p = lod < 0.0 ? GROUND_READ(uTerrainTex, ROT5 * xz / 21.9, 0.0).r : textureLod(uTerrainTex, ROT5 * xz / 21.9, lod).r;
+    float low = p * (0.55 + 0.45 * dirt), T = 1.0 - 0.36 * uPuddle;
+    G.water = smoothstep(T, T + max(0.015, lod < 0.0 ? 1.5 * GROUND_FWIDTH(low) : 0.05), low);   // a crisp shore, never a jagged one
+    G.wet = max(uWet, smoothstep(T - 0.1, T, low) * min(1.0, 4.0 * uPuddle));
+    G.alb *= 1.0 - G.wet * mix(0.3, 0.45, dirt) - 0.2 * G.water;
+  }
+}
+Ground ground(vec2 xz, float lod, float wpp) {
+  Ground G = groundDry(xz, lod, wpp);
+  groundRain(G, xz, lod);
+  return G;
+}
+)";
+// a shader's source with the ground's code at %GROUND%
+static std::string withGround(const char* src) {
+  std::string out = src;
+  const size_t at = out.find("%GROUND%");
+  if (at != std::string::npos) out.replace(at, 8, GROUND_GLSL);
+  return out;
+}
+
 // ─── Shaders ─────────────────────────────────────────────────────────────────
 static const char* LIT_VS = R"(#version 330 core
 layout(location=0) in vec3 aPos;
@@ -338,11 +436,25 @@ out vec3 vWorld; out vec3 vNormal; out vec2 vUV; out vec3 vColor; out vec4 vShad
 #ifdef TUFT
 // A vertex of the grass (one static mesh): aPos where it stands, aNormal its tuft's root (xz) and how far it
 // sways (y), aUV its tint and how far up the blade it is. The wind runs through in slow gusts, stronger in
-// the rain; the tuft takes the ground's sun and shadow at its root
-uniform float uTime, uRain;
-out vec2 vRoot;
+// the rain; the tuft takes the ground's sun and shadow at its root, and its colour: done here, a read a vertex
+// instead of one a pixel, and a tuft on bare earth, in water, where a nuke has scorched the field or deep in the
+// night's dark has no triangle to shade (the pixel shader needs no discard: what it hides saves the ground's work)
+#define GROUND_FWIDTH(x) 0.0
+#define GROUND_READ(t, uv, bias) textureLod(t, uv, 0.0)
+%GROUND%
+uniform float uTime, uRain, uFogFar;
+uniform int uGlCount;
+uniform vec3 uGrassClear[3];                                    // where the grass is gone: centre xz, radius
+flat out vec3 vGAlb, vGDry, vGWet;                              // the ground at its root: colour, before the rain, wet + water + shade at the bunker's foot
 void main() {
   vec2 root = aNormal.xz;
+  Ground G = ground(root, 1.5, 1.0);
+  bool gone = G.dirt > 0.3 || G.water > 0.05 || (uGlCount == 0 && length(root) >= uFogFar);
+  for (int i = 0; i < 3; i++) if (distance(root, uGrassClear[i].xy) < uGrassClear[i].z) gone = true;
+  if (gone) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  vGAlb = G.alb;
+  vGDry = G.dry;
+  vGWet = vec3(G.wet, G.water, G.ao);
   float gust = 0.65 + 0.35 * sin(dot(root, vec2(0.21, 0.13)) + uTime * 1.3) + 0.2 * sin(dot(root, vec2(-0.43, 0.57)) + uTime * 2.9);
   vec3 P = aPos;
   P.xz += vec2(0.8, 0.6) * (gust * aNormal.y * (1.0 + 1.2 * uRain));
@@ -350,7 +462,6 @@ void main() {
   vNormal = vec3(0.0, 1.0, 0.0);
   vUV = aUV;
   vColor = vec3(1.0);
-  vRoot = root;
   vShadowPos = uLightVP * vec4(root.x, 0.03, root.y, 1.0);
   gl_Position = uProj * uView * vec4(P, 1.0);
 }
@@ -388,18 +499,19 @@ uniform bool uReceiveShadow, uShadows;
 uniform sampler2DShadow uShadowMap; uniform float uShadowBias, uShadowTexel;
 uniform vec3 uFogColor; uniform float uFogNear, uFogFar; uniform bool uFog;
 uniform vec4 uGlPos[8], uGlColor[8]; uniform int uGlCount;   // small lights: xyz + radius · rgb + reveal
-uniform sampler2D uTerrainTex;                                  // the ground's noise (R, G two fields, BA a fine slope)
-uniform sampler2D uGrassTex, uSoilTex;                          // its fine detail: blades, pebbles (R height, G tone, BA slope)
 uniform float uNight, uNightDesat; uniform vec3 uMoonTint;      // how much of the fog is night; colour the ground loses
-uniform bool uGroundHD;                                         // GFX HIGH: the ground's fine layers (else SD)
 uniform bool uScenery, uInstAlpha;
-uniform float uWet, uPuddle, uRain, uTime, uCloud;              // the weather: the ground's wetness, its puddles, rain now, its clock, cloud cover
+uniform float uRain, uTime, uCloud;                             // the weather: rain now, its clock, cloud cover
 uniform vec3 uSkyZen, uSkyHor; uniform vec2 uCloudDrift;        // the sky the water mirrors
 uniform vec2 uShadeDrift;                                       // the drifting cloud shadows
 #ifdef TUFT
-in vec2 vRoot;
-uniform vec3 uGrassClear[3];                                    // where the grass is gone: centre xz, radius
+flat in vec3 vGAlb, vGDry, vGWet;
 #endif
+#if defined(TERRAIN) && !defined(TUFT)
+uniform bool uGroundCached; uniform sampler2D uGroundCache0, uGroundCache1; uniform ivec2 uCacheOrigin;
+#endif
+#define GROUND_FWIDTH(x) fwidth(x)
+#define GROUND_READ(t, uv, bias) texture(t, uv, bias)
 const float PI = 3.141592653589793;
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
 
@@ -417,80 +529,7 @@ float spotSeen(vec3 p) {
   return smoothstep(R - 0.25, R + 0.15, length(a + d * t));
 }
 
-// The ground at xz, from the noise at rotated scales: tiles of 150 and 36 units for the broad layers
-// (the field is 120 across: the first never repeats, the second has too many cells to band), 6 for
-// the fine one and 1.3 for a speckle. Two grass tones in soft patches at two scales, frayed by clumps;
-// lighter and darker swathes; soft dirt patches with a darker seam where they meet the grass, a worn
-// ring round the bunker, a fine slope for the light (crinkled on dirt, fainter on grass), and shade at
-// the bunker's foot. The broad layer is offset to put a mid-toned stretch of it under the bunker (as
-// on main). Every fine term is zero-mean, so a softer read keeps the tone:
-//  - HD (GFX HIGH): all four layers; detail (0..1, from the pixel's footprint) raises the grass's relief
-//    and the speckle (albedo only: crisp clumps) close up;
-//  - SD (GFX LOW): the broad layers a mip softer and no fine ones (two fetches, a flat light);
-//  - lod >= 0: blurred mips without derivatives (a unit's fog target, in a per-pixel branch): mip 2.5
-//    blurs over about 1.7 units (a) and 0.4 (b).
-const mat2 ROT1 = mat2(0.825, 0.565, -0.565, 0.825), ROT2 = mat2(-0.320, 0.947, -0.947, -0.320), ROT3 = mat2(0.199, -0.980, 0.980, 0.199), ROT4 = mat2(0.545, 0.839, -0.839, 0.545);
-const mat2 ROT5 = mat2(0.454, 0.891, -0.891, 0.454);   // the puddles' read
-const mat2 ROT6 = mat2(0.921, 0.389, -0.389, 0.921), ROT7 = mat2(-0.600, 0.800, -0.800, -0.600), ROT8 = mat2(0.309, 0.951, -0.951, 0.309);   // the detail maps' reads
-const vec3 GRASS_LUSH = vec3(.184, .290, .102), GRASS_DRY = vec3(.290, .310, .133), DIRT_DARK = vec3(.290, .224, .141), DIRT_LIGHT = vec3(.431, .353, .227);
-struct Ground { vec3 alb, dry; vec3 N; float ao; float wet, water, dirt; };   // dry: alb before the rain; wet: how wet (0..1); water: standing water (a puddle)
-Ground ground(vec2 xz, float lod, float wpp) {
-  float detail = 1.0 - smoothstep(0.011, 0.020, wpp), soft = 0.5 * (1.0 - smoothstep(0.02, 0.03, wpp));
-  vec2 u1 = ROT1 * xz / 150.0 + vec2(0.89, 0.85), u2 = ROT2 * xz / 36.0, u3 = ROT3 * xz / 6.0;
-  vec4 a, b, c = vec4(0.5);
-  float s = 0.5;
-  if (lod >= 0.0) { a = textureLod(uTerrainTex, u1, lod); b = textureLod(uTerrainTex, u2, lod); }
-  else if (uGroundHD) {
-    // (c and gc sit at their maps' top mip in the overview in a large window: a whole megabyte, the two dearest reads of
-    // the ground. Half a mip softer at that footprint, none at 1600x900: 2800x1575 on an RTX 3050 Ti, 64 -> 74 FPS)
-    a = texture(uTerrainTex, u1); b = texture(uTerrainTex, u2); c = texture(uTerrainTex, u3, soft);
-    s = texture(uTerrainTex, ROT4 * xz / 1.3).r;
-  } else { a = texture(uTerrainTex, u1, 1.0); b = texture(uTerrainTex, u2, 1.0); }
-  // the detail maps (HD): single blades and pebbles close up, and the blades read larger, as clumps
-  // from afar (each zero-mean, so the tone holds; lod >= 0 and SD stay flat)
-  vec4 gf = vec4(0.5), gc = vec4(0.5), sf = vec4(0.5);
-  if (lod < 0.0 && uGroundHD) {
-    gf = texture(uGrassTex, ROT6 * xz / 2.7);
-    gc = texture(uGrassTex, ROT7 * xz / 7.3, soft);
-    sf = texture(uSoilTex, ROT8 * xz / 3.1);
-  }
-  float blade = (gf.r - 0.5) * mix(0.3, 1.0, detail) + (gc.r - 0.5) * mix(1.0, 0.5, detail);
-  float tone = (gf.g - 0.5) * mix(0.3, 1.0, detail) + (gc.g - 0.5) * mix(0.9, 0.3, detail);
-  float r = length(xz);
-  vec3 grass = mix(GRASS_LUSH, GRASS_DRY, smoothstep(0.36, 0.70, 0.6 * b.g + 0.4 * a.g + (c.g - 0.5) * 0.12 + tone * 0.28))
-             * (0.8 + 0.4 * a.r) * (1.0 + 0.16 * (c.r - 0.5)) * (1.0 + mix(0.06, 0.24, detail) * (s - 0.5)) * (1.0 + 0.55 * blade);
-  // the blades fray the edges of the dirt: a soft edge far off (their mean), crisp close up
-  float dn = a.g * 0.65 + b.r * 0.35, ring = 0.85 * (1.0 - smoothstep(2.0, 4.6, r + (b.r - 0.5) * 1.6 + blade * 1.1));
-  float dirt = max(smoothstep(0.632, 0.732, dn + (c.r - 0.5) * 0.05 - blade * 0.09), ring);
-  // the seam only round dirt the broad layers make (no dark specks where the fine term alone tips over)
-  float seam = 0.64 * dirt * (1.0 - dirt) * smoothstep(0.15, 0.5, max(smoothstep(0.632, 0.732, dn), ring));
-  Ground G;
-  vec3 soil = mix(DIRT_DARK, DIRT_LIGHT, clamp(0.5 + (b.g - 0.5) * 1.2 + (c.r - 0.5) * 1.0 + (sf.g - 0.5) * 0.55, 0.0, 1.0)) * (0.9 + 0.2 * a.r) * (1.0 + 0.4 * (sf.r - 0.5));
-  G.alb = mix(grass, soil, dirt) * (1.0 - seam);
-  vec2 g = transpose(ROT3) * (c.ba * 2.0 - 1.0) * mix(mix(0.3, 0.45, detail), 0.75, dirt);
-  if (lod < 0.0 && uGroundHD) {   // and their relief, for the light
-    vec2 gg = transpose(ROT6) * (gf.ba * 2.0 - 1.0) * mix(0.15, 0.7, detail) + transpose(ROT7) * (gc.ba * 2.0 - 1.0) * mix(0.4, 0.25, detail);
-    g += mix(gg, transpose(ROT8) * (sf.ba * 2.0 - 1.0) * mix(0.35, 0.9, detail), dirt);
-  }
-  G.N = normalize(vec3(-g.x, 1.0, -g.y));
-  G.ao = mix(0.55, 1.0, smoothstep(1.4, 2.8, r));
-  // the weather: water stands where the ground is low (a fourth read: the R noise on a 22-unit tile), in the
-  // dirt and the worn ring, never on the lush grass; it rises with the rain that has fallen (uPuddle)
-  // and seeps away after, the soil soaked round it. The whole field darkens as it wets, the dirt most
-  // (not its moonlit value in the dark: the night stays as readable)
-  G.dry = G.alb;
-  G.wet = uWet;
-  G.water = 0.0;
-  G.dirt = dirt;
-  if (uWet > 0.0 || uPuddle > 0.0) {
-    float p = lod < 0.0 ? texture(uTerrainTex, ROT5 * xz / 21.9).r : textureLod(uTerrainTex, ROT5 * xz / 21.9, lod).r;
-    float low = p * (0.55 + 0.45 * dirt), T = 1.0 - 0.36 * uPuddle;
-    G.water = smoothstep(T, T + max(0.015, lod < 0.0 ? 1.5 * fwidth(low) : 0.05), low);   // a crisp shore, never a jagged one
-    G.wet = max(uWet, smoothstep(T - 0.1, T, low) * min(1.0, 4.0 * uPuddle));
-    G.alb *= 1.0 - G.wet * mix(0.3, 0.45, dirt) - 0.2 * G.water;
-  }
-  return G;
-}
+%GROUND%
 // What the water mirrors: the sky, brighter toward the horizon, under a cloud deck 40 up drifting
 // with the wind (the ground's macro noise, read large). A traced reflection would return the scene
 // where the reflected ray hits it, and this where it escapes to the sky
@@ -548,9 +587,14 @@ float sunShadow() {
   vec3 sc = vShadowPos.xyz / vShadowPos.w * 0.5 + 0.5;
   if (sc.x < 0.0 || sc.x > 1.0 || sc.y < 0.0 || sc.y > 1.0 || sc.z > 1.0) return 1.0;
   sc.z += uShadowBias;
+  // the four corners first: their bilinear reads cover every texel the nine would, and most of the field lies wholly in the sun
   float s = 0.0;
-  for (int x = -1; x <= 1; x++)
-    for (int y = -1; y <= 1; y++) s += texture(uShadowMap, vec3(sc.xy + vec2(x, y) * uShadowTexel, sc.z));
+  for (int x = -1; x <= 1; x += 2)
+    for (int y = -1; y <= 1; y += 2) s += textureLod(uShadowMap, vec3(sc.xy + vec2(x, y) * uShadowTexel, sc.z), 0.0);
+  if (s <= 0.0 || s >= 4.0) return s / 4.0;
+  s += textureLod(uShadowMap, vec3(sc.xy, sc.z), 0.0);
+  s += textureLod(uShadowMap, vec3(sc.xy + vec2(uShadowTexel, 0.0), sc.z), 0.0) + textureLod(uShadowMap, vec3(sc.xy - vec2(uShadowTexel, 0.0), sc.z), 0.0);
+  s += textureLod(uShadowMap, vec3(sc.xy + vec2(0.0, uShadowTexel), sc.z), 0.0) + textureLod(uShadowMap, vec3(sc.xy - vec2(0.0, uShadowTexel), sc.z), 0.0);
   return s / 9.0;
 }
 // three.js perturbNormal2Arb: tangent frame from screen-space derivatives (no tangents)
@@ -584,20 +628,44 @@ vec3 specBlinn(vec3 L, vec3 V, vec3 N, vec3 f0, float shin) {
   float dNH = clamp(dot(N, H), 0.0, 1.0), dLH = clamp(dot(L, H), 0.0, 1.0);
   return F_Schlick(f0, dLH) * (0.25 * (1.0 / PI) * (shin * 0.5 + 1.0) * pow(dNH, shin));
 }
+// How far the fog has taken this point: radial, from the bunker; the small lights lift the night around them (full near, none at their reach)
+float fogAmount() {
+  float fogF = smoothstep(uFogNear, uFogFar, length(vWorld.xz));
+  float lift = 0.0;
+  for (int i = 0; i < uGlCount; i++)
+    lift = max(lift, uGlColor[i].a * (1.0 - smoothstep(0.35 * uGlPos[i].w, uGlPos[i].w, length(uGlPos[i].xyz - vWorld))));
+  return fogF * (1.0 - lift);
+}
 void main() {
+  float fogK = uFog ? fogAmount() : 0.0;
 #ifdef TUFT
-  // a blade takes the colour of the ground at its tuft's root: dark at the root, pale at the tip, each tuft
-  // a little different. None on bare earth, in water, or where a nuke has scorched the field
-  Ground G = ground(vRoot, 1.5, 1.0);
-  if (G.dirt > 0.3 || G.water > 0.05) discard;
-  for (int i = 0; i < 3; i++) if (distance(vRoot, uGrassClear[i].xy) < uGrassClear[i].z) discard;
-  G.alb *= mix(0.62, 1.32, vUV.y) * vUV.x;
+  // a blade takes the colour of the ground at its tuft's root: dark at the root, pale at the tip, each tuft a little different
+  Ground G;
+  G.alb = vGAlb * mix(0.62, 1.32, vUV.y) * vUV.x;
+  G.dry = vGDry;
+  G.N = vec3(0.0, 1.0, 0.0);
+  G.wet = vGWet.x;
+  G.water = vGWet.y;
+  G.ao = vGWet.z;
+  G.dirt = 0.0;
   vec4 diffuse = vec4(mix(G.alb, vec3(dot(G.alb, LUMA)), uNightDesat), 1.0);
 #elif defined(TERRAIN)
   // the close-up detail by the pixel's footprint: crisp grass close up, calm where a pixel spans more of
   // the fine layer (no hatching); the footprint along the screen's axes, the same at any yaw
-  float wpp = max(length(dFdx(vWorld.xz)), length(dFdy(vWorld.xz)));
-  Ground G = ground(vWorld.xz, -1.0, wpp);
+  Ground G;
+  if (uGroundCached) {   // the camera holds still: this pixel's dry ground is kept (Renderer::bakeGround); only the rain changes it
+    ivec2 px = ivec2(gl_FragCoord.xy) - uCacheOrigin;
+    vec4 c0 = texelFetch(uGroundCache0, px, 0), c1 = texelFetch(uGroundCache1, px, 0);
+    vec2 nxz = c1.rg * 2.0 - 1.0;
+    G.alb = c0.rgb;
+    G.N = vec3(nxz.x, sqrt(max(0.0, 1.0 - dot(nxz, nxz))), nxz.y);
+    G.dirt = c1.b;
+    G.ao = groundAo(vWorld.xz);
+    groundRain(G, vWorld.xz, -1.0);
+  } else {
+    float wpp = max(length(dFdx(vWorld.xz)), length(dFdy(vWorld.xz)));
+    G = ground(vWorld.xz, -1.0, wpp);
+  }
   vec4 diffuse = vec4(mix(G.alb, vec3(dot(G.alb, LUMA)), uNightDesat), 1.0);   // at night it greys out
 #else
   vec4 diffuse = uInstAlpha ? vec4(uColor, uOpacity * vColor.r) : vec4(uColor * vColor, uOpacity);
@@ -618,6 +686,8 @@ void main() {
     float faceDir = gl_FrontFacing ? 1.0 : -1.0;
     vec3 N = length(vNormal) > 0.0 ? normalize(vNormal) : vec3(0.0, 1.0, 0.0);
 #ifdef TERRAIN
+    // deep in the night's dark only the ground's moonlit value shows: none of the lights below would reach the eye
+    if (fogK >= 1.0) { fragColor = vec4(mix(uFogColor, nightOf(G.dry, G.N) * G.ao, uNight), 1.0); return; }
     N = G.N;
     if (G.water > 0.0) {   // standing water lies flat, but for the rain's rings on it
       vec3 Nw = vec3(0.0, 1.0, 0.0);
@@ -718,11 +788,7 @@ void main() {
     Nn = N;
   }
   if (uFog) {
-    float fogF = smoothstep(uFogNear, uFogFar, length(vWorld.xz));   // radial: distance from the bunker
-    float lift = 0.0;   // the small lights lift the night around them (full near, none at their reach)
-    for (int i = 0; i < uGlCount; i++)
-      lift = max(lift, uGlColor[i].a * (1.0 - smoothstep(0.35 * uGlPos[i].w, uGlPos[i].w, length(uGlPos[i].xyz - vWorld))));
-    float k = fogF * (1.0 - lift);
+    float k = fogK;
     if (k > 0.0) {
       // at night the fogged field is not black: it fades to its own moonlit value, and everything
       // else to the ground's under it (a unit there blends in, as it did into the black)
@@ -742,6 +808,21 @@ void main() {
   }
   if (uSpotMask) diffuse.a *= spotSeen(vWorld);   // a lamp's pool: cut by the bunker's shadow as its light is
   fragColor = vec4(outC, diffuse.a);
+}
+)";
+
+// The ground's cache: what never changes of it while the camera holds still, per pixel (Renderer::bakeGround)
+static const char* GROUND_BAKE_FS = R"(#version 330 core
+in vec3 vWorld;
+layout(location = 0) out vec4 o0;
+layout(location = 1) out vec4 o1;
+#define GROUND_FWIDTH(x) fwidth(x)
+#define GROUND_READ(t, uv, bias) texture(t, uv, bias)
+%GROUND%
+void main() {
+  Ground G = groundDry(vWorld.xz, -1.0, max(length(dFdx(vWorld.xz)), length(dFdy(vWorld.xz))));
+  o0 = vec4(G.alb, 1.0);
+  o1 = vec4(G.N.xz * 0.5 + 0.5, G.dirt, 1.0);
 }
 )";
 
@@ -850,10 +931,13 @@ GLuint compileProgram(const char* vs, const char* fs, const char* name, const ch
 static const int SHADOW_SIZE = 2048;
 
 bool Renderer::init() {
-  litProg_ = compileProgram(LIT_VS, LIT_FS, "lit");
-  terrainProg_ = compileProgram(LIT_VS, LIT_FS, "terrain", "#define TERRAIN 1\n");
+  const std::string litVs = withGround(LIT_VS), litFs = withGround(LIT_FS);
+  litProg_ = compileProgram(litVs.c_str(), litFs.c_str(), "lit");
+  terrainProg_ = compileProgram(litVs.c_str(), litFs.c_str(), "terrain", "#define TERRAIN 1\n");
   if (!terrainProg_) logWarn("terrain shader unavailable: the ground is drawn plain");
-  tuftProg_ = compileProgram(LIT_VS, LIT_FS, "grass", "#define TERRAIN 1\n#define TUFT 1\n");
+  tuftProg_ = compileProgram(litVs.c_str(), litFs.c_str(), "grass", "#define TERRAIN 1\n#define TUFT 1\n");
+  const std::string bakeFs = withGround(GROUND_BAKE_FS);
+  groundBakeProg_ = compileProgram(litVs.c_str(), bakeFs.c_str(), "ground cache");
   if (!tuftProg_) logWarn("grass shader unavailable: no grass");
   depthProg_ = compileProgram(DEPTH_VS, DEPTH_FS, "depth");
   partProg_ = compileProgram(PART_VS, PART_FS, "particles");
@@ -996,7 +1080,89 @@ void Renderer::setMaterial(GLuint p, const Material& m, bool receive, bool shado
   }
 }
 
+void Renderer::passBegin(int pass) {
+  if (!gpuQ_[0][0]) for (auto& row : gpuQ_) glGenQueries(GP_RING, row);
+  const int k = gpuFrame_ % GP_RING;
+  glBeginQuery(GL_TIME_ELAPSED, gpuQ_[pass][k]);
+  gpuQUsed_[pass][k] = true;
+}
+void Renderer::passEnd() { glEndQuery(GL_TIME_ELAPSED); }
+
+// The ground is the dearest thing drawn (seven reads and its arithmetic for nearly every pixel), and the camera moves only
+// as the player zooms or turns it: its dry colour and slope are kept per pixel once the view has held still for two frames,
+// and the lit shader reads those instead. (2800x1575 on an RTX 3050 Ti: ground 4.7 -> 1.6 ms.) The same values: no pop.
+void Renderer::bakeGround(const SceneParams& sp, int vw, int vh) {
+  gcReady_ = false;
+  if (!groundCacheOn_ || !groundBakeProg_ || !sp.groundHD || !sp.terrainTex || gcFailed_) return;
+  const glm::mat4 vp = sp.proj * sp.view;
+  const bool same = vp == gcVP_ && vw == gcW_ && vh == gcH_;
+  if (!same) { gcVP_ = vp; gcW_ = vw; gcH_ = vh; gcStill_ = 0; gcBaked_ = false; return; }
+  if (gcBaked_) { gcReady_ = true; return; }
+  if (++gcStill_ < 2) return;
+  const Cmd* ground = nullptr;
+  for (const Cmd& c : cmds_) if (c.mesh && c.mat->type == MatType::Terrain) ground = &c;
+  if (!ground) return;
+  if (gcTexW_ != vw || gcTexH_ != vh) {   // (10 bits: what the eye could see as bands in 8)
+    if (!gcFbo_) { glGenFramebuffers(1, &gcFbo_); glGenTextures(2, gcTex_); }
+    glBindFramebuffer(GL_FRAMEBUFFER, gcFbo_);
+    for (int i = 0; i < 2; i++) {
+      glBindTexture(GL_TEXTURE_2D, gcTex_[i]);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB10_A2, vw, vh, 0, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV, nullptr);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D, gcTex_[i], 0);
+    }
+    const GLenum bufs[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+    glDrawBuffers(2, bufs);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+      logWarn("ground cache: framebuffer incomplete: the ground is shaded in full");
+      gcFailed_ = true;
+      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      return;
+    }
+    gcTexW_ = vw;
+    gcTexH_ = vh;
+  }
+  glBindFramebuffer(GL_FRAMEBUFFER, gcFbo_);
+  glViewport(0, 0, vw, vh);
+  glDisable(GL_SCISSOR_TEST);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_BLEND);
+  glDisable(GL_CULL_FACE);
+  const GLuint p = groundBakeProg_;
+  glUseProgram(p);
+  glUniformMatrix4fv(U(p, "uView"), 1, GL_FALSE, glm::value_ptr(sp.view));
+  glUniformMatrix4fv(U(p, "uProj"), 1, GL_FALSE, glm::value_ptr(sp.proj));
+  glUniformMatrix4fv(U(p, "uModel"), 1, GL_FALSE, glm::value_ptr(ground->model));
+  glUniform1i(U(p, "uTerrainTex"), 4);
+  glUniform1i(U(p, "uGrassTex"), 6);
+  glUniform1i(U(p, "uSoilTex"), 7);
+  glUniform1i(U(p, "uGroundHD"), 1);
+  glBindVertexArray(ground->mesh->vao);
+  bindInstances(ground->first);
+  if (ground->mesh->indexed) glDrawElementsInstanced(GL_TRIANGLES, ground->mesh->count, GL_UNSIGNED_INT, nullptr, ground->count);
+  else glDrawArraysInstanced(GL_TRIANGLES, 0, ground->mesh->count, ground->count);
+  glBindVertexArray(0);
+  glEnable(GL_DEPTH_TEST);
+  glEnable(GL_SCISSOR_TEST);
+  gcBaked_ = gcReady_ = true;
+}
+
 void Renderer::render(const SceneParams& sp) {
+  {   // the oldest of the ring has finished by now, or is skipped this frame
+    const int k = (gpuFrame_ + 1) % GP_RING;
+    for (int p = 0; p < GP_COUNT; p++) {
+      GLint ready = 0;
+      if (!gpuQUsed_[p][k]) { gpuMs_[p] = 0; continue; }
+      glGetQueryObjectiv(gpuQ_[p][k], GL_QUERY_RESULT_AVAILABLE, &ready);
+      if (!ready) continue;
+      GLuint64 ns = 0;
+      glGetQueryObjectui64v(gpuQ_[p][k], GL_QUERY_RESULT, &ns);
+      gpuMs_[p] += ((float)ns / 1e6f - gpuMs_[p]) * 0.1f;   // smoothed: the log reads a steady figure
+      gpuQUsed_[p][k] = false;
+    }
+    gpuFrame_++;
+  }
   // one instance upload per frame; draws address their range via attribute offsets
   glBindBuffer(GL_ARRAY_BUFFER, instVbo_);
   glBufferData(GL_ARRAY_BUFFER, inst_.size() * sizeof(Instance), inst_.data(), GL_STREAM_DRAW);
@@ -1006,13 +1172,16 @@ void Renderer::render(const SceneParams& sp) {
                       glm::lookAt(sp.sun.pos, glm::vec3(0), std::abs(sunDir.y) > 0.99f ? glm::vec3(0, 0, 1) : glm::vec3(0, 1, 0));
   bool shadows = sp.shadows && sp.sun.intensity > 0;
   // the scene goes into the HDR target (post.h), drawn at its origin; without post, into the window at the canvas
-  postActive_ = postOk_ && sp.post.enabled && post_.ensure(sp.vpW, sp.vpH, sp.msaa);
+  const int rw = std::max(16, (int)std::lround(sp.vpW * sp.scale)), rh = std::max(16, (int)std::lround(sp.vpH * sp.scale));
+  postActive_ = postOk_ && sp.post.enabled && post_.ensure(rw, rh, sp.msaa);
   const GLuint target = postActive_ ? post_.drawFbo() : 0;
   const int tx = postActive_ ? 0 : sp.vpX, ty = postActive_ ? 0 : sp.vpY;
+  const int vw = postActive_ ? rw : sp.vpW, vh = postActive_ ? rh : sp.vpH;   // what the scene is drawn at
 
   glEnable(GL_DEPTH_TEST);
   glDepthFunc(GL_LEQUAL);
   if (shadows) {
+    passBegin(GP_SHADOW);
     // three.js draws shadow casters with the opposite side (back faces of front-side materials)
     glBindFramebuffer(GL_FRAMEBUFFER, shadowFbo_);
     glViewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
@@ -1032,12 +1201,13 @@ void Renderer::render(const SceneParams& sp) {
       if (c.mesh->indexed) glDrawElementsInstanced(GL_TRIANGLES, c.mesh->count, GL_UNSIGNED_INT, nullptr, c.count);
       else glDrawArraysInstanced(GL_TRIANGLES, 0, c.mesh->count, c.count);
     }
+    passEnd();
   }
 
   // bound on every frame, shadows or not (no sun at night, none on LOW)
   glBindFramebuffer(GL_FRAMEBUFFER, target);
-  glViewport(tx, ty, sp.vpW, sp.vpH);
-  glScissor(tx, ty, sp.vpW, sp.vpH);   // glClear and the resolve obey the scissor: it must cover the target
+  glViewport(tx, ty, vw, vh);
+  glScissor(tx, ty, vw, vh);   // glClear and the resolve obey the scissor: it must cover the target
   glEnable(GL_SCISSOR_TEST);
   if (sp.msaa) glEnable(GL_MULTISAMPLE); else glDisable(GL_MULTISAMPLE);
   glClearColor(sp.fogColor.r, sp.fogColor.g, sp.fogColor.b, 1);
@@ -1118,18 +1288,30 @@ void Renderer::render(const SceneParams& sp) {
     glUniform3fv(U(p, "uGrassClear"), 3, glm::value_ptr(sp.grassClear[0]));
     glUniform1i(U(p, "uGrassTex"), 6);   // (unit 5: the post's depth copy)
     glUniform1i(U(p, "uSoilTex"), 7);
+    glUniform1i(U(p, "uGroundCache0"), 8);
+    glUniform1i(U(p, "uGroundCache1"), 9);
+    glUniform2i(U(p, "uCacheOrigin"), tx, ty);
+    glUniform1i(U(p, "uGroundCached"), gcReady_);
   };
-  if (terrainProg_) frameUniforms(terrainProg_);
-  if (tuftProg_) frameUniforms(tuftProg_);
-  frameUniforms(litProg_);
-  glActiveTexture(GL_TEXTURE3);
-  glBindTexture(GL_TEXTURE_2D, shadowTex_);
   glActiveTexture(GL_TEXTURE4);
   glBindTexture(GL_TEXTURE_2D, sp.terrainTex ? sp.terrainTex->id : whiteTex_);
   glActiveTexture(GL_TEXTURE6);
   glBindTexture(GL_TEXTURE_2D, sp.grassTex ? sp.grassTex->id : whiteTex_);
   glActiveTexture(GL_TEXTURE7);
   glBindTexture(GL_TEXTURE_2D, sp.soilTex ? sp.soilTex->id : whiteTex_);
+  glActiveTexture(GL_TEXTURE0);
+  bakeGround(sp, vw, vh);
+  glBindFramebuffer(GL_FRAMEBUFFER, target);
+  glViewport(tx, ty, vw, vh);
+  if (terrainProg_) frameUniforms(terrainProg_);
+  if (tuftProg_) frameUniforms(tuftProg_);
+  frameUniforms(litProg_);
+  glActiveTexture(GL_TEXTURE3);
+  glBindTexture(GL_TEXTURE_2D, shadowTex_);
+  glActiveTexture(GL_TEXTURE8);
+  glBindTexture(GL_TEXTURE_2D, gcReady_ ? gcTex_[0] : whiteTex_);
+  glActiveTexture(GL_TEXTURE9);
+  glBindTexture(GL_TEXTURE_2D, gcReady_ ? gcTex_[1] : whiteTex_);
   glActiveTexture(GL_TEXTURE0);
 
   GLuint cur = litProg_;   // the bound program (0: something else drew since: rebind)
@@ -1145,9 +1327,17 @@ void Renderer::render(const SceneParams& sp) {
     else glDrawArraysInstanced(GL_TRIANGLES, 0, c.mesh->count, c.count);
   };
   // opaque
-  for (const Cmd& c : cmds_) if (c.mesh && !c.mat->transparent) drawCmd(c);
+  auto opaque = [&](int pass, auto&& mine) {
+    passBegin(pass);
+    for (const Cmd& c : cmds_) if (c.mesh && !c.mat->transparent && mine(c.mat->type)) drawCmd(c);
+    passEnd();
+  };
+  opaque(GP_GROUND, [](MatType t) { return t == MatType::Terrain; });
+  opaque(GP_GRASS, [](MatType t) { return t == MatType::Tuft; });
+  opaque(GP_OPAQUE, [](MatType t) { return t != MatType::Terrain && t != MatType::Tuft; });
 
   // transparent + particles: by render order, then back to front
+  passBegin(GP_TRANSPARENT);
   std::vector<std::pair<float, const Cmd*>> tr;
   for (const Cmd& c : cmds_) {
     if (c.ps || c.custom >= 0 || (c.mesh && c.mat->transparent)) {
@@ -1168,7 +1358,7 @@ void Renderer::render(const SceneParams& sp) {
   ctx.fogNear = sp.fogNear;
   ctx.fogFar = sp.fogFar;
   ctx.hdr = postActive_;
-  ctx.vpH = sp.vpH;
+  ctx.vpH = vh;
   for (auto& [z, c] : tr) {
     if (c->custom >= 0) {
       customs_[c->custom].fn(ctx);
@@ -1209,6 +1399,7 @@ void Renderer::render(const SceneParams& sp) {
     glDrawArraysInstanced(GL_TRIANGLES, 0, 6, (GLsizei)c->ps->p.size());
   }
   if (gpuParticles_) gpuParticles_->draw(sp.view, sp.proj, sp.fogNear, sp.fogFar, glP, glC, glN);
+  passEnd();
   glBindVertexArray(0);
   glDepthMask(GL_TRUE);
   glDisable(GL_BLEND);
@@ -1221,7 +1412,12 @@ void Renderer::render(const SceneParams& sp) {
     glBindVertexArray(0);
     post_.endDistort();
   }
-  if (postActive_) post_.finish(sp.post, sp.vpX, sp.vpY, sp.vpW, sp.vpH, !sp.msaa);   // ends on framebuffer 0
+  if (postActive_) {   // ends on framebuffer 0
+    post_.onPhase = [this](int phase) { passEnd(); passBegin(GP_RESOLVE + phase); };
+    passBegin(GP_RESOLVE);
+    post_.finish(sp.post, sp.vpX, sp.vpY, sp.vpW, sp.vpH, !sp.msaa);
+    passEnd();
+  }
 }
 
 bool Renderer::saveTexture(const Texture* t, const std::string& path) {

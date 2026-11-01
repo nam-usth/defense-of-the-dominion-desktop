@@ -5,7 +5,7 @@
 //   --size 1600x900        window size
 //   --start campaign       start a game once every asset has loaded (or "endless")
 //   --cheat CODE[@S]       run a cheat code right after --start, or S seconds after it (repeatable);
-//                          also hire:marine|marauder|ghost and research:KEY[:TIER] (paid for: --cheat mng first, or
+//                          also hire:marine|marauder|ghost, research:KEY[:TIER] and armory:K (paid for: --cheat mng first, or
 //                          grant:M,G — test money, not a cheat under --data; without --data it turns achievements off)
 //   --key K@S              press key K (a letter, a digit, enter, space, esc, left, right, up, down) S seconds after --start (repeatable)
 //   --open roster|menu|cheat   open a panel after --start
@@ -26,12 +26,19 @@
 //   --dump-ground DIR      write the ground's three maps as PNGs into DIR (the web edition's copies) and exit
 //   --data DIR             settings and saves in DIR instead of %APPDATA% / ~/.local/share (a new player; the real ones untouched)
 //   --no-tutorial          this run without the HUD tour and hints (the stored setting is kept)
-//   --dn SECONDS           day/night cycle on, SECONDS into it (78 dusk, 102 night, 156 dawn)
+//   --dn F                 this much night (0..1) for the whole run (the waves' skies leave it)
+//   --theatre daylight|daynight   this run's (the title's stored choice is kept)
 //   --hold X,Y,S           1 s after --start, hold the left button at (X, Y) (fractions of the window) for S s;
 //                          logs the volleys fired (S = 0: a single click)
 //   --post on|off          HDR post-processing (bloom, tone curve); off: the scene draws straight to a 4x MSAA window
 //   --weather STATE        clear | overcast | rain (a downpour, puddles full) | drizzle | after (a shower just over:
 //                          puddles full, the sun out), at once and held for the run (after --start)
+//   --auto-res on|off      this run with the automatic resolution on or off (off: full resolution, to measure; the stored setting is kept)
+//   --sim PLAN[:GAMES[:WAVECAP]]   whole games by a bot, no frames drawn (PLAN: marine, marauder, ghost, mix or all); prints how far each got, then exits. Use --data
+//   --sim-out FILE         its per-wave CSV
+//   --sim-set A=1,B=2      the balance's numbers for this run (config.h, namespace bal)
+//   --seed N               the same random sequence each run (rocks, Zerg, weather), to compare runs
+//   --ground-cache on|off  off: the ground shaded in full every frame (the cache must not change what is drawn)
 //   --hp F                 hold the bunker at F (0 < F <= 1) of its max HP: repair and damage leave it there (below 0.5 it burns)
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
@@ -42,6 +49,7 @@
 #include <thread>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -97,7 +105,11 @@ int main(int argc, char** argv) {
   std::vector<std::string> cheats;
   double shotAfter = 3;
   int zoomIn = 0;
-  bool noTutorial = false, postOn = true;
+  bool noTutorial = false, postOn = true, groundCache = true;
+  long seedArg = -1;
+  std::string simArg, simOut;
+  int autoResArg = -1;
+  std::string theatreArg;
   float dnAt = -1, holdX = 0, holdY = 0, holdFor = -1, hpHold = -1;
   struct Later { double at; std::string cheat; int key; bool done; };   // --cheat CODE@S, --key K@S
   std::vector<Later> later;
@@ -138,7 +150,14 @@ int main(int argc, char** argv) {
     else if (a == "--dump-ground") dumpGroundDir = next();
     else if (a == "--no-tutorial") noTutorial = true;
     else if (a == "--post") postOn = next() != "off";
+    else if (a == "--ground-cache") groundCache = next() != "off";
+    else if (a == "--seed") seedArg = std::atol(next().c_str());
+    else if (a == "--sim") simArg = next();
+    else if (a == "--sim-out") simOut = next();
+    else if (a == "--sim-set") { if (!Game::simSet(next())) return 1; }
+    else if (a == "--auto-res") autoResArg = next() != "off";
     else if (a == "--dn") dnAt = std::strtof(next().c_str(), nullptr);
+    else if (a == "--theatre") theatreArg = next();
     else if (a == "--weather") {
       weatherArg = next();
       if (weatherArg != "clear" && weatherArg != "overcast" && weatherArg != "rain" && weatherArg != "drizzle" && weatherArg != "after") {
@@ -271,6 +290,7 @@ int main(int argc, char** argv) {
   Game game;
   g_game = &game;
   game.setUiScale(scale);
+  if (seedArg >= 0) game.seedForRun((unsigned)seedArg);
   bool ok = game.init(win);
   fontThread.join();
   if (!ok) { fatal("The renderer could not start (see dotd_desktop.log)."); return 1; }
@@ -280,7 +300,10 @@ int main(int argc, char** argv) {
   if (hpHold > 0) game.holdHpForRun(hpHold);
   if (noTutorial) game.tutorialForRun(false);
   game.postForRun(postOn);
-  if (dnAt >= 0) game.setDayNightTime(dnAt);
+  game.groundCacheForRun(groundCache);
+  if (autoResArg >= 0) game.autoResForRun(autoResArg == 1);
+  if (dnAt >= 0) game.holdNightForRun(dnAt);
+  if (!theatreArg.empty()) game.theatreForRun(theatreArg == "daylight" ? Theatre::Daylight : Theatre::DayNight);
   if (!weatherArg.empty()) game.weatherForRun(weatherArg);   // (the title; --start sets it again in the new game)
   int holdStep = 0, holdAmmo0 = 0;   // --hold: 0 wait · 1 cursor placed · 2 pressed · 3 done
   double holdT0 = 0;
@@ -315,6 +338,14 @@ int main(int argc, char** argv) {
     double now = glfwGetTime();
     if (firstFrame < 0) firstFrame = now - launch;
     if (!allLoaded) loadWorst = std::max(loadWorst, now - last);
+    if (!simArg.empty() && allLoaded) {   // the whole run, here; this frame is the last
+      char plan[32] = {};
+      int games = 5, cap = 60;
+      sscanf(simArg.c_str(), "%31[^:]:%d:%d", plan, &games, &cap);
+      game.simRun(!strcmp(plan, "all") ? "" : plan, games, cap, simOut);
+      glfwSetWindowShouldClose(win, 1);
+      continue;
+    }
     float dt = (float)std::min(now - last, 0.05);
     last = now;
     if ((!startMode.empty() || !openPanel.empty()) && allLoaded && started < 0) {   // --open alone: on the title
