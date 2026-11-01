@@ -797,6 +797,7 @@ class Game {
   void simBotStep(float dt);
   float simClick_ = 0, simDmg_[5] = {}, snipeAmmoAcc_ = 0;
   float simHurt_[2] = {};   // the bunker's damage this wave: bites, acid
+  int simAmmoGas_ = 0;      // gas from rounds saved, this game
   int simStrikeKills_ = 0, simNukeKills_ = 0, simNukes_ = 0, simStrikes_ = 0;
   // Automatic resolution (Menu → Settings, stored): the scene's scale, and how long the card has been over or under its budget
   bool autoRes_ = true;

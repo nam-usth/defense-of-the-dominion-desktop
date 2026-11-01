@@ -39,10 +39,11 @@ inline float baseAmmo = 45;                                    // the starting m
 inline float zcA = 2, zcB = 1.3f, zcC = 0.2f, zcLate = 9, rcK = 1.8f;
 inline float swarmCount = 1.25f, swarmHp = 0.5f;                // a SWARM wave's Zerglings: more of them, each weaker (and worth less)
 inline float lingHp0 = 45, lingHpW = 14, lingHpLate = 10, lingDmg0 = 8, lingDmgW = 1.6f, lingSpeedMax = 0.108f;   // (HP: lingHpLate a wave past 20)
-inline float lingMin0 = 3, lingMinW = 0.85f, lingGas0 = 0.25f, lingGasW = 0.32f;
+inline float lingMin0 = 3, lingMinW = 0.85f, lingGas0 = 0.25f, lingGasW = 0.28f;
 inline float roachHp0 = 180, roachHpW = 60, roachDmg0 = 14, roachDmgW = 2.8f, roachSpeedMax = 0.058f;
-inline float roachMin0 = 11, roachMinW = 2.4f, roachGas0 = 3, roachGasW = 0.95f;
-inline float clearM0 = 40, clearMW = 15, clearG0 = 12, clearGW = 6, nightPay = 1.25f;   // a wave cleared; by night it pays more
+inline float roachMin0 = 11, roachMinW = 2.4f, roachGas0 = 3, roachGasW = 0.8f;
+inline float ammoGas = 1;                                       // a round left when a wave is cleared turns into this much gas
+inline float clearM0 = 40, clearMW = 15, clearG0 = 12, clearGW = 5, nightPay = 1.25f;   // a wave cleared; by night it pays more
 inline float marineMult = 1, marauderMult = 2.2f, marauderBonus = 2, ghostMult = 1.8f, ghostBonus = 2.5f;
 inline float mgSplash = 0.8f, mgInterval = 0.7f;                // Marauder grenades: the blast's share of a hit, seconds apart (radius: MG_RADIUS)
 inline float mgSlow0 = 0.8f, mgSlow1 = 0.6f, mgSlowDur0 = 1, mgSlowDur1 = 1.5f;   // their slow: speed left, seconds; 1: with Concussive Shells

@@ -19,7 +19,7 @@ bool Game::simSet(const std::string& assignments) {
     {"lingMin0", &bal::lingMin0}, {"lingMinW", &bal::lingMinW}, {"lingGas0", &bal::lingGas0}, {"lingGasW", &bal::lingGasW},
     {"roachHp0", &bal::roachHp0}, {"roachHpW", &bal::roachHpW}, {"roachDmg0", &bal::roachDmg0}, {"roachDmgW", &bal::roachDmgW}, {"roachSpeedMax", &bal::roachSpeedMax},
     {"roachMin0", &bal::roachMin0}, {"roachMinW", &bal::roachMinW}, {"roachGas0", &bal::roachGas0}, {"roachGasW", &bal::roachGasW},
-    {"clearM0", &bal::clearM0}, {"clearMW", &bal::clearMW}, {"clearG0", &bal::clearG0}, {"clearGW", &bal::clearGW}, {"nightPay", &bal::nightPay},
+    {"ammoGas", &bal::ammoGas}, {"clearM0", &bal::clearM0}, {"clearMW", &bal::clearMW}, {"clearG0", &bal::clearG0}, {"clearGW", &bal::clearGW}, {"nightPay", &bal::nightPay},
     {"marineMult", &bal::marineMult}, {"marauderMult", &bal::marauderMult}, {"marauderBonus", &bal::marauderBonus}, {"ghostMult", &bal::ghostMult}, {"ghostBonus", &bal::ghostBonus},
     {"mgSplash", &bal::mgSplash}, {"mgInterval", &bal::mgInterval}, {"snipeMult", &bal::snipeMult}, {"snipeAmmo", &bal::snipeAmmo},
     {"mgSlow0", &bal::mgSlow0}, {"mgSlow1", &bal::mgSlow1}, {"mgSlowDur0", &bal::mgSlowDur0}, {"mgSlowDur1", &bal::mgSlowDur1}, {"lateGrow", &bal::lateGrow},
@@ -169,6 +169,7 @@ void Game::simRun(const std::string& onlyPlan, int games, int waveCap, const std
       for (float& d : simDmg_) d = 0;
       simStrikeKills_ = simNukeKills_ = simNukes_ = simStrikes_ = 0;
       simHurt_[0] = simHurt_[1] = 0;
+      simAmmoGas_ = 0;
       int lastWave = 0;
       float waveT0 = gameT_;
       double spentM0 = 0, spentG0 = 0;
@@ -199,8 +200,8 @@ void Game::simRun(const std::string& onlyPlan, int games, int waveCap, const std
         logInfo("sim %s seed %d fell %.1f s into wave %d: max HP %.0f, this wave bites %.0f acid %.0f; %d Zerglings %d Roaches alive, %d to come; ammo %d/%d, nuke cd %.1f, price %d, minerals %.0f",
                 PLANS[pi].name, seed, gameT_ - waveT0, wave_, maxHp_, simHurt_[0], simHurt_[1], (int)zerglings_.size(), (int)roaches_.size(), (int)spawnQueue_.size(), ammo_, maxAmmo_, nukeCD_, nukeCostM(), minerals_);
       reached.push_back(wave_);
-      logInfo("sim %s seed %d: wave %d, %.0f s, score %d, %.0f+%.0f spent, dmg M %.0f Ma %.0f G %.0f snipe %.0f shrike %.0f, kills strike %d nuke %d", PLANS[pi].name, seed, wave_, gameT_, score_, spentM0, spentG0,
-              simDmg_[0], simDmg_[1], simDmg_[2], simDmg_[3], simDmg_[4], simStrikeKills_, simNukeKills_);
+      logInfo("sim %s seed %d: wave %d, %.0f s, score %d, %.0f+%.0f spent, dmg M %.0f Ma %.0f G %.0f snipe %.0f shrike %.0f, kills strike %d nuke %d, gas from rounds saved %d", PLANS[pi].name, seed, wave_, gameT_, score_, spentM0, spentG0,
+              simDmg_[0], simDmg_[1], simDmg_[2], simDmg_[3], simDmg_[4], simStrikeKills_, simNukeKills_, simAmmoGas_);
     }
     std::sort(reached.begin(), reached.end());
     std::string line = std::string("sim ") + PLANS[pi].name + ": median wave " + std::to_string(reached[reached.size() / 2]) + " (";

@@ -2718,8 +2718,20 @@ void Game::waveCleared() {
   int bm = (int)std::round((bal::clearM0 + bal::clearMW * wave_) * pay), bg = (int)std::round((bal::clearG0 + bal::clearGW * wave_) * pay);
   minerals_ += bm;
   gas_ += bg;
+  // The rounds left turn into gas: a wave won on few rounds pays. (After a Viking's crate there are none to count: the magazine
+  // had been emptied. The resupply below fills it again)
+  const int saved = waveCrates_ == 0 ? ammo_ : 0, savedGas = (int)std::lround(saved * bal::ammoGas);
+  std::string savedMsg;
+  if (savedGas > 0) {
+    gas_ += savedGas;
+    ammo_ = 0;
+    simAmmoGas_ += savedGas;
+    savedMsg = " +\xE2\x96\xB2" + std::to_string(savedGas) + " (" + std::to_string(saved) + " rounds saved)";
+    logInfo("wave %d cleared: %d rounds saved, +%d gas", wave_, saved, savedGas);
+    floatTexts_.push_back({{0, 3.4f, 0}, "+" + std::to_string(savedGas) + " GAS  " + std::to_string(saved) + " ROUNDS SAVED", 2.6f, 2.6f, 0x7dffa0});
+  }
   applySky(waveSky(wave_ + 1), false);   // the next wave's sky comes in over the break
-  setStatus("Wave " + std::to_string(wave_) + " cleared! +\xE2\x97\x86" + std::to_string(bm) + " +\xE2\x96\xB2" + std::to_string(bg) + " \xE2\x80\x94 " +
+  setStatus("Wave " + std::to_string(wave_) + " cleared! +\xE2\x97\x86" + std::to_string(bm) + " +\xE2\x96\xB2" + std::to_string(bg) + savedMsg + " \xE2\x80\x94 " +
             (armoryAffordable() ? "Armory open (B) \xC2\xB7 resupply incoming..." : "Resupply incoming..."));
   audio::play("clear");
   after(1.5f, [this]() {

@@ -345,7 +345,7 @@ test's wave-61 limit in every game without a single nuke, and pure Marauders fel
 | 6 Marines | every game | 21 (18–21) | Marine rounds 80%, Shrike 20% |
 | 3 Marauders | every game | 34 (20–37) | grenades 92% |
 | 3 Ghosts | every game | 21 (19–24) | rounds 62%, Snipe 29% |
-| 2 Marines, a Marauder, a Ghost | every game | 39 (33–39) | grenades 45%, the rest shared |
+| 2 Marines, a Marauder, a Ghost | every game | 39 (36–42) | grenades 45%, the rest shared |
 
 What changed, and why:
 
@@ -354,7 +354,7 @@ What changed, and why:
   because in a crowd it kept whole packs from ever reaching the bunker.
 - **Nuke**: it costs 100 gas, flat as in StarCraft II, and 100 + 20 × wave minerals, 1.6 times more for each one already this wave. Fleet logistics in the armory brings the minerals down with the cooldowns (×0.9 a purchase, ×0.4 at most), never under StarCraft II's 100. It was free every 15 s: the bot's Endless ran on 75 nukes by wave 40.
 - **The armory is open in the campaign too**, its prices nearer three minerals to one gas: the campaign's money had nothing left to buy by wave 13 (12 000 minerals in the bank at wave 15).
-- **Gas**: kills and cleared waves now pay about one gas for three minerals, the ratio the research and the armory ask for (it was nearer five to one, which left the research waiting on gas and minerals piling up).
+- **Gas**: kills and cleared waves now pay about one gas for three minerals, the ratio the research and the armory ask for (it was nearer five to one, which left the research waiting on gas and minerals piling up). And **the rounds left in the magazine when a wave is cleared turn into gas, one for one**: a wave won on few rounds pays. Not after a Viking's crate: that magazine had been emptied. In the bot's games a Marine bunker that fires all it can earns little of it, three Marauders about 5 500 gas by wave 33.
 - **Endless**: past wave 15 the Zerg's HP grows by 6% a wave. Upgrades add up, this multiplies, so every bunker falls in the end.
 - **The first magazine** is 45 rounds (it was 30): a pack empties a magazine faster than a trickle does.
 
